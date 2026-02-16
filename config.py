@@ -21,6 +21,15 @@ BUYMA_EXHIBIT_URL = "https://www.buyma.com/contents/exhibit/"
 BASEBLU_BASE_URL = "https://www.baseblu.com"
 BASEBLU_SALE_URL = f"{BASEBLU_BASE_URL}/en/sale"
 
+# baseblu Shopifyコレクション設定
+BASEBLU_SALE_COLLECTIONS = [
+    "sales",        # 全セール
+    "sale-woman",   # レディースセール
+    "sale-man",     # メンズセール
+]
+BASEBLU_LOCALE = "en-us"
+BASEBLU_PRODUCTS_PER_PAGE = 250  # Shopify JSON APIの最大値
+
 # Selenium設定
 SELENIUM_HEADLESS = os.getenv("SELENIUM_HEADLESS", "true").lower() == "true"
 SELENIUM_TIMEOUT = int(os.getenv("SELENIUM_TIMEOUT", "30"))

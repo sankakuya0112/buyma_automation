@@ -14,16 +14,23 @@ class CsvHandler:
     """商品データのCSV入出力を管理するクラス"""
 
     PRODUCT_COLUMNS = [
+        # スクレイピング基本情報
+        "handle",
         "url",
         "brand",
         "name",
         "original_price_eur",
         "sale_price_eur",
+        "discount_rate",
         "description",
         "color",
         "sizes",
+        "available_sizes",
         "images",
         "category",
+        "tags",
+        "collection",
+        # 後工程で付与されるカラム
         "name_ja",
         "description_ja",
         "price_jpy",

@@ -29,13 +29,29 @@ def cmd_scrape(args: argparse.Namespace) -> None:
     from scrapers.baseblu_scraper import BasebluScraper
 
     logger = logging.getLogger(__name__)
-    logger.info("Starting baseblu scraping (max_pages=%d)", args.pages)
+
+    collections = args.collections if args.collections else None
+    logger.info(
+        "Starting baseblu scraping (max_pages=%d, collections=%s)",
+        args.pages,
+        collections or "all",
+    )
 
     scraper = BasebluScraper()
-    products = scraper.scrape_sale_products(max_pages=args.pages)
+    products = scraper.scrape_sale_products(
+        max_pages=args.pages,
+        collections=collections,
+    )
 
     if products:
         csv_handler = CsvHandler()
+
+        # --mergeオプション: 既存CSVとマージ
+        if args.merge:
+            products = csv_handler.merge_products(
+                args.output, products, key="handle"
+            )
+
         filepath = csv_handler.save_products(products, filename=args.output)
         logger.info("Saved %d products to %s", len(products), filepath)
     else:
@@ -180,8 +196,19 @@ def main() -> None:
 
     # scrape コマンド
     scrape_parser = subparsers.add_parser("scrape", help="baseblu.comからスクレイピング")
-    scrape_parser.add_argument("--pages", type=int, default=5, help="取得ページ数")
+    scrape_parser.add_argument("--pages", type=int, default=5, help="コレクションごとの取得ページ数")
     scrape_parser.add_argument("--output", default="products.csv", help="出力ファイル名")
+    scrape_parser.add_argument(
+        "--collections",
+        nargs="+",
+        default=None,
+        help="対象コレクション名（例: sale-woman sale-man）省略時は全セール",
+    )
+    scrape_parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="既存CSVとマージ（重複排除）",
+    )
 
     # calculate コマンド
     calc_parser = subparsers.add_parser("calculate", help="価格計算")

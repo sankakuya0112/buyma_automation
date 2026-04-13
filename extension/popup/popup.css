@@ -1,0 +1,172 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN",
+    "Yu Gothic", Meiryo, sans-serif;
+  margin: 0;
+  width: 420px;
+  min-height: 500px;
+  font-size: 13px;
+  color: #222;
+  background: #fafafa;
+}
+
+header {
+  background: #0b5fff;
+  color: #fff;
+  padding: 10px 14px 0;
+}
+header h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+}
+.tab-btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  color: #cfe0ff;
+  cursor: pointer;
+  font-weight: 600;
+  border-bottom: 3px solid transparent;
+}
+.tab-btn.active {
+  color: #fff;
+  border-bottom-color: #ffd700;
+}
+
+.tab-pane { display: none; padding: 12px 14px; }
+.tab-pane.active { display: block; }
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.product-list { display: flex; flex-direction: column; gap: 8px; }
+.product-card {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+}
+.product-card img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #f0f0f0;
+}
+.product-card .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.product-card .brand { font-weight: 600; color: #0b5fff; font-size: 12px; }
+.product-card .title {
+  font-size: 12px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.product-card .pricing {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: #555;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.product-card .pricing .profit.ok { color: #1f8f2f; font-weight: 600; }
+.product-card .pricing .profit.ng { color: #c0392b; font-weight: 600; }
+.product-card .decision {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 4px;
+  align-self: flex-start;
+}
+.product-card .decision.approved { background: #dcf5dd; color: #1f8f2f; }
+.product-card .decision.rejected { background: #fde8e8; color: #c0392b; }
+.product-card .decision.hold { background: #fef4d6; color: #a67c00; }
+.product-card .actions { display: flex; gap: 4px; margin-top: 6px; }
+.product-card .actions button {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #fff;
+}
+.product-card .actions button.primary {
+  background: #0b5fff;
+  color: #fff;
+  border-color: #0b5fff;
+}
+.product-card .actions button.danger {
+  background: #fff;
+  color: #c0392b;
+  border-color: #e5b4af;
+}
+
+button.primary {
+  background: #0b5fff;
+  color: #fff;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-right: 4px;
+}
+button.secondary {
+  background: #fff;
+  color: #333;
+  border: 1px solid #ccc;
+  padding: 7px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #444;
+}
+label input {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  margin-top: 2px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.log {
+  margin-top: 10px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.note { font-size: 12px; color: #666; margin-top: 0; }
+.status { margin-top: 8px; font-size: 12px; color: #1f8f2f; }

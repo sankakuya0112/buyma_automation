@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "BUYMA Auto Lister",
+  "version": "0.1.0",
+  "description": "BaseBlu からセール商品を取得し、BUYMA へ自動出品する補助ツール",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.baseblu.com/*",
+    "https://*.buyma.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "BUYMA Auto Lister",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.baseblu.com/*"],
+      "js": ["content/baseblu.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.buyma.com/*"],
+      "js": ["content/buyma.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["data/brands.json", "data/categories.json"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

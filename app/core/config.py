@@ -21,6 +21,7 @@ class Config:
     # Browser
     headless: bool = True
     timeout_seconds: int = 30
+    chromium_executable_path: Optional[str] = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
 
     # Database
     db_path: str = "data/automation.db"

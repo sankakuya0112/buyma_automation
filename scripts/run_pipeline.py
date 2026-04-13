@@ -260,7 +260,10 @@ class Pipeline:
 
             published_count = 0
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=self.config.headless)
+                launch_kwargs = {"headless": self.config.headless}
+                if self.config.chromium_executable_path:
+                    launch_kwargs["executable_path"] = self.config.chromium_executable_path
+                browser = p.chromium.launch(**launch_kwargs)
                 page = browser.new_page()
 
                 try:

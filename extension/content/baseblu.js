@@ -49,22 +49,11 @@
     return parseFromDom(url);
   }
 
-  // Shopify の price フィールドはセント単位の整数で返る場合がある（BaseBlu はこのケース）。
-  // 小数点を含まず 100 以上の値はセントとみなして 100 で割る。
-  function parseShopifyPrice(raw) {
-    const s = String(raw || "0");
-    const val = parseFloat(s) || 0;
-    if (!s.includes(".") && val >= 100) {
-      return val / 100;
-    }
-    return val;
-  }
-
   function parseShopifyJson(data, productUrl) {
     const variants = data.variants || [];
     let salePrice = 0;
     for (const v of variants) {
-      const p = parseShopifyPrice(v.price);
+      const p = parseFloat(v.price || "0");
       if (!isNaN(p) && (salePrice === 0 || p < salePrice)) salePrice = p;
     }
 
@@ -95,7 +84,8 @@
       color: color.trim(),
       category: (data.product_type || "").trim(),
       sourcePrice: salePrice,
-      currency: "EUR",
+      // BaseBlu は日本ユーザーに JPY 価格を返す（Shopify マルチカレンシー）。
+      currency: "JPY",
       sizes,
       imageUrls: images,
       descriptionEn,

@@ -194,8 +194,9 @@ function renderProductCard(p) {
     const pricing = document.createElement("div");
     pricing.className = "pricing";
     const profitOk = (p.decision || "") === "approved";
+    const symbol = p.currency === "JPY" ? "¥" : "€";
     pricing.innerHTML = `
-      <span>仕入: €${p.sourcePrice}</span>
+      <span>仕入: ${symbol}${Number(p.sourcePrice).toLocaleString()}</span>
       <span>出品: ¥${p.pricing.listPriceJpy.toLocaleString()}</span>
       <span class="profit ${profitOk ? "ok" : "ng"}">利益 ¥${p.pricing.profitJpy.toLocaleString()} (${p.pricing.marginPct}%)</span>
     `;

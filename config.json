@@ -1,0 +1,15 @@
+{
+  "buyma_email": "",
+  "buyma_password": "",
+  "headless": true,
+  "timeout_seconds": 30,
+  "db_path": "data/automation.db",
+  "baseblu_search_url": "https://www.baseblu.com/en-us/collections/sales",
+  "baseblu_timeout": 20,
+  "target_margin_pct": 25.0,
+  "min_profit_jpy": 3000.0,
+  "log_level": "INFO",
+  "log_dir": "logs",
+  "guard_check_interval_hours": 12.0,
+  "jpy_exchange_rate": null
+}

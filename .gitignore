@@ -32,6 +32,9 @@ logs/*.log
 # Output
 output/
 
+# Database
+data/*.db
+
 # Chrome driver
 chromedriver
 chromedriver.exe

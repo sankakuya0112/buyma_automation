@@ -1,61 +1,8 @@
 // BUYMA 出品フォームに商品情報を自動入力するコンテンツスクリプト。
-//
-// BUYMA のフォーム構造は時期により変わる可能性があるため、セレクタは
-// 堅牢性を優先して複数候補を試す設計にしてある。
-// 実際の DOM 構造にあわせて SELECTORS を調整すること。
+// セレクタは cowork (Claude.ai) による実際のフォーム解析結果に基づく。
 
 (function () {
   "use strict";
-
-  // ---------------------------------------------------------------------------
-  // セレクタ定義（BUYMA のフォーム UI に応じて調整）
-  // ---------------------------------------------------------------------------
-
-  const SELECTORS = {
-    title: [
-      'input[name="item_name"]',
-      'input[name*="title"]',
-      '#item_name',
-    ],
-    brand: [
-      'input[name="brand_name"]',
-      'input[name*="brand"]',
-    ],
-    category: [
-      'select[name*="category"]',
-    ],
-    price: [
-      'input[name="item_price"]',
-      'input[name*="price"]',
-    ],
-    color: [
-      'input[name*="color"]',
-      'input[name*="colour"]',
-    ],
-    description: [
-      'textarea[name="item_comment"]',
-      'textarea[name*="description"]',
-      'textarea[name*="comment"]',
-    ],
-    imageInput: [
-      'input[type="file"][name*="image"]',
-      'input[type="file"][accept*="image"]',
-    ],
-    submitDraft: [
-      'button[name="draft"]',
-      'button[data-action="draft"]',
-      'input[value*="下書き"]',
-    ],
-    submitPublish: [
-      'button[type="submit"][name="publish"]',
-      'button[data-action="publish"]',
-      'input[value*="出品"]',
-    ],
-  };
-
-  // ---------------------------------------------------------------------------
-  // メッセージハンドラ
-  // ---------------------------------------------------------------------------
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "BUYMA_FILL_FORM") {
@@ -71,46 +18,60 @@
   });
 
   // ---------------------------------------------------------------------------
-  // フォーム入力本体
+  // フォーム入力メイン
   // ---------------------------------------------------------------------------
 
   async function fillForm(payload, options) {
-    // payload: { titleJa, brandJa, categoryJa, listPriceJpy, color, descriptionJa, imageUrls }
     const log = [];
-    const filled = (label, ok) => log.push(`${ok ? "✓" : "✗"} ${label}`);
+    const ok = (label) => log.push(`✓ ${label}`);
+    const ng = (label, reason) => log.push(`✗ ${label}: ${reason}`);
 
-    filled("タイトル", await setField(SELECTORS.title, payload.titleJa));
-    filled("ブランド", await setField(SELECTORS.brand, payload.brandJa));
-    filled("価格", await setField(SELECTORS.price, String(payload.listPriceJpy)));
-    filled("カラー", await setField(SELECTORS.color, payload.color || ""));
-    filled("商品説明", await setField(SELECTORS.description, payload.descriptionJa));
+    // 1. タイトル（最初の text input）
+    if (await setByQueryIndex('input[type="text"]', 0, payload.titleJa)) ok("タイトル");
+    else ng("タイトル", "input が見つからない");
 
-    // 画像アップロードは URL → Blob 変換 → File オブジェクト注入が必要で、
-    // BUYMA 側のバリデーションによって動作が変わるため、手動確認を推奨する。
+    // 2. 商品説明（最初の textarea）
+    if (await setTextarea("textarea", payload.descriptionJa)) ok("商品説明");
+    else ng("商品説明", "textarea が見つからない");
+
+    // 3. 価格（「商品価格」ラベル付近の input）
+    if (await setFieldByLabelText("商品価格", String(payload.listPriceJpy))) ok("価格");
+    else ng("価格", "ラベルから input を特定できない");
+
+    // 4. ブランド（8番目の input → サジェスト選択）
+    if (await setBrand(payload.brandJa)) ok("ブランド");
+    else ng("ブランド", "サジェストが出なかった");
+
+    // 5. 色（「色」タブ → React Select）
+    if (payload.color) {
+      if (await setColorTab(payload.color)) ok("色");
+      else ng("色", "タブまたは Select が見つからない");
+    }
+
+    // 6. 画像アップロード（CSRF トークン経由で API POST）
     if (payload.imageUrls && payload.imageUrls.length > 0) {
       try {
-        await uploadImagesFromUrls(payload.imageUrls);
-        filled(`画像 ${payload.imageUrls.length} 枚`, true);
+        const count = await uploadImages(payload.imageUrls);
+        ok(`画像 ${count} 枚`);
       } catch (e) {
-        filled(`画像アップロード失敗: ${e.message}`, false);
+        ng("画像", e.message);
       }
     }
 
+    // 7. ボタン操作
     if (options.autoSubmit === "draft") {
-      const btn = findFirst(SELECTORS.submitDraft);
-      if (btn) {
-        btn.click();
-        log.push("→ 下書き保存をクリック");
-      } else {
-        log.push("⚠ 下書きボタンが見つかりません（手動でクリックしてください）");
-      }
+      await sleep(500);
+      if (await clickButtonByText("下書き保存する")) ok("下書き保存");
+      else ng("下書き保存", "ボタンが見つからない");
     } else if (options.autoSubmit === "publish") {
-      const btn = findFirst(SELECTORS.submitPublish);
-      if (btn) {
-        btn.click();
-        log.push("→ 出品ボタンをクリック");
+      await sleep(500);
+      if (await clickButtonByText("入力内容を確認する")) {
+        ok("確認画面へ遷移");
+        await sleep(2500);
+        if (await clickButtonByText("公開する")) ok("公開");
+        else ng("公開", "ボタンが見つからない");
       } else {
-        log.push("⚠ 出品ボタンが見つかりません（手動でクリックしてください）");
+        ng("確認ボタン", "見つからない");
       }
     }
 
@@ -118,59 +79,180 @@
   }
 
   // ---------------------------------------------------------------------------
-  // DOM ユーティリティ
+  // フィールド入力ユーティリティ
   // ---------------------------------------------------------------------------
 
-  function findFirst(selectors) {
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-    return null;
+  // querySelectorAll の N 番目の要素に値をセット
+  async function setByQueryIndex(selector, index, value) {
+    const els = document.querySelectorAll(selector);
+    if (!els[index]) return false;
+    return setInputValue(els[index], value);
   }
 
-  async function setField(selectors, value) {
-    if (value === undefined || value === null) return false;
-    const el = findFirst(selectors);
+  // textarea に値をセット
+  async function setTextarea(selector, value) {
+    const el = document.querySelector(selector);
     if (!el) return false;
+    return setInputValue(el, value);
+  }
 
-    if (el.tagName === "SELECT") {
-      // セレクト: ラベル一致を優先
-      const opts = Array.from(el.options);
-      const match = opts.find(
-        (o) => o.text.trim() === String(value).trim() || o.value === value,
-      );
-      if (match) {
-        el.value = match.value;
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        return true;
+  // ラベルテキストを含む要素の近くにある input に値をセット
+  async function setFieldByLabelText(labelText, value) {
+    // label, th, dt, .bmm-c-summary__ttl などテキストを持つ要素を全走査
+    const candidates = document.querySelectorAll(
+      'label, th, dt, .bmm-c-summary__ttl, .bmm-c-form__label, [class*="label"]',
+    );
+    for (const label of candidates) {
+      if (!label.textContent.includes(labelText)) continue;
+      // 祖先要素を順に辿って input を探す
+      let el = label.parentElement;
+      for (let i = 0; i < 5; i++) {
+        if (!el) break;
+        const input = el.querySelector('input[type="text"], input[type="number"]');
+        if (input) return setInputValue(input, value);
+        el = el.parentElement;
       }
-      return false;
+    }
+    return false;
+  }
+
+  // ブランド: 8 番目の input に入力 → サジェストをクリック
+  async function setBrand(brandName) {
+    const inputs = document.querySelectorAll("input");
+    const brandInput = inputs[7];
+    if (!brandInput) return false;
+
+    brandInput.focus();
+    brandInput.value = brandName;
+    brandInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(800);
+
+    // サジェストの先頭候補をクリック
+    const suggestion = document.querySelector(".bmm-c-suggest__option--selectable");
+    if (suggestion) {
+      suggestion.click();
+      return true;
+    }
+    // サジェストが出なくても入力値を維持して続行
+    return true;
+  }
+
+  // 色タブを開いて React Select で色を選択
+  async function setColorTab(color) {
+    // 「色」タブをクリック
+    for (const tab of document.querySelectorAll('[role="tab"]')) {
+      if (tab.textContent.trim() === "色") {
+        tab.click();
+        await sleep(500);
+        break;
+      }
+    }
+    const panel = document.querySelector("#react-tabs-1");
+    if (!panel) return false;
+    const select = panel.querySelector(".Select");
+    return select ? reactSelectSet(select, color) : false;
+  }
+
+  // React Select コンポーネントを操作する（クリック → 入力 → 候補選択）
+  async function reactSelectSet(container, value) {
+    // コントロール部分をクリックして開く
+    const control = container.querySelector(
+      ".Select-control, .select__control, [class*='-control']",
+    );
+    if (!control) return false;
+    control.click();
+    await sleep(400);
+
+    // 検索 input を探してタイプ
+    const searchInput = container.querySelector(
+      '.Select-input input, input[role="combobox"], input[aria-autocomplete="list"]',
+    );
+    if (searchInput) {
+      searchInput.value = value;
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(600);
     }
 
-    // text / textarea
+    // 候補の先頭をクリック
+    const option = document.querySelector(
+      ".Select-option, [class*='-option']:not([class*='disabled'])",
+    );
+    if (option) {
+      option.click();
+      return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 画像アップロード（BUYMA 画像 API 経由）
+  // ---------------------------------------------------------------------------
+
+  async function uploadImages(imageUrls) {
+    const csrfToken =
+      document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
+
+    let count = 0;
+    for (const url of imageUrls.slice(0, 5)) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        const ext = (blob.type.split("/")[1] || "jpg").replace(/;.*/, "");
+
+        const formData = new FormData();
+        formData.append("item_image[image]", blob, `image_${count + 1}.${ext}`);
+
+        const uploadRes = await fetch("https://www.buyma.com/rorapi/item_image.json", {
+          method: "POST",
+          headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+          body: formData,
+          credentials: "include",
+        });
+
+        if (!uploadRes.ok) throw new Error(`HTTP ${uploadRes.status}`);
+        count++;
+        await sleep(600); // 連続アップロード制御
+      } catch (e) {
+        console.warn("画像アップロード失敗:", url, e.message);
+      }
+    }
+    return count;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 共通ユーティリティ
+  // ---------------------------------------------------------------------------
+
+  function setInputValue(el, value) {
     el.focus();
-    el.value = String(value);
+    // React の合成イベントに対応するため nativeInputValueSetter を使う
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (nativeSetter) {
+      nativeSetter.call(el, String(value));
+    } else {
+      el.value = String(value);
+    }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.blur();
     return true;
   }
 
-  async function uploadImagesFromUrls(urls) {
-    const fileInput = findFirst(SELECTORS.imageInput);
-    if (!fileInput) throw new Error("画像アップロード input が見つからない");
-
-    const dt = new DataTransfer();
-    for (let i = 0; i < urls.length; i++) {
-      const res = await fetch(urls[i]);
-      if (!res.ok) continue;
-      const blob = await res.blob();
-      const ext = (blob.type.split("/")[1] || "jpg").split(";")[0];
-      const file = new File([blob], `image_${i + 1}.${ext}`, { type: blob.type });
-      dt.items.add(file);
+  async function clickButtonByText(text) {
+    for (const btn of document.querySelectorAll("button")) {
+      if (btn.textContent.trim() === text) {
+        btn.click();
+        return true;
+      }
     }
-    fileInput.files = dt.files;
-    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    return false;
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 })();

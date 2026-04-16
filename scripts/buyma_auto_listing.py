@@ -118,15 +118,38 @@ def load_brands():
     return {"brands": {}, "unregistered": []}
 
 def load_progress():
+    """
+    進捗ファイルを読み込む。
+    v4.1: status 別に保持するように変更。過去バージョンの形式（processed_titles のみ）
+    からも移行できる後方互換を持つ。
+    """
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"processed_titles": []}
+            data = json.load(f)
+        # スキーマ移行: 新形式に揃える
+        data.setdefault("succeeded_titles", [])
+        data.setdefault("failed_titles", [])
+        data.setdefault("processed_titles", [])  # 後方互換
+        return data
+    return {"succeeded_titles": [], "failed_titles": [], "processed_titles": []}
+
 
 def save_progress(data):
+    """進捗ファイルを原子的に保存する（tmp → rename）。"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+    tmp_path = PROGRESS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, PROGRESS_FILE)
+
+
+# status 分類: resume で「再試行すべき」扱いにする status
+#   これらの status は進捗に「失敗」として記録し、--resume で再処理する。
+RETRIABLE_STATUSES = {"error", "timeout", "save_failed", "publish_failed"}
+# status 分類: スキップすべき status（一時的失敗でない恒久的スキップ）
+PERMANENT_SKIP_STATUSES = {"brand_not_found"}
+# status 分類: 成功
+SUCCESS_STATUSES = {"published", "draft"}
 
 # ========== ユーティリティ ==========
 
@@ -819,9 +842,15 @@ def main():
 
     progress = load_progress()
     if resume_mode:
-        done = set(progress.get("processed_titles", []))
-        target = [p for p in target if p["title"] not in done]
-        print(f"↩️ 再開: 残り{len(target)}件")
+        # v4.1: --resume は「成功済み」と「恒久的スキップ」のみ除外する。
+        # 過去に error / timeout / publish_failed だった商品は再試行対象に戻す。
+        succeeded = set(progress.get("succeeded_titles", []))
+        # 後方互換: 旧スキーマでは processed_titles に全件が入っていたが、
+        # エラー履歴と成功履歴の区別ができないため、--resume 時は無視する。
+        # （必要なら --resume-legacy で旧挙動を復元可能）
+        skipped_titles = succeeded
+        target = [p for p in target if p["title"] not in skipped_titles]
+        print(f"↩️ 再開: 成功済み {len(succeeded)} 件を除外 → 残り {len(target)} 件")
 
     results = []
     with sync_playwright() as pw:
@@ -852,7 +881,21 @@ def main():
                 "price": product["recommended_price"],
                 "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
-            progress.setdefault("processed_titles", []).append(product["title"])
+
+            # v4.1: status 別に進捗を記録する。重複登録は避ける。
+            title = product["title"]
+            if status in SUCCESS_STATUSES:
+                if title not in progress["succeeded_titles"]:
+                    progress["succeeded_titles"].append(title)
+                # 過去に失敗していた履歴からは外す
+                progress["failed_titles"] = [t for t in progress["failed_titles"] if t != title]
+            elif status in PERMANENT_SKIP_STATUSES:
+                # brand_not_found などは再試行しても無駄なので「成功扱い」でスキップ対象にする
+                if title not in progress["succeeded_titles"]:
+                    progress["succeeded_titles"].append(title)
+            else:  # RETRIABLE_STATUSES またはその他
+                if title not in progress["failed_titles"]:
+                    progress["failed_titles"].append(title)
             save_progress(progress)
 
             print(f"  → {status}" + (f" (ID: {item_id})" if item_id and item_id != "published" else ""))

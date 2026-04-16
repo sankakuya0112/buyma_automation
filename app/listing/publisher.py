@@ -39,12 +39,16 @@ class ListingPublisher:
         処理フロー:
             1. ListingDraft 生成
             2. BUYMA 出品フォームへ移動
-            3. 基本情報・説明文・価格を入力
-            4. 画像アップロード（ページ遷移直後に実行）
-            5. 出品オプション設定
-            6. 公開 or 下書き保存
-            7. listings テーブルに記録
-            8. 次の出品まで待機
+            3. 画像アップロード（ページ遷移直後に実行）
+            4. タイトル・説明文・価格・ブランド・色を入力
+            5. 公開 or 下書き保存
+            6. listings テーブルに記録
+            7. 次の出品まで待機
+
+        NOTE: 現在の BUYMAClient は最小構成（タイトル/説明/価格/ブランド/色）
+        までをサポート。カテゴリ・SKU・買付地・購入期限・関税・サイズ・在庫
+        などの詳細項目は scripts/buyma_auto_listing.py v4 で実装済みの
+        JS ロジックを順次移植する予定。
 
         Args:
             session: SQLAlchemy セッション
@@ -72,35 +76,29 @@ class ListingPublisher:
             self.client.navigate_to_listing_form()
             self.page.wait_for_load_state("networkidle")
 
-            # Step 3: 基本情報入力
-            if draft.brand:
-                self.client.set_field("brand", draft.brand)
-            self.client.set_field("title", draft.title)
-            if draft.category:
-                self.client.set_field("category", draft.category)
-            if draft.sku:
-                self.client.set_field("sku", draft.sku)
-
-            # Step 4: 説明文入力
-            self.client.set_field("description", draft.description)
-
-            # Step 5: 価格入力
-            self.client.set_field("price", str(int(draft.price_jpy)))
-
-            # Step 6: 画像アップロード（ページ遷移直後に実行）
+            # Step 3: 画像アップロード（ページ遷移直後に実行する必要がある）
+            # BUYMA 側の挙動で、画像をテキスト入力より後に送ると 403 を返す
+            # ケースがあるため、最初に実行する。
             if draft.image_urls:
                 self.client.upload_images(draft.image_urls)
 
-            # Step 7: 出品オプション設定
-            self.client.set_listing_options(
-                buyable=True,
-                purchase_limit_days=90,
-                tax_included=True,
-                buy_location="Italy",
-                ship_from="Japan",
-            )
+            # Step 4: 基本情報入力（BUYMAClient の実在メソッドに揃える）
+            self.client.set_title(draft.title)
+            self.client.set_description(draft.description)
+            self.client.set_price(int(draft.price_jpy))
 
-            # Step 8: 公開 or 下書き保存
+            if draft.brand:
+                self.client.set_brand(draft.brand)
+            if draft.color:
+                self.client.set_color(draft.color)
+
+            # NOTE: カテゴリ・SKU・買付地・購入期限・関税などの詳細項目は
+            # `scripts/buyma_auto_listing.py` v4 で実装済みの JS ロジックを
+            # BUYMAClient に今後移植する。現時点では最小構成で下書き保存
+            # が通ることを優先し、公開運用時は scripts/buyma_auto_listing.py
+            # を使うこと（PROJECT_STATUS.md 参照）。
+
+            # Step 5: 公開 or 下書き保存
             item_id: Optional[str]
             if draft_only:
                 self.client.save_as_draft()
@@ -110,7 +108,7 @@ class ListingPublisher:
                 item_id = self.client.publish()
                 logger.info("Published: product %d → item_id %s", product.id, item_id)
 
-            # Step 9: DB に記録
+            # Step 6: DB に記録
             listing = Listing(
                 ranked_product_id=ranked_product_id,
                 buyma_item_id=item_id,

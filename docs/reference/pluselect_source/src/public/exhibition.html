@@ -1,0 +1,125 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>自動出品ツール</title>
+  <link rel="stylesheet" type="text/css" href="../css/table.css">
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap-theme.min.css" integrity="sha384-6pzBo3FDv/PJ8r2KRkGHifhEocL+1X2rVCTTkUfGk7/0pbek5mMa1upzvWbrUbOZ" crossorigin="anonymous">
+    
+</head>
+
+<body>
+  <header id="header">
+    <div align="center">
+      <ul id="gNavi">
+        <li><a id="exhibition">自動出品ツール</a></li>
+        <li><a id="buymanager">BuyManager</a></li>
+        <li><a id="scraper">商品リスト自動作成ツール</a></li>
+        <li><a id="imager">自動画像加工ツール</a></li>
+      </ul>
+      <h3>自動出品ツール</h3>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">
+        <input type="text" id="account_name" placeholder="アカウント名を入力" size="30" maxlength="100">
+        <button id="make-account-dir">アカウントフォルダ新規作成</button>
+        <button onclick=gethelp('account_name')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">
+        <button id="choice_dir">アカウントフォルダを開く</button>
+        <button onclick=gethelp('choice_dir')>？</button>
+        <input 
+          placeholder="フォルダが選択されていません"
+          type="text" 
+          id="buyma_account_dir" 
+          size=60 
+          value=""
+          >
+        <a id="csv_name">
+          <font color="red">CSVファイルが選択されていません</font>
+        </a>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-2">
+        <b>重複チェック：</b>
+        <select id="duplicate">
+          <option value="on">ON</option>
+          <option value="off">OFF</option>
+        </select>
+        <button onclick=gethelp('duplicate')>？</button>
+      </div>
+      <div class="col-sm-2">
+        <b> 日：</b>
+        <input type="text" id="day_score" size="10" value="" maxlength="20">
+        <button onclick=gethelp('day_score')>？</button>
+      </div>
+      <div class="col-sm-2">
+        <b> 時：</b>
+        <input type="text" id="hour_score" size="10" value="" maxlength="20">
+        <button onclick=gethelp('hour_score')>？</button>
+      </div>
+      <div class="col-sm-6">
+        <b>アクセスコード：</b>
+        <input type="text" id="cookie" size="18" maxlength="100000">
+        <button onclick=gethelp('cookie')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-2">
+        <b>下書き：</b>
+        <select id="draft">
+          <option value="off">OFF</option>
+          <option value="on">ON</option>
+        </select>
+        <button onclick=gethelp('draft')>？</button>
+      </div>
+      <div class="col-sm-2">
+        <b>買付先メモ：</b>
+        <select id="url_memo">
+          <option value="on">ON</option>
+          <option value="off">OFF</option>
+        </select>
+        <button onclick=gethelp('url_memo')>？</button>
+      </div>
+      <div class="col-sm-2">
+        <b>CSVメモ：</b>
+        <select id="csv_memo">
+          <option value="on">ON</option>
+          <option value="off">OFF</option>
+        </select>
+        <button onclick=gethelp('csv_memo')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 出品間隔：</b>
+        <input type="text" id="wait_time" size="10" value="" maxlength="20">
+        <button onclick=gethelp('wait_time')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <input type="submit" id="start-exhibition" value="出品開始">
+      </div>
+    </div>
+  </header>
+
+  <div id="text-data" class="csv-table" style="white-space:nowrap;"></div>
+
+  <footer class="wide" id="footer">
+    <div id="logs"></div>
+  </footer>
+
+  <script src="../views/App_exhibition.js"></script>
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+</body>
+
+</html>

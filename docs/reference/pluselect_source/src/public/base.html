@@ -1,0 +1,110 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>BASE自動システム</title>
+  <link rel="stylesheet" type="text/css" href="../css/table.css">
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap-theme.min.css" integrity="sha384-6pzBo3FDv/PJ8r2KRkGHifhEocL+1X2rVCTTkUfGk7/0pbek5mMa1upzvWbrUbOZ" crossorigin="anonymous">
+  
+  <script>
+    window.jQuery = window.$ = require('../js/jquery.min.js');
+  </script>
+  <script>
+    $(document).ready(function () {
+      $("#adv_btn").on("click", function () {
+        $("#adv_prm").slideToggle();
+      });
+    });
+  </script>
+</head>
+
+<body>
+  <header id="header">
+    <div align="center">
+      <ul id="gNavi">
+        <li><a id="exhibition">自動出品ツール</a></li>
+        <li><a id="buymanager">BuyManager</a></li>
+        <li><a id="scraper">商品リスト自動作成ツール</a></li>
+        <li><a id="imager">自動画像加工ツール</a></li>
+      </ul>
+      <h3>BASE自動システム</h3>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <button id="select-dir">保存フォルダを開く</button>
+        <button onclick=gethelp('open_dir')>？</button>
+        <input 
+          placeholder="フォルダが選択されていません"
+          type="text" 
+          id="data_dir" 
+          size=50 
+          value=""
+          >
+      </div>
+      <div class="col-sm-6">
+        <a id="dir-button"></a>
+        <a id="dir-status"></a>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">
+        <input 
+        placeholder="メールアドレスを入力"
+        type="text" 
+        id="email" 
+        size=30 
+        value=""
+        >
+      </div>
+      <div class="col-sm-3">
+        <input 
+          placeholder="パスワードを入力"
+          type="password" 
+          id="password" 
+          size=30 
+          value=""
+        >
+      </div>
+      <div class="col-sm-3">
+        <input 
+          placeholder="公開状態を設定"
+          type="onoff" 
+          id="onoff" 
+          size=30 
+          value=""
+        >
+      </div>
+      <div class="col-sm-3">
+        <select id="edit_mode">
+          <option value="base_image">画像フォルダ編集</option>
+          <option value="base_csv">CSVを編集</option>
+        </select>
+        <button onclick=gethelp('edit_mode')>？</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-sm-3">
+        <input
+          type="submit"
+          id="base-main"
+          value="編集実行"
+        >
+        <button onclick=gethelp('base_main')>？</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="logs" class="manager-logs"></div>
+
+  <script src="../views/App_base.js"></script>
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+</body>
+
+</html>

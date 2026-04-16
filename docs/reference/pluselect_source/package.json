@@ -1,0 +1,50 @@
+{
+  "name": "PLUSELECT_TOOL",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/main.js",
+  "description": "sample",
+  "dependencies": {
+    "async": "^3.1.1",
+    "csv-parse": "4.6.5",
+    "csv-writer": "^1.6.0",
+    "dateformat": "^4.3.1",
+    "dotenv": "^8.2.0",
+    "electron-progressbar": "^1.2.0",
+    "encoding-japanese": "1.0.30",
+    "make-dir": "3.0.0",
+    "mkdirp": "^1.0.3",
+    "node-unzip-2": "^0.2.8",
+    "python-shell": "^1.0.8",
+    "request": "^2.88.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-packager .",
+    "build-mac": "npx electron-packager . --overwrite --platform=darwin --arch=x64 --icon=src/img/icon.icns --ignore=^/.scrapy --ignore=^/.vscode --ignore=^/python_scripts_ --ignore=^/scraping_ --ignore=^/README.md --ignore=^/locker.py --ignore=^/.gitignore --ignore=^/.gitattributes",
+    "build-windows": "npx electron-packager . --overwrite --platform=win32 --arch=x64 --ignore=^/.scrapy --ignore=^/.vscode --ignore=^/python_scripts_ --ignore=^/scraping_ --ignore=^/README.md --ignore=^/locker.py --ignore=^/.gitignore --ignore=^/.gitattributes",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": "react-app"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "devtron": "^1.4.0",
+    "electron": "7.1.0",
+    "electron-builder": "^22.9.1",
+    "electron-reload": "^1.5.0"
+  }
+}

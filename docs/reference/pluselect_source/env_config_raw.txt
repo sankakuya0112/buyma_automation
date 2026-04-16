@@ -1,0 +1,7 @@
+scraper_conf_list=sex,nocategory,translate_name,nobrand,no_ban_brand,currency,max_page,csv_prm,edit_name,max_price,vatoff_late,vip_late,delivery_price,profit_late,duty,duty_pattern,size_variation,buyplace,sendplace,buyma_shop,tag,thema,season,delivery,deadline,stock,memo,switch
+imager_conf_list=edit_mode,master_dir,choiced_dir,scriptPath,logo_size,item_name,item_size,item_move_x,item_move_y,bg_size,back_move_x,back_move_y,logo_move_x,logo_move_y,bg_num,bg_image,img_effect,img_frame,img_logo,image_diff,addimg_1_name,addimg_1_size,addimg_1_x,addimg_1_y,addimg_2_name,addimg_2_size,addimg_2_x,addimg_2_y,addimg_3_name,addimg_3_size,addimg_3_x,addimg_3_y,electron_dir
+manager_conf_list=days,access_prm,want_prm,cart_prm,price_prm,maxprice_prm,date_prm
+exhibition_conf_list=day_score,hour_score,cookie,draft,url_memo,csv_memo,duplicate,wait_time
+base_conf_list=edit_mode,master_dir,choiced_dir
+MODE=dev
+【"dev", "pro"】

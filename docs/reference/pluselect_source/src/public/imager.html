@@ -1,0 +1,275 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>自動画像加工ツール</title>
+  <link rel="stylesheet" type="text/css" href="../css/table.css">
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap-theme.min.css" integrity="sha384-6pzBo3FDv/PJ8r2KRkGHifhEocL+1X2rVCTTkUfGk7/0pbek5mMa1upzvWbrUbOZ" crossorigin="anonymous">
+  
+  <script>
+    window.jQuery = window.$ = require('../js/jquery.min.js');
+  </script>
+  <script>
+    $(document).ready(function () {
+      $("#adv_btn").on("click", function () {
+        $("#adv_prm").slideToggle();
+      });
+    });
+  </script>
+</head>
+
+<body>
+  <header id="header">
+    <div align="center">
+      <ul id="gNavi">
+        <li><a id="exhibition">自動出品ツール</a></li>
+        <li><a id="buymanager">BuyManager</a></li>
+        <li><a id="scraper">商品リスト自動作成ツール</a></li>
+        <li><a id="imager">自動画像加工ツール</a></li>
+      </ul>
+      <h3>自動画像加工ツール</h3>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <button id="select-dir">保存フォルダを開く</button>
+        <button onclick=gethelp('open_dir')>？</button>
+        <input 
+          placeholder="フォルダが選択されていません"
+          type="text" 
+          id="data_dir" 
+          size=50 
+          value=""
+          >
+      </div>
+      <div class="col-sm-6">
+        <a id="dir-button"></a>
+        <a id="dir-status"></a>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">
+        <input 
+        placeholder="メールアドレスを入力"
+        type="text" 
+        id="email" 
+        size=30 
+        value=""
+        >
+      </div>
+      <div class="col-sm-3">
+        <input 
+          placeholder="パスワードを入力"
+          type="password" 
+          id="password" 
+          size=30 
+          value=""
+        >
+      </div>
+      <div class="col-sm-3">
+        <select id="edit_mode">
+          <option value="Test">テスト編集</option>
+          <option value="Main">全て編集</option>
+          <option value="Transmission">メイン画像の透過</option>
+          <option value="AllLogo">全ての画像にロゴを追加</option>
+        </select>
+        <button onclick=gethelp('edit_mode')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <input
+          type="submit"
+          id="imager-main"
+          value="編集実行"
+        >
+        <button onclick=gethelp('imager_main')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">
+        <input 
+          placeholder="新規カテゴリを入力"
+          type="text" 
+          id="img_new_category" 
+          size=30 
+          value=""
+        >
+        <button onclick=gethelp('img_new_category')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <select id="img_category" value=""></select>
+        <input
+          type="button"
+          value="適用"
+          onclick="choiceCat()"
+        >
+        <button onclick=gethelp('img_category')>？</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="row">
+      <div class="col-sm-12">　フレームPATH：
+        <input type="text" id="img_frame" size=130 value="">
+        <button onclick=gethelp('img_frame')>？</button>
+        <button id="select-frame">ファイルを開く</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">エフェクトPATH：
+        <input type="text" id="img_effect" size=130 value="">
+        <button onclick=gethelp('img_effect')>？</button>
+        <button id="select-effect">ファイルを開く</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">　　　ロゴPATH：
+        <input type="text" id="img_logo" size=130 value="">
+        <button onclick=gethelp('img_logo')>？</button>
+        <button id="select-logo">ファイルを開く</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">　指定背景PATH：
+        <input type="text" id="bg_image" size=130 value="">
+        <button onclick=gethelp('bg_image')>？</button>  
+        <button id="select-bg">ファイルを開く</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">　背景画像番号：
+        <input type="text" id="bg_num" size=5 value="">
+        <button onclick=gethelp('bg_num')>？</button>
+      </div>
+      <div class="col-sm-3">　　　背景画像サイズ：
+        <input type="text" id="bg_size" size=5 value="">
+        <button onclick=gethelp('bg_size')>？</button>
+      </div>
+      <div class="col-sm-3">　　　背景画像縦：
+        <input type="text" id="back_move_y" size=5 value="">
+        <button onclick=gethelp('back_move_y')>？</button>
+      </div>
+      <div class="col-sm-3">　　　背景画像横：
+        <input type="text" id="back_move_x" size=5 value="">
+        <button onclick=gethelp('back_move_x')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">　　　　透明度：
+        <input type="text" id="image_diff" size=5 value="">
+        <button onclick=gethelp('image_diff')>？</button>  
+      </div>
+      <div class="col-sm-3">　　　　　ロゴサイズ：
+        <input type="text" id="logo_size" size=5 value="">
+        <button onclick=gethelp('logo_size')>？</button>  
+      </div>
+      <div class="col-sm-3">　　　　　ロゴ縦：
+        <input type="text" id="logo_move_y" size=5 value="">
+        <button onclick=gethelp('logo_move_y')>？</button>  
+      </div>
+      <div class="col-sm-3">　　　　　ロゴ横：
+        <input type="text" id="logo_move_x" size=5 value="">
+        <button onclick=gethelp('logo_move_x')>？</button>  
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">メイン商品画像：
+        <input type="text" id="item_name" size=5 value="">
+        <button onclick=gethelp('item_name')>？</button>  
+      </div>
+      <div class="col-sm-3">　　メイン画像サイズ：
+        <input type="text" id="item_size" size=5 value="">
+        <button onclick=gethelp('item_size')>？</button>
+      </div>
+      <div class="col-sm-3">　　メイン画像縦：
+        <input type="text" id="item_move_y" size=5 value="">
+        <button onclick=gethelp('item_move_y')>？</button>
+      </div>
+      <div class="col-sm-3">　　メイン画像横：
+        <input type="text" id="item_move_x" size=5 value="">
+        <button onclick=gethelp('item_move_x')>？</button>  
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">追加商品画像１：
+        <input type="text" id="addimg_1_name" size=5 value="">
+        <button onclick=gethelp('addimg_1_name')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像１サイズ：
+        <input type="text" id="addimg_1_size" size=5 value="">
+        <button onclick=gethelp('addimg_1_size')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像１縦：
+        <input type="text" id="addimg_1_y" size=5 value="">
+        <button onclick=gethelp('addimg_1_y')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像１横：
+        <input type="text" id="addimg_1_x" size=5 value="">
+        <button onclick=gethelp('addimg_1_x')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">追加商品画像２：
+        <input type="text" id="addimg_2_name" size=5 value="">
+        <button onclick=gethelp('addimg_2_name')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像２サイズ：
+        <input type="text" id="addimg_2_size" size=5 value="">
+        <button onclick=gethelp('addimg_2_size')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像２縦：
+        <input type="text" id="addimg_2_y" size=5 value="">
+        <button onclick=gethelp('addimg_2_y')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像２横：
+        <input type="text" id="addimg_2_x" size=5 value="">
+        <button onclick=gethelp('addimg_2_x')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">追加商品画像３：
+        <input type="text" id="addimg_3_name" size=5 value="">
+        <button onclick=gethelp('addimg_3_name')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像３サイズ：
+        <input type="text" id="addimg_3_size" size=5 value="">
+        <button onclick=gethelp('addimg_3_size')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像３縦：
+        <input type="text" id="addimg_3_y" size=5 value="">
+        <button onclick=gethelp('addimg_3_y')>？</button>
+      </div>
+      <div class="col-sm-3">追加商品画像３横：
+        <input type="text" id="addimg_3_x" size=5 value="">
+        <button onclick=gethelp('addimg_3_x')>？</button>
+      </div>
+    </div>
+  </main>
+  <div class="images" id="images">
+  </div>
+
+  <footer id="footer">
+    <div id="logs"></div>
+  </footer>
+
+  <script src="../views/App_imager.js"></script>
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+</body>
+
+</html>

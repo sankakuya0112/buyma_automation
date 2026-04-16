@@ -1,0 +1,103 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>在庫確認システム</title>
+  <link rel="stylesheet" type="text/css" href="../css/table.css">
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap-theme.min.css" integrity="sha384-6pzBo3FDv/PJ8r2KRkGHifhEocL+1X2rVCTTkUfGk7/0pbek5mMa1upzvWbrUbOZ" crossorigin="anonymous">
+    
+</head>
+
+<body>
+  <header id="settings">
+    <div align="center">
+      <ul id="gNavi">
+        <li><a id="exhibition">自動出品ツール</a></li>
+        <li><a id="buymanager">BuyManager</a></li>
+        <li><a id="scraper">商品リスト自動作成ツール</a></li>
+        <li><a id="imager">自動画像加工ツール</a></li>
+      </ul>
+      <h3>在庫管理システム</h3>
+      <!-- Using node <script>document.write(process.versions.node)</script>,
+      Chrome <script>document.write(process.versions.chrome)</script>,
+      and Electron <script>document.write(process.versions.electron)</script>. -->
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <button id="select-dir">保存フォルダを開く</button>
+        <button onclick=gethelp('open_dir')>？</button>
+        <input 
+          placeholder="フォルダが選択されていません"
+          type="text" 
+          id="buyma_dir" 
+          size=60 
+          value=""
+          >
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <input placeholder="メールアドレス" type="text" id="email" size="50" maxlength="1000" value="">
+      </div>
+      <div class="col-sm-4">
+        <input placeholder="パスワード" type="password" id="password" size="30" maxlength="1000" value="">
+      </div>
+      <div class="col-sm-2">
+        <input type="submit" id="sql-login" value="認証開始">
+        <a id="sql-login-status">
+          <font color="red">認証されていません</font>
+        </a>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <input placeholder="商品リストCSV" type="text" id="csv_path" size="50" maxlength="1000" value=''>
+        <button onclick=gethelp('csv_path')>？</button>
+        <button id="select-url-lists">ファイルを開く</button>
+      </div>
+      <div class="col-sm-6">
+        <a id="stock-shop-list">ログイン中です！少々お待ちください</a>
+        <a id="start-status">
+          <font color="red">ショップが選択されていません</font>
+        </a>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">
+        <input placeholder="処理を変更 (例: 型番)" type="text" id="switch" size="100" maxlength="1000" value=''>
+        <button onclick=gethelp('switch')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-4">
+        <font color="green">最新出品リスト作成</font>
+        <input type="submit" id="start-create-list" value="作成">
+      </div>
+      <div class="col-sm-4">
+        <font color="green">ショップの在庫をチェックします：</font>
+        <input type="submit" id="start-stockcheck" value="在庫確認開始">
+      </div>
+      <div class="col-sm-4">
+        <font color="green">在庫データをBUYMAに反映します：</font>
+        <input type="submit" id="start-stock-reflect" value="在庫反映">
+      </div>
+    </div>
+  </header>
+
+  <div id="logs" class="manager-logs"></div>
+
+  <script src="../views/App_stockcheck.js"></script>
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+</body>
+
+</html>

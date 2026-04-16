@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BUYMAオートメーション エージェント設計書</title>
+<style>
+  :root {
+    --primary: #1a1a2e;
+    --accent: #e94560;
+    --accent2: #0f3460;
+    --bg: #f8f9fa;
+    --card: #ffffff;
+    --text: #2d3436;
+    --muted: #636e72;
+    --border: #dfe6e9;
+    --green: #00b894;
+    --yellow: #fdcb6e;
+    --blue: #0984e3;
+    --purple: #6c5ce7;
+    --orange: #e17055;
+    --pink: #fd79a8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 48px; }
+  .header h1 { font-size: 28px; color: var(--primary); margin-bottom: 8px; }
+  .header .subtitle { font-size: 15px; color: var(--muted); }
+  .header .version { display: inline-block; background: var(--accent); color: #fff; padding: 3px 12px; border-radius: 12px; font-size: 12px; margin-top: 8px; }
+
+  /* Section */
+  .section { margin-bottom: 48px; }
+  .section h2 { font-size: 20px; color: var(--primary); border-left: 4px solid var(--accent); padding-left: 12px; margin-bottom: 20px; }
+  .section h3 { font-size: 16px; color: var(--accent2); margin: 16px 0 8px; }
+
+  /* Architecture Diagram */
+  .arch-diagram { display: flex; flex-direction: column; gap: 16px; margin: 24px 0; }
+  .arch-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .arch-box { background: var(--card); border-radius: 10px; padding: 16px 20px; min-width: 180px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 2px solid var(--border); position: relative; }
+  .arch-box.active { border-color: var(--green); background: #f0fff4; }
+  .arch-box.planned { border-color: var(--yellow); border-style: dashed; }
+  .arch-box .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .arch-box .name { font-size: 15px; font-weight: bold; margin: 4px 0; }
+  .arch-box .desc { font-size: 12px; color: var(--muted); }
+  .arch-box .status { font-size: 10px; padding: 2px 8px; border-radius: 8px; display: inline-block; margin-top: 6px; }
+  .status-done { background: #d4edda; color: #155724; }
+  .status-next { background: #fff3cd; color: #856404; }
+  .status-future { background: #e2e3e5; color: #383d41; }
+
+  .arrow-down { text-align: center; font-size: 24px; color: var(--muted); }
+
+  /* Agent Cards */
+  .agent-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  .agent-card { background: var(--card); border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); border-left: 5px solid var(--border); }
+  .agent-card.priority-1 { border-left-color: var(--green); }
+  .agent-card.priority-2 { border-left-color: var(--blue); }
+  .agent-card.priority-3 { border-left-color: var(--purple); }
+  .agent-card.priority-4 { border-left-color: var(--orange); }
+
+  .agent-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .agent-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .agent-title { font-size: 17px; font-weight: bold; }
+  .agent-subtitle { font-size: 12px; color: var(--muted); }
+  .priority-badge { font-size: 11px; padding: 2px 10px; border-radius: 10px; margin-left: auto; }
+  .p1 { background: #d4edda; color: #155724; }
+  .p2 { background: #cce5ff; color: #004085; }
+  .p3 { background: #e8daef; color: #4a235a; }
+  .p4 { background: #fdebd0; color: #7e5109; }
+
+  .agent-body { margin-top: 12px; }
+  .agent-body p { font-size: 13px; color: var(--text); margin-bottom: 8px; }
+
+  .spec-table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+  .spec-table th { text-align: left; padding: 6px 10px; background: #f5f6fa; color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .spec-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .spec-table td:first-child { font-weight: 600; white-space: nowrap; width: 140px; }
+
+  .file-list { font-size: 12px; background: #f5f6fa; padding: 10px 14px; border-radius: 6px; font-family: 'SF Mono', 'Consolas', monospace; margin: 8px 0; }
+  .file-list div { padding: 2px 0; }
+  .file-new { color: var(--green); }
+  .file-exists { color: var(--blue); }
+
+  /* Data Flow */
+  .flow-container { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+  .flow-step { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); font-size: 13px; }
+  .flow-num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent2); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0; }
+  .flow-arrow { text-align: center; color: var(--muted); font-size: 16px; }
+
+  /* Roadmap */
+  .roadmap { display: flex; flex-direction: column; gap: 0; margin: 16px 0; }
+  .phase { display: flex; gap: 16px; padding: 20px; border-left: 3px solid var(--border); position: relative; }
+  .phase:last-child { border-left-color: transparent; }
+  .phase::before { content: ''; width: 14px; height: 14px; border-radius: 50%; position: absolute; left: -8.5px; top: 24px; }
+  .phase.done::before { background: var(--green); }
+  .phase.current::before { background: var(--accent); }
+  .phase.next::before { background: var(--yellow); }
+  .phase.future::before { background: var(--border); }
+  .phase-label { font-size: 12px; color: var(--muted); min-width: 100px; }
+  .phase-content { flex: 1; }
+  .phase-title { font-weight: bold; font-size: 14px; }
+  .phase-desc { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  /* Shared Data */
+  .data-card { background: #f5f6fa; border-radius: 8px; padding: 16px; margin: 8px 0; }
+  .data-card h4 { font-size: 13px; color: var(--accent2); margin-bottom: 6px; }
+  .data-card pre { font-size: 11px; font-family: 'SF Mono', 'Consolas', monospace; white-space: pre-wrap; color: var(--text); }
+
+  /* Risk */
+  .risk-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .risk-level { font-size: 11px; padding: 2px 8px; border-radius: 4px; height: fit-content; white-space: nowrap; }
+  .risk-high { background: #f8d7da; color: #721c24; }
+  .risk-med { background: #fff3cd; color: #856404; }
+  .risk-low { background: #d4edda; color: #155724; }
+
+  @media (max-width: 700px) {
+    .arch-row { flex-direction: column; align-items: center; }
+    .agent-header { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>BUYMA自動出品システム エージェント設計書</h1>
+  <div class="subtitle">Claude Code で構築するマルチエージェント アーキテクチャ</div>
+  <div class="version">v1.0 / 2026-04-12</div>
+</div>
+
+<!-- ===== 1. System Overview ===== -->
+<div class="section">
+  <h2>1. システム全体像</h2>
+  <p style="font-size:14px; margin-bottom:16px;">6つの専門エージェントが連携し、「商品発見→価格決定→出品→在庫管理→顧客対応→分析改善」の全サイクルを自動化します。</p>
+
+  <div class="arch-diagram">
+    <!-- Layer 1: Input -->
+    <div class="arch-row">
+      <div class="arch-box active">
+        <div class="label">Agent 1</div>
+        <div class="name">Scout</div>
+        <div class="desc">仕入れ先を巡回して<br>利益商品を発見</div>
+        <div class="status status-next">次に実装</div>
+      </div>
+      <div class="arch-box active">
+        <div class="label">Agent 2</div>
+        <div class="name">Analyst</div>
+        <div class="desc">BUYMA競合を分析して<br>最適価格を決定</div>
+        <div class="status status-next">次に実装</div>
+      </div>
+    </div>
+
+    <div class="arrow-down">▼</div>
+
+    <!-- Layer 2: Core -->
+    <div class="arch-row">
+      <div class="arch-box active" style="border-color: var(--green); min-width: 240px;">
+        <div class="label">Agent 3 ★ 現在稼働中</div>
+        <div class="name">Lister</div>
+        <div class="desc">スクレイピング → 利益計算 → BUYMA出品</div>
+        <div class="status status-done">v4 稼働中</div>
+      </div>
+    </div>
+
+    <div class="arrow-down">▼</div>
+
+    <!-- Layer 3: Post-listing -->
+    <div class="arch-row">
+      <div class="arch-box planned">
+        <div class="label">Agent 4</div>
+        <div class="name">Monitor</div>
+        <div class="desc">在庫切れ検知<br>自動出品取り下げ</div>
+        <div class="status status-next">優先度 高</div>
+      </div>
+      <div class="arch-box planned">
+        <div class="label">Agent 5</div>
+        <div class="name">Support</div>
+        <div class="desc">問い合わせ<br>自動回答下書き</div>
+        <div class="status status-future">将来</div>
+      </div>
+      <div class="arch-box planned">
+        <div class="label">Agent 6</div>
+        <div class="name">Reporter</div>
+        <div class="desc">売上・利益分析<br>戦略レポート</div>
+        <div class="status status-future">将来</div>
+      </div>
+    </div>
+
+    <div class="arrow-down">▼</div>
+
+    <!-- Layer 4: Shared -->
+    <div class="arch-row">
+      <div class="arch-box" style="min-width: 400px; background: #f5f6fa;">
+        <div class="label">共有データストア</div>
+        <div class="name">data/ + outputs/</div>
+        <div class="desc">categories.json / brands.json / 各種CSV / config.json</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 2. Agent Details ===== -->
+<div class="section">
+  <h2>2. 各エージェントの詳細仕様</h2>
+
+  <!-- Agent 3: Lister (Current) -->
+  <div class="agent-card priority-1">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#d4edda;">📦</div>
+      <div>
+        <div class="agent-title">Agent 3: Lister（出品エージェント）</div>
+        <div class="agent-subtitle">現在のシステム — v4 プロショッパー仕様</div>
+      </div>
+      <div class="priority-badge p1">稼働中</div>
+    </div>
+    <div class="agent-body">
+      <p>BaseBluのセール商品をスクレイピングし、利益計算後にBUYMAへ自動出品する。現在の全パイプラインがこのエージェントに相当。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>実行コマンド</td><td><code>python3 scripts/run_all.py</code></td></tr>
+        <tr><td>処理フロー</td><td>スクレイピング → 利益計算 → ブランドID取得 → BUYMA出品</td></tr>
+        <tr><td>出品仕様</td><td>商品説明和訳 / 品番自動取得 / 買付可 / 90日期限 / イタリア買付 / 関税込</td></tr>
+        <tr><td>安全装置</td><td>8〜15秒のランダム待機 / リトライ機能 / 進捗保存で再開可能</td></tr>
+        <tr><td>出力</td><td>outputs/reports/*_auto_listing_results.csv</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-exists">scripts/run_all.py ← 一括実行</div>
+        <div class="file-exists">scripts/baseblu_sales_to_csv.py ← Step1</div>
+        <div class="file-exists">scripts/filter_baseblu_profitable.py ← Step2</div>
+        <div class="file-exists">scripts/buyma_brand_lookup.py ← Step3</div>
+        <div class="file-exists">scripts/buyma_auto_listing.py ← Step4</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent 4: Monitor -->
+  <div class="agent-card priority-2">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#cce5ff;">👁️</div>
+      <div>
+        <div class="agent-title">Agent 4: Monitor（在庫監視エージェント）</div>
+        <div class="agent-subtitle">出品中の商品が仕入れ先でまだ買えるかを監視</div>
+      </div>
+      <div class="priority-badge p2">次に実装</div>
+    </div>
+    <div class="agent-body">
+      <p><strong>なぜ必要か：</strong>注文が入ったのに仕入れ先で売り切れていると、キャンセル→評価低下→アカウント停止のリスクがある。これを防ぐのが最優先。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>実行頻度</td><td>1日1〜2回（朝・夕）をスケジュール実行</td></tr>
+        <tr><td>処理内容</td><td>① 出品済みリストを読み込み<br>② 各商品の仕入れ先URLにアクセスして在庫確認<br>③ 売り切れ → BUYMAの該当出品を「出品停止」に変更<br>④ 再入荷 → 停止中の商品を「出品再開」</td></tr>
+        <tr><td>入力</td><td>outputs/reports/*_auto_listing_results.csv（出品済み商品リスト）</td></tr>
+        <tr><td>出力</td><td>outputs/reports/*_stock_check.csv（在庫チェック結果）</td></tr>
+        <tr><td>通知</td><td>売り切れ発見時にログ出力（将来的にメール/LINE通知）</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-new">scripts/stock_monitor.py ← 新規作成</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent 1: Scout -->
+  <div class="agent-card priority-2">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#cce5ff;">🔍</div>
+      <div>
+        <div class="agent-title">Agent 1: Scout（リサーチエージェント）</div>
+        <div class="agent-subtitle">複数の仕入れ先から利益商品を自動発見</div>
+      </div>
+      <div class="priority-badge p2">次に実装</div>
+    </div>
+    <div class="agent-body">
+      <p><strong>なぜ必要か：</strong>現在BaseBlu1サイトだけ。仕入れ先が増えれば商品数が増え、売上が伸びる。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>対応サイト</td><td>BaseBlu（対応済み）→ YOOX → Farfetch → SSENSE → Mytheresa</td></tr>
+        <tr><td>設計方針</td><td>サイトごとにスクレイパーモジュールを作成し、共通フォーマットのCSVに統一出力</td></tr>
+        <tr><td>処理内容</td><td>① 各サイトのセール/アウトレットページを巡回<br>② 商品データ（名前・価格・画像・説明文・SKU）を統一フォーマットで抽出<br>③ 利益計算して基準以上の商品だけをCSVに保存</td></tr>
+        <tr><td>出力</td><td>outputs/reports/*_{site}_profitable_products.csv</td></tr>
+        <tr><td>拡張方法</td><td>data/sources.json に新サイトの設定を追加するだけ</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-new">scripts/scrapers/base_scraper.py ← 共通基底クラス</div>
+        <div class="file-exists">scripts/scrapers/baseblu.py ← 既存を移植</div>
+        <div class="file-new">scripts/scrapers/yoox.py ← 新規</div>
+        <div class="file-new">scripts/scrapers/farfetch.py ← 新規</div>
+        <div class="file-new">data/sources.json ← サイト設定</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent 2: Analyst -->
+  <div class="agent-card priority-3">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#e8daef;">📊</div>
+      <div>
+        <div class="agent-title">Agent 2: Analyst（価格戦略エージェント）</div>
+        <div class="agent-subtitle">BUYMA上の競合を分析して最適な出品価格を算出</div>
+      </div>
+      <div class="priority-badge p3">Phase 3</div>
+    </div>
+    <div class="agent-body">
+      <p><strong>なぜ必要か：</strong>現在は固定倍率（1.5〜1.8倍）で価格を決めているが、競合より高すぎると売れず、安すぎると利益が減る。動的な価格戦略が必要。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>処理内容</td><td>① BUYMAで同じブランド・カテゴリの商品を検索<br>② 競合の出品価格・出品数・販売実績を収集<br>③ 「競合最安値 − ¥1,000」or「利益率20%以上」のどちらかで最適価格を決定<br>④ 出品済み商品の価格も定期的に見直し</td></tr>
+        <tr><td>価格ルール</td><td>競合0人（独占）→ 仕入れ×1.8倍<br>競合1〜3人 → 競合最安値−¥1,000〜3,000<br>競合4人以上 → 利益率15%以上なら出品、以下ならスキップ</td></tr>
+        <tr><td>出力</td><td>outputs/reports/*_pricing_analysis.csv（改良版）</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-new">scripts/buyma_competitor_analysis.py ← 新規</div>
+        <div class="file-new">scripts/dynamic_pricing.py ← 新規</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent 5: Support -->
+  <div class="agent-card priority-4">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#fdebd0;">💬</div>
+      <div>
+        <div class="agent-title">Agent 5: Support（顧客対応エージェント）</div>
+        <div class="agent-subtitle">BUYMAの問い合わせに自動で回答ドラフトを作成</div>
+      </div>
+      <div class="priority-badge p4">将来</div>
+    </div>
+    <div class="agent-body">
+      <p><strong>なぜ必要か：</strong>問い合わせへの返信が速いショッパーは成約率が高い。よくある質問への回答を自動化すれば対応速度が上がる。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>対応パターン</td><td>在庫確認 / サイズ相談 / 配送期間 / 値引き交渉 / 関税の説明</td></tr>
+        <tr><td>処理内容</td><td>① BUYMAの問い合わせページを監視<br>② 質問内容をAIが分類<br>③ テンプレート＋商品情報から回答ドラフトを生成<br>④ 出品者が確認してから送信（完全自動送信はしない）</td></tr>
+        <tr><td>安全策</td><td>自動送信はせず、必ず下書きで止める。最終確認は人間が行う</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-new">scripts/buyma_support_bot.py ← 新規</div>
+        <div class="file-new">data/reply_templates.json ← 回答テンプレート</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent 6: Reporter -->
+  <div class="agent-card priority-4">
+    <div class="agent-header">
+      <div class="agent-icon" style="background:#fdebd0;">📈</div>
+      <div>
+        <div class="agent-title">Agent 6: Reporter（分析レポートエージェント）</div>
+        <div class="agent-subtitle">売上・利益・パフォーマンスを分析して改善提案</div>
+      </div>
+      <div class="priority-badge p4">将来</div>
+    </div>
+    <div class="agent-body">
+      <p><strong>なぜ必要か：</strong>どのブランド・カテゴリが売れているか、利益率が高いのはどこかを把握し、次の仕入れ戦略に活かす。</p>
+      <table class="spec-table">
+        <tr><th colspan="2">仕様</th></tr>
+        <tr><td>レポート項目</td><td>月次売上 / ブランド別利益率 / カテゴリ別成約率 / 在庫回転率 / 出品→成約の平均日数</td></tr>
+        <tr><td>処理内容</td><td>① BUYMAの販売履歴ページからデータ取得<br>② 出品データ（CSV）と照合<br>③ ダッシュボード用のHTMLレポートを生成<br>④ 「次に仕入れるべきブランドTOP5」等の提案</td></tr>
+        <tr><td>出力</td><td>outputs/reports/monthly_report_YYYY-MM.html</td></tr>
+      </table>
+      <div class="file-list">
+        <div class="file-new">scripts/buyma_sales_report.py ← 新規</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 3. Data Flow ===== -->
+<div class="section">
+  <h2>3. データフロー（全エージェント連携時）</h2>
+
+  <div class="flow-container">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div><strong>Scout</strong> が複数サイトを巡回 → <code>*_{site}_sales_sorted.csv</code> を生成</div>
+    </div>
+    <div class="flow-arrow">↓</div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div><strong>Analyst</strong> がBUYMA競合を分析 → <code>*_pricing_analysis.csv</code> に最適価格を記録</div>
+    </div>
+    <div class="flow-arrow">↓</div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div><strong>Lister</strong> が利益計算 → ブランドID取得 → BUYMAに自動出品</div>
+    </div>
+    <div class="flow-arrow">↓</div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div><strong>Monitor</strong> が1日2回、出品中商品の在庫をチェック → 売り切れは自動取り下げ</div>
+    </div>
+    <div class="flow-arrow">↓</div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div><strong>Support</strong> が問い合わせを検知 → 回答ドラフトを作成（人間が確認して送信）</div>
+    </div>
+    <div class="flow-arrow">↓</div>
+    <div class="flow-step">
+      <div class="flow-num">6</div>
+      <div><strong>Reporter</strong> が月次で売上分析 → 次の仕入れ戦略を提案</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 4. Shared Data ===== -->
+<div class="section">
+  <h2>4. 共有データ構造</h2>
+  <p style="font-size:14px; margin-bottom:12px;">全エージェントが同じファイルを読み書きすることで連携します。新しいエージェントを追加しても既存のデータ構造を壊しません。</p>
+
+  <div class="data-card">
+    <h4>data/sources.json（Scout用 — 新規）</h4>
+    <pre>{
+  "sites": [
+    {
+      "name": "BaseBlu",
+      "scraper": "baseblu",
+      "base_url": "https://www.baseblu.com/en-us/collections/sales/products.json",
+      "country": "イタリア",
+      "currency": "USD",
+      "enabled": true
+    },
+    {
+      "name": "YOOX",
+      "scraper": "yoox",
+      "base_url": "https://www.yoox.com/...",
+      "country": "イタリア",
+      "currency": "EUR",
+      "enabled": false
+    }
+  ]
+}</pre>
+  </div>
+
+  <div class="data-card">
+    <h4>data/categories.json（既存 — 41カテゴリ対応済み）</h4>
+    <pre>靴（スニーカー/ブーツ/サンダル/パンプス/フラット）
+バッグ（バックパック/財布/クラッチ/トート/ショルダー）
+トップス（ブラウス/Tシャツ/ニット/フーディ）
+ワンピース/アウター/ジャケット/パンツ/スカート
+小物（ベルト/マフラー/帽子/サングラス/手袋）
+ジュエリー（ネックレス/リング/ブレスレット/ピアス）
+腕時計 / 水着 / 下着 / スーツ</pre>
+  </div>
+
+  <div class="data-card">
+    <h4>data/brands.json（既存 — 自動更新対応済み）</h4>
+    <pre>buyma_brand_lookup.py が自動でBUYMAのAPIを叩いてIDを取得・更新
+手動追加も可能。未登録ブランドはunregisteredリストで管理</pre>
+  </div>
+
+  <div class="data-card">
+    <h4>data/reply_templates.json（Support用 — 新規）</h4>
+    <pre>{
+  "在庫確認": "お問い合わせありがとうございます。\nただいま在庫を確認いたします...",
+  "サイズ相談": "サイズについてのお問い合わせありがとうございます。\n...",
+  "配送期間": "ご注文確定後、通常10〜21日でお届けいたします。\n...",
+  "値引き交渉": "お問い合わせありがとうございます。\n申し訳ございませんが..."
+}</pre>
+  </div>
+</div>
+
+<!-- ===== 5. File Structure ===== -->
+<div class="section">
+  <h2>5. 最終的なファイル構成</h2>
+  <div class="file-list" style="font-size:13px; line-height:2;">
+    <div><strong>BUYMAオートメーション/</strong></div>
+    <div>├── <strong>scripts/</strong></div>
+    <div>│   ├── <span class="file-exists">run_all.py</span> ← 一括実行（Lister）</div>
+    <div>│   ├── <span class="file-exists">baseblu_sales_to_csv.py</span> ← スクレイピング</div>
+    <div>│   ├── <span class="file-exists">filter_baseblu_profitable.py</span> ← 利益計算</div>
+    <div>│   ├── <span class="file-exists">buyma_brand_lookup.py</span> ← ブランドID取得</div>
+    <div>│   ├── <span class="file-exists">buyma_auto_listing.py</span> ← BUYMA出品 v4</div>
+    <div>│   ├── <span class="file-new">stock_monitor.py</span> ← 在庫監視（Monitor）</div>
+    <div>│   ├── <span class="file-new">buyma_competitor_analysis.py</span> ← 競合分析（Analyst）</div>
+    <div>│   ├── <span class="file-new">dynamic_pricing.py</span> ← 動的価格決定（Analyst）</div>
+    <div>│   ├── <span class="file-new">buyma_support_bot.py</span> ← 問い合わせ対応（Support）</div>
+    <div>│   ├── <span class="file-new">buyma_sales_report.py</span> ← 売上分析（Reporter）</div>
+    <div>│   └── <strong><span class="file-new">scrapers/</span></strong> ← マルチサイト対応（Scout）</div>
+    <div>│       ├── <span class="file-new">base_scraper.py</span></div>
+    <div>│       ├── <span class="file-new">baseblu.py</span></div>
+    <div>│       └── <span class="file-new">yoox.py</span></div>
+    <div>├── <strong>data/</strong></div>
+    <div>│   ├── <span class="file-exists">categories.json</span> ← 41カテゴリ</div>
+    <div>│   ├── <span class="file-exists">brands.json</span> ← ブランドID</div>
+    <div>│   ├── <span class="file-new">sources.json</span> ← 仕入れ先サイト設定</div>
+    <div>│   └── <span class="file-new">reply_templates.json</span> ← 回答テンプレート</div>
+    <div>├── <strong>outputs/reports/</strong> ← CSV・レポート出力先</div>
+    <div>├── <span class="file-exists">config.json</span> ← ログイン情報</div>
+    <div>└── <span class="file-exists">CLAUDE.md</span> ← Claude Code用指示書</div>
+    <div style="margin-top:8px; font-size:11px; color:var(--muted);">
+      <span class="file-exists">■ 青</span> = 実装済み
+      <span class="file-new">■ 緑</span> = 新規作成予定
+    </div>
+  </div>
+</div>
+
+<!-- ===== 6. Roadmap ===== -->
+<div class="section">
+  <h2>6. 実装ロードマップ</h2>
+
+  <div class="roadmap">
+    <div class="phase done">
+      <div class="phase-label"><strong>Phase 1</strong><br>完了</div>
+      <div class="phase-content">
+        <div class="phase-title">Lister エージェント（出品の自動化）</div>
+        <div class="phase-desc">BaseBluスクレイピング → 利益計算 → BUYMA出品の全パイプライン。v4でプロショッパー仕様に到達。品番・説明文和訳・複数画像・買付メモ対応。</div>
+      </div>
+    </div>
+
+    <div class="phase current">
+      <div class="phase-label"><strong>Phase 2</strong><br>次にやること</div>
+      <div class="phase-content">
+        <div class="phase-title">Monitor エージェント（在庫監視）+ Scout 拡張</div>
+        <div class="phase-desc">
+          <strong>Monitor:</strong> 出品済み商品の在庫チェック。売り切れ検知→自動出品停止。これがないと注文キャンセルのリスクがある。<br>
+          <strong>Scout:</strong> YOOX等の新しい仕入れ先を追加。共通スクレイパー基盤を構築。
+        </div>
+      </div>
+    </div>
+
+    <div class="phase next">
+      <div class="phase-label"><strong>Phase 3</strong><br>利益の最大化</div>
+      <div class="phase-content">
+        <div class="phase-title">Analyst エージェント（競合分析・動的価格）</div>
+        <div class="phase-desc">BUYMA内の競合出品を自動分析。固定倍率の価格戦略から、競合状況に応じた動的価格決定に移行。出品済み商品の価格を定期的に最適化。</div>
+      </div>
+    </div>
+
+    <div class="phase future">
+      <div class="phase-label"><strong>Phase 4</strong><br>運営の効率化</div>
+      <div class="phase-content">
+        <div class="phase-title">Support + Reporter エージェント</div>
+        <div class="phase-desc">
+          <strong>Support:</strong> 問い合わせの自動分類・回答ドラフト生成。対応速度UP→成約率UP。<br>
+          <strong>Reporter:</strong> 月次の売上・利益レポート自動生成。どのブランド・カテゴリに注力すべきかを提案。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 7. Risk ===== -->
+<div class="section">
+  <h2>7. リスクと対策</h2>
+
+  <div class="risk-item">
+    <div class="risk-level risk-high">高</div>
+    <div>
+      <strong>アカウントBAN</strong> — BUYMAが自動操作を検知するとアカウント停止。<br>
+      <em>対策:</em> ランダム待機（8〜15秒）/ headless=False / 人間的なマウス操作 / 1日の出品数を制限（推奨20件以下）
+    </div>
+  </div>
+
+  <div class="risk-item">
+    <div class="risk-level risk-high">高</div>
+    <div>
+      <strong>在庫切れキャンセル</strong> — 注文後に仕入れ先で売り切れ。キャンセル率上昇→ペナルティ。<br>
+      <em>対策:</em> Monitor エージェントを Phase 2 で最優先実装。1日2回の在庫チェック。
+    </div>
+  </div>
+
+  <div class="risk-item">
+    <div class="risk-level risk-med">中</div>
+    <div>
+      <strong>為替変動</strong> — 出品時と注文時で為替レートが大きく変動すると利益が圧縮。<br>
+      <em>対策:</em> 為替マージンを5%以上確保。急激な円安時は出品価格を自動更新（Analystで対応）
+    </div>
+  </div>
+
+  <div class="risk-item">
+    <div class="risk-level risk-med">中</div>
+    <div>
+      <strong>仕入れ先のサイト変更</strong> — BaseBlu等がAPI構造を変更するとスクレイピングが壊れる。<br>
+      <em>対策:</em> エラーログ監視 / 複数の仕入れ先に分散（Scoutの価値）/ スクレイパーのモジュール化で修正を局所化
+    </div>
+  </div>
+
+  <div class="risk-item">
+    <div class="risk-level risk-low">低</div>
+    <div>
+      <strong>BUYMAのフォーム変更</strong> — React要素のインデックスやclass名が変わるとフォーム操作が壊れる。<br>
+      <em>対策:</em> インデックスベースではなくテキストベースの要素探索に移行（v4で一部対応済み）
+    </div>
+  </div>
+</div>
+
+<!-- ===== 8. Claude Code Usage ===== -->
+<div class="section">
+  <h2>8. Claude Code での使い方</h2>
+  <p style="font-size:14px; margin-bottom:12px;">各エージェントはClaude Codeのターミナルから個別に実行できます。将来的にはスケジューラーで自動実行も可能です。</p>
+
+  <table class="spec-table" style="max-width:600px;">
+    <tr><th>やりたいこと</th><th>コマンド</th></tr>
+    <tr><td>全工程を一括実行</td><td><code>python3 scripts/run_all.py</code></td></tr>
+    <tr><td>1件だけテスト</td><td><code>python3 scripts/run_all.py --test</code></td></tr>
+    <tr><td>下書きのみ</td><td><code>python3 scripts/run_all.py --draft</code></td></tr>
+    <tr><td>既存CSVで5件目から</td><td><code>python3 scripts/run_all.py --skip-scrape --from 5</code></td></tr>
+    <tr><td>ブランドID更新だけ</td><td><code>python3 scripts/buyma_brand_lookup.py</code></td></tr>
+    <tr><td>在庫チェック（Phase 2）</td><td><code>python3 scripts/stock_monitor.py</code></td></tr>
+    <tr><td>競合分析（Phase 3）</td><td><code>python3 scripts/buyma_competitor_analysis.py</code></td></tr>
+  </table>
+</div>
+
+<div style="text-align:center; padding:32px 0; color:var(--muted); font-size:12px;">
+  BUYMAオートメーション エージェント設計書 v1.0 — 2026-04-12 作成
+</div>
+
+</div>
+</body>
+</html>

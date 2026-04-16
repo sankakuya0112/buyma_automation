@@ -1,0 +1,21 @@
+channels:
+  - conda-forge
+  - defaults
+  - anaconda
+dependencies:
+  - scrapy=1.8.0
+  - numpy
+  - retry
+  - selenium
+  - pillow
+  - opencv
+  - sqlalchemy
+  - pymysql
+  - requests
+  - beautifulsoup4
+  - pip:
+    - jaconv
+    - pip
+    - pyarmor==6.2.4
+    - scrapy-crawlera
+    - scrapy-splash

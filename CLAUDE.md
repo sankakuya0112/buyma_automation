@@ -124,3 +124,44 @@ python3 scripts/run_pipeline.py --test
 - `config.json` は `.gitignore` に追加済み（GitHub に漏れない）
 - `.env` も `.gitignore` に追加済み
 - チャットには絶対に貼り付けない
+
+---
+
+## 参考資料（PLUSELECT_TOOL の分析結果）
+
+過去に実運用されていた BUYMA 自動出品ツール `PLUSELECT_TOOL.app` を分析し、
+参考になる部分を `docs/reference/` に抽出・配置済み。新機能の設計・実装時は
+まず以下を確認して、既存の知見を活用すること。
+
+### 最初に読むべきファイル
+
+- `docs/reference/PLUSELECT_ANALYSIS.md` … PLUSELECT の全体像と「何が使えて何が使えないか」の要約
+- `docs/reference/CSV_COLUMNS.md` … BUYMA 取り込み用 CSV の 34 列仕様（★最重要）
+- `docs/reference/CONFIG_PARAMETERS.md` … 運用で必要になる設定項目の網羅リスト
+
+### 原本ファイル群（コピー済み）
+
+- `docs/reference/pluselect_source/` 以下に、読める原本ファイル（HTML/JS/設定ファイル）をコピー済み
+- PLUSELECT の UI 設計や処理フローを確認したいときはここを参照
+
+### 原本フォルダ（全量アクセスが必要な場合のみ）
+
+- パス：`/Users/mgakusei/Downloads/PLUSELECT_TOOL-darwin-x64 2/PLUSELECT_TOOL.app/Contents/Resources/app/`
+- **注意**：Python コード（`python_scripts/*.py`, `scraping/*.py`, `scraping/spiders/*.py`）は
+  PyArmor で暗号化されており解析不能。読み込みに時間を浪費しないこと
+- 基本的には `docs/reference/` に抽出済みの情報で事足りる
+
+### PLUSELECT を参考にする際のルール
+
+1. まず `docs/reference/PLUSELECT_ANALYSIS.md` を読み、全体像を把握してから原本に当たる
+2. 暗号化された Python ファイル（PyArmor 署名で始まるファイル）は開かない
+3. CSV フォーマット・設定項目は PLUSELECT のものをベースに使い、BUYMA 側の最新仕様と差分があれば要修正
+4. UI/処理フローは参考にするが、**具体的な実装は `buyma_automation` で新規に書く**
+   （PLUSELECT の JS/HTML コードをコピペしない）
+
+---
+
+## 利益最優先の実装指示書
+
+ルートディレクトリの `PROFIT_FIRST_INSTRUCTIONS.md` に、利益を最優先とした
+フェーズ別タスク一覧・実装方針・運用ルールを記載済み。新規実装時はここを参照。

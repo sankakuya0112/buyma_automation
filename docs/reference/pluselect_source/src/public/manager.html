@@ -1,0 +1,186 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>BuyManager</title>
+  <link rel="stylesheet" type="text/css" href="../css/table.css">
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap-theme.min.css" integrity="sha384-6pzBo3FDv/PJ8r2KRkGHifhEocL+1X2rVCTTkUfGk7/0pbek5mMa1upzvWbrUbOZ" crossorigin="anonymous">
+    
+</head>
+
+<body>
+  <header id="header">
+    <div align="center">
+      <ul id="gNavi">
+        <li><a id="exhibition">自動出品ツール</a></li>
+        <li><a id="buymanager">BuyManager</a></li>
+        <li><a id="scraper">商品リスト自動作成ツール</a></li>
+        <li><a id="imager">自動画像加工ツール</a></li>
+      </ul>
+      <h3>BuyManager</h3>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-12">
+        <button id="select_account_dir">アカウントフォルダを開く</button> 
+        <button onclick=gethelp('select_account_dir')>？</button>
+        <input
+          placeholder="フォルダが選択されていません"
+          type="text" 
+          id="account_dir" 
+          size=60 
+          value=""
+          >
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-6">
+        <input 
+        placeholder="メールアドレスを入力"
+        type="text" 
+        id="email" 
+        size=60 
+        value=""
+        >
+      </div>
+      <div class="col-sm-6">
+        <input 
+          placeholder="パスワードを入力"
+          type="password" 
+          id="password" 
+          size=60 
+          value=""
+        >
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-4">
+        <form id="page_setting">
+          <b> ページ選択：</b>
+          <input type="radio" name="set1" value="request" checked> リクエスト受付中
+          <input type="radio" name="set1" value="syuppin"> 出品中
+          <input type="radio" name="set1" value="teishi"> 停止中
+          <button onclick=gethelp('page_choice')>？</button>
+        </form>
+      </div>
+      <div class="col-sm-4">
+        <form id="onoff">
+          <b> 設定モード：</b>
+          <input type="radio" name="set2" value="on" onclick=load_conf('on')> 出品
+          <input type="radio" name="set2" value="off" onclick=load_conf('off')> 出品停止
+          <input type="radio" name="set2" value="delete" onclick=load_conf('delete')> 削除
+          <input type="radio" name="set2" value="selection" onclick=load_conf('selection')> 抽出
+          <input type="radio" name="set2" value="all" onclick=load_conf('all')> 全て取得
+          <button onclick=gethelp('onoff')>？</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">
+        <b> アカウント：</b>
+        <input 
+          type="text"
+          id="buyma_account" 
+          size="10" 
+          maxlength="20"
+        >
+        <button onclick=gethelp('buyma_account')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 出品期限延長日数：</b>
+        <input type="text" 
+          id="days"
+          value="21" 
+          size="10" 
+          maxlength="100"
+          >
+        <button onclick=gethelp('days')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 　　 アクセス数：</b>
+        <input 
+          type="text" 
+          id="access_prm" 
+          value="1"
+          size="10"
+        >
+        <button onclick=gethelp('access_prm')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 　　欲しいもの数：</b>
+        <input 
+          type="text" 
+          id="want_prm" 
+          value="3"
+          size="10"
+        >
+        <button onclick=gethelp('want_prm')>？</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-sm-3">
+        <b> 　カート数：</b>
+        <input 
+          type="text" 
+          id="cart_prm" 
+          value="15"
+          size="10"
+        >
+        <button onclick=gethelp('cart_prm')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 　　価格を割る数：</b>
+          <input 
+            type="text" 
+            id="price_prm" 
+            value="10000"
+            size="10"
+          >
+          <button onclick=gethelp('price_prm')>？</button>
+        </div>
+      <div class="col-sm-3">
+        <b> MAX価格スコア：</b>
+          <input 
+            type="text" 
+            id="maxprice_prm"
+            value="20" 
+            size="10"
+          >
+          <button onclick=gethelp('maxprice_prm')>？</button>
+      </div>
+      <div class="col-sm-3">
+        <b> 経過日数を割る数：</b>
+          <input 
+            type="text" 
+            id="date_prm" 
+            value="4"
+            size="10"
+          >
+          <button onclick=gethelp('date_prm')>？</button>
+        </div>
+    </div>
+
+    <div class="row" align="center">
+      <div class="col-sm-12">
+        <button id="start-manager">スタート</button>
+      </div>
+    </div>
+
+  </header>
+
+  <div id="logs" class="manager-logs"></div>
+
+  <script src="../views/App_manager.js"></script>
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+</body>
+
+</html>

@@ -84,7 +84,8 @@
       color: color.trim(),
       category: (data.product_type || "").trim(),
       sourcePrice: salePrice,
-      currency: "EUR",
+      // BaseBlu は日本ユーザーに JPY 価格を返す（Shopify マルチカレンシー）。
+      currency: "JPY",
       sizes,
       imageUrls: images,
       descriptionEn,

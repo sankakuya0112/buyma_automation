@@ -1,26 +1,36 @@
 """
-buyma_auto_listing.py (v4 — 2026-04 プロショッパー仕様)
-=========================================================
+buyma_auto_listing.py (v4.2 — 2026-04 プロショッパー仕様)
+==========================================================
 BUYMAへの自動出品スクリプト（統合版）
+
+【v4.2 の変更】
+  - pricing.py 統合: filter_baseblu_profitable.py の新カラム名（selling_price_jpy /
+    profit_jpy / sale_price_eur）に対応。*_pricing_analysis.csv への依存を削除。
+  - --max-price / --min-profit オプション追加（コマンドラインで価格帯を絞り込み）
+
+【v4.1 の変更】
+  - 進捗ファイル v4.1 スキーマ対応（succeeded_titles / failed_titles）
+  - --resume は「成功済み」のみ除外し、過去 error は再試行
 
 【v4 の改善】
   - 商品説明: 仕入れ先名・現地価格を削除。仕入れ先の英語商品説明を和訳して掲載
   - 品番(SKU): 仕入れ先から取得し、説明文とタイトルに含める
   - 販売可否: 「買付可」に変更（手元在庫ではなく海外買付方式）
   - 購入期限: 90日（最大）
-  - 買付地: イタリア
-  - 発送地: 日本
+  - 買付地: イタリア / 発送地: 日本
   - 関税: 出品者負担チェック
   - 買付先メモ: 仕入れ先名・URL・仕入れ額・販売額・想定利益を記録
   - 複数画像: メイン+サブ画像（最大5枚）対応
   - SEO最適化: タイトルにブランド名・品番・カテゴリを含める
 
 【使い方】
-  python3 scripts/buyma_auto_listing.py              # 全件・直接公開
-  python3 scripts/buyma_auto_listing.py --draft      # 下書き保存のみ
-  python3 scripts/buyma_auto_listing.py --test       # 1件テスト
-  python3 scripts/buyma_auto_listing.py --resume     # 前回の続きから
-  python3 scripts/buyma_auto_listing.py --from 3     # 3件目から
+  python3 scripts/buyma_auto_listing.py                       # 全件・直接公開
+  python3 scripts/buyma_auto_listing.py --draft               # 下書き保存のみ
+  python3 scripts/buyma_auto_listing.py --test                # 1件テスト
+  python3 scripts/buyma_auto_listing.py --resume              # 前回の続きから
+  python3 scripts/buyma_auto_listing.py --from 3              # 3件目から
+  python3 scripts/buyma_auto_listing.py --max-price 30000     # ¥30,000以下のみ
+  python3 scripts/buyma_auto_listing.py --min-profit 5000     # 利益¥5,000以上のみ
 
 必要なもの:
   pip install playwright requests --break-system-packages
@@ -265,40 +275,80 @@ def download_image(url, dest):
         f.write(r.content)
 
 
-def load_products():
-    pricing_files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "*_pricing_analysis.csv")), reverse=True)
-    profitable_files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "*_baseblu_profitable_products.csv")), reverse=True)
-    if not pricing_files:
-        print("❌ 価格分析CSVが見つかりません"); sys.exit(1)
-    if not profitable_files:
-        print("❌ 利益商品CSVが見つかりません"); sys.exit(1)
+def load_products(max_price=None, min_profit=None):
+    """
+    利益商品 CSV から商品データを読み込む。
 
-    detail_map = {}
-    with open(profitable_files[0], newline="", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            key = (row["title"].strip(), row["vendor"].strip())
-            detail_map[key] = row
+    v4.2: `*_pricing_analysis.csv`（手動編集の競合調査ファイル）への依存を削除。
+    `*_baseblu_profitable_products.csv` 単体から読む。
+    これは filter_baseblu_profitable.py が pricing.py 統合済みで、
+    全ての必要情報（selling_price_jpy / profit_jpy / total_cost_jpy / ...）を
+    含むため。
+
+    Args:
+        max_price: 販売価格上限（円）。指定時はこの価格以下の商品のみ。
+        min_profit: 最低利益（円）。指定時はこの利益以上の商品のみ。
+    """
+    profitable_files = sorted(
+        glob.glob(os.path.join(OUTPUT_DIR, "*_baseblu_profitable_products.csv")),
+        reverse=True,
+    )
+    if not profitable_files:
+        print("❌ 利益商品 CSV が見つかりません。先に scripts/filter_baseblu_profitable.py を実行してください。")
+        sys.exit(1)
+
+    latest_csv = profitable_files[0]
+    print(f"📂 読込: {os.path.basename(latest_csv)}")
 
     products = []
-    with open(pricing_files[0], newline="", encoding="utf-8-sig") as f:
+    skipped_price = 0
+    skipped_profit = 0
+
+    with open(latest_csv, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            title = row.get("商品名", "").strip()
-            vendor = row.get("ブランド", "").strip()
-            price = row.get("推奨出品価格(円)", "0").replace(",", "").strip()
-            detail = detail_map.get((title, vendor), {})
+            title = (row.get("title") or "").strip()
+            vendor = (row.get("vendor") or "").strip()
+            if not title or not vendor:
+                continue
+
+            # 新カラム: selling_price_jpy / profit_jpy / total_cost_jpy / sale_price_eur
+            try:
+                selling_price = int(float(row.get("selling_price_jpy") or 0))
+                profit = int(float(row.get("profit_jpy") or 0))
+                total_cost = int(float(row.get("total_cost_jpy") or 0))
+                sale_price_eur = row.get("sale_price_eur") or row.get("sale_price") or "0"
+            except (ValueError, TypeError):
+                continue
+
+            # フィルタ
+            if max_price is not None and selling_price > max_price:
+                skipped_price += 1
+                continue
+            if min_profit is not None and profit < min_profit:
+                skipped_profit += 1
+                continue
+
             products.append({
-                "title": title, "vendor": vendor,
-                "recommended_price": price,
-                "sale_price_usd": detail.get("sale_price_usd", "0"),
-                "total_cost_jpy": detail.get("total_cost_jpy", "0"),
-                "estimated_profit_jpy": detail.get("estimated_profit_jpy", "0"),
-                "sku": detail.get("sku", ""),
-                "description_en": detail.get("description_en", ""),
-                "image_url": detail.get("image_url", ""),
-                "sub_images": detail.get("sub_images", ""),
-                "product_url": detail.get("product_url", ""),
+                "title": title,
+                "vendor": vendor,
+                "recommended_price": str(selling_price),
+                "sale_price_eur": str(sale_price_eur),
+                "total_cost_jpy": str(total_cost),
+                "estimated_profit_jpy": str(profit),  # 後方互換用エイリアス
+                "profit_jpy": str(profit),
+                "sku": (row.get("sku") or "").strip(),
+                "description_en": (row.get("description_en") or "").strip(),
+                "image_url": (row.get("image_url") or "").strip(),
+                "sub_images": (row.get("sub_images") or "").strip(),
+                "product_url": (row.get("product_url") or "").strip(),
             })
-    print(f"✅ 商品データ: {len(products)}件")
+
+    # 利益降順ソート
+    products.sort(key=lambda p: int(p.get("profit_jpy", 0) or 0), reverse=True)
+
+    print(f"✅ 商品データ: {len(products)} 件")
+    if skipped_price or skipped_profit:
+        print(f"   スキップ: 価格上限超過 {skipped_price} 件 / 利益不足 {skipped_profit} 件")
     return products
 
 
@@ -604,15 +654,16 @@ def set_purchase_memo(page, product):
     """買付先メモを設定（出品者の内部メモ。購入者には見えない）"""
     vendor = normalize_text(product.get("vendor", ""))
     product_url = product.get("product_url", "")
-    sale_price_usd = product.get("sale_price_usd", "0")
+    # v4.2: filter_baseblu_profitable.py (pricing.py 統合版) の新カラム名を参照
+    sale_price_eur = product.get("sale_price_eur", product.get("sale_price_usd", "0"))
     recommended_price = product.get("recommended_price", "0")
     total_cost = product.get("total_cost_jpy", "0")
-    profit = product.get("estimated_profit_jpy", "0")
+    profit = product.get("profit_jpy", product.get("estimated_profit_jpy", "0"))
 
     memo_source = "BaseBlu"
     memo_url = product_url
     memo_desc = (
-        f"仕入れ元: BaseBlu (${sale_price_usd} USD)\n"
+        f"仕入れ元: BaseBlu ({sale_price_eur} EUR)\n"
         f"総仕入れコスト: ¥{total_cost}\n"
         f"販売価格: ¥{recommended_price}\n"
         f"想定利益: ¥{profit}"
@@ -819,19 +870,33 @@ def main():
     resume_mode = "--resume" in args
     draft_mode  = "--draft"  in args
     start_from  = 1
+    max_price = None
+    min_profit = None
     if "--from" in args:
         idx = args.index("--from")
         try: start_from = int(args[idx + 1])
         except: print("❌ --from の後に数字を指定"); sys.exit(1)
+    if "--max-price" in args:
+        idx = args.index("--max-price")
+        try: max_price = int(args[idx + 1])
+        except: print("❌ --max-price の後に数字を指定"); sys.exit(1)
+    if "--min-profit" in args:
+        idx = args.index("--min-profit")
+        try: min_profit = int(args[idx + 1])
+        except: print("❌ --min-profit の後に数字を指定"); sys.exit(1)
 
     print("=" * 50)
-    print(f"🛒 BUYMA自動出品 v4 ({'下書き' if draft_mode else '公開'}{'・テスト' if test_mode else ''})")
+    print(f"🛒 BUYMA自動出品 v4.2 ({'下書き' if draft_mode else '公開'}{'・テスト' if test_mode else ''})")
     print("=" * 50)
+    if max_price:
+        print(f"   フィルタ: 販売価格 ≤ ¥{max_price:,}")
+    if min_profit:
+        print(f"   フィルタ: 利益 ≥ ¥{min_profit:,}")
 
     config = load_config()
     cat_data = load_categories()
     brands_data = load_brands()
-    products = load_products()
+    products = load_products(max_price=max_price, min_profit=min_profit)
     if not products:
         print("❌ 商品なし"); sys.exit(1)
 

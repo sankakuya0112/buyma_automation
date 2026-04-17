@@ -40,6 +40,17 @@ BUYMAへの自動出品スクリプト（統合版）
 import csv, glob, json, os, sys, time, random, tempfile, unicodedata
 import requests as req_lib
 from datetime import datetime, timedelta
+from pathlib import Path
+
+# app.utils.text を使えるようプロジェクトルートを sys.path に追加
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+try:
+    from app.utils.text import translate_description as _translate_description_advanced
+except Exception:
+    _translate_description_advanced = None
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -92,9 +103,20 @@ FASHION_TERMS = {
 }
 
 def translate_description(desc_en):
-    """英語商品説明を簡易和訳する"""
+    """英語商品説明を和訳する。
+
+    優先順位:
+      1. app.utils.text.translate_description (DEEPL_API_KEY があれば DeepL 経由)
+      2. FASHION_TERMS を使ったヒューリスティック置換
+    """
     if not desc_en:
         return ""
+    if _translate_description_advanced is not None:
+        try:
+            return _translate_description_advanced(desc_en)
+        except Exception as e:
+            print(f"    ⚠️ DeepL翻訳失敗、ヒューリスティック置換に切替: {e}")
+
     lines = desc_en.strip().split('\n')
     translated = []
     for line in lines:
@@ -102,7 +124,6 @@ def translate_description(desc_en):
         if not line:
             continue
         tl = line.lower()
-        # よくあるパターンを和訳
         for en, ja in FASHION_TERMS.items():
             if en in tl:
                 line = line.replace(en, ja).replace(en.title(), ja).replace(en.upper(), ja)
@@ -219,12 +240,37 @@ def normalize_text(text: str) -> str:
     result = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
     return unicodedata.normalize("NFC", result)
 
+def get_category_path(title: str, product_type: str, cat_data: dict) -> list:
+    """
+    タイトル + product_type → BUYMA 3階層カテゴリパス [parent, middle, leaf] を返す。
+    例: ("GIVENCHY Shoulder Bag", "BAGS") → ["レディースファッション", "バッグ・カバン", "ショルダーバッグ"]
+    """
+    t = (title or "").lower()
+    pt = (product_type or "").strip().upper()
+
+    for mapping in cat_data.get("mappings", []):
+        if mapping.get("product_type", "").upper() != pt:
+            continue
+        # title から最もマッチするキーワードを探す
+        for rule in mapping.get("keywords", []):
+            for kw in rule.get("match", []):
+                if kw.lower() in t:
+                    return rule["path"]
+        # product_type は一致したが keyword に当たらない → product_type のデフォルト
+        return mapping.get("default", cat_data.get("default", []))
+
+    # product_type も当たらない → グローバルデフォルト
+    return cat_data.get("default", ["レディースファッション", "小物", "その他"])
+
+
 def get_category_id(title: str, cat_data: dict) -> tuple:
-    t = title.lower()
-    for rule in cat_data.get("rules", []):
-        if any(kw in t for kw in rule["keywords"]):
-            return rule["category_id"], rule.get("label", "")
-    return cat_data.get("default_category_id", 3501), cat_data.get("default_label", "")
+    """
+    旧API: get_category_path を返す形に変更。cat_label はパスをスラッシュで結合した表示用。
+    戻り値: (path_list, label_string)
+    """
+    # 呼び出し元が product_type を渡せる構造になった後も、title だけで呼ばれるケースに備える
+    path = get_category_path(title, "", cat_data)
+    return path, " > ".join(path)
 
 def resolve_brand(vendor: str, brands_data: dict) -> tuple:
     """
@@ -546,9 +592,74 @@ def set_title(page, title):
 def set_description(page, desc):
     page.evaluate(f"var ta=document.querySelector('textarea');if(ta)window.__sta(ta,{json.dumps(desc)});")
 
-def set_category(page, category_id):
-    result = page.evaluate(f"var s=document.querySelectorAll('.Select');s[0]?window.__srs(s[0],{category_id},'カテゴリ'):'not found';")
-    print(f"    📁 カテゴリ={category_id} → {result}")
+def set_category(page, path):
+    """
+    3階層のカテゴリドロップダウンを path の順に選択する。
+    path: [親カテゴリ, 中カテゴリ, 小カテゴリ] のラベル文字列リスト。
+
+    BUYMA は react-select v1 系を使用しており、オプションクリックは
+    mousedown イベントで発火させる必要がある。
+    """
+    if not path or len(path) < 3:
+        print(f"    ⚠️ カテゴリパス不正: {path}")
+        return False
+
+    # カテゴリドロップダウンは最初の3つの .Select であることが多い。
+    # 買付地などの .Select が先に存在する場合は Select 要素の並びが変わる可能性がある。
+    # そのため毎回「open & click by label」で確実に選択する。
+    for idx, label in enumerate(path):
+        # ドロップダウンを開く
+        opened = page.evaluate(f"""(function(){{
+            var sels = document.querySelectorAll('.Select');
+            if (!sels[{idx}]) return false;
+            var ctrl = sels[{idx}].querySelector('.Select-control');
+            if (!ctrl) return false;
+            ctrl.click();
+            return true;
+        }})()""")
+        if not opened:
+            print(f"    ⚠️ カテゴリ{idx+1}: .Select[{idx}] 見つからず")
+            return False
+
+        # メニューが描画されるのを待つ（最大 2 秒）
+        for _ in range(20):
+            ready = page.evaluate("document.querySelectorAll('.Select-menu-outer .Select-option').length > 0")
+            if ready:
+                break
+            time.sleep(0.1)
+
+        # 完全一致でオプションを探してクリック（mousedown で発火）
+        clicked = page.evaluate(f"""(function(){{
+            var opts = document.querySelectorAll('.Select-menu-outer .Select-option');
+            var target = {json.dumps(label)};
+            for (var i = 0; i < opts.length; i++) {{
+                var t = opts[i].textContent.trim();
+                if (t === target) {{
+                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true, cancelable: true}}));
+                    return 'exact';
+                }}
+            }}
+            // 完全一致がなければ部分一致
+            for (var i = 0; i < opts.length; i++) {{
+                var t = opts[i].textContent.trim();
+                if (t.indexOf(target) !== -1) {{
+                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true, cancelable: true}}));
+                    return 'partial: ' + t;
+                }}
+            }}
+            return 'no match';
+        }})()""")
+        if "no match" in str(clicked):
+            # デバッグ用にメニュー内の候補を列挙する
+            dump = page.evaluate(
+                "Array.from(document.querySelectorAll('.Select-menu-outer .Select-option')).slice(0,15).map(function(o){return o.textContent.trim()})"
+            )
+            print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし (選択肢先頭15: {dump})")
+            return False
+        time.sleep(0.6)  # 次階層のオプションがロードされるのを待つ
+
+    print(f"    📁 カテゴリ: {' > '.join(path)} → ✅")
+    return True
 
 def set_price(page, price_jpy):
     result = page.evaluate(f"""(function(){{
@@ -566,105 +677,260 @@ BRAND_INPUT_SELECTOR = 'input.bmm-c-text-field[placeholder*="ブランド名"]'
 
 
 def select_brand(page, brand_name, brand_phonetic, brand_id):
+    """
+    ブランド選択は「テキスト入力 → サジェスト候補クリック」の人間の操作を
+    そのまま再現する。onClickBrand の React prop 直叩きは BUYMA 側の内部 state
+    を全部は更新しないケースがあり、UI 上で「未登録ブランド」警告が残る。
+    """
     if brand_id == 0:
-        print(f"    ⚠️ ブランド未登録: {brand_name}"); return False
+        print(f"    ⚠️ ブランド未登録（既知）: {brand_name}")
+        return False
 
-    # placeholder ベースでブランド入力欄を特定するJS断片
-    find_brand_input = (
-        "document.querySelector('input.bmm-c-text-field[placeholder*=\"ブランド名\"]')"
-        " || document.querySelectorAll('input')[7]"
-    )
+    # 1) 入力欄にブランド名を入れてサジェストを開く
+    typed = page.evaluate(f"""(function(){{
+        var bi = document.querySelector('input.bmm-c-text-field[placeholder*="ブランド名"]');
+        if (!bi) return 'no input';
+        window.__si(bi, {json.dumps(brand_name)});
+        bi.focus();
+        return 'typed';
+    }})()""")
+    if typed == "no input":
+        print(f"    ⚠️ ブランド入力欄が見つからない")
+        return False
 
-    if brand_id > 0:
-        result = page.evaluate(f"""(function(){{
-            var bi={find_brand_input};if(!bi)return 'no input';
-            var f=window.__gf(bi),c=f;
-            for(var d=0;d<30;d++){{if(!c)break;
-                if(c.memoizedProps&&typeof c.memoizedProps.onChangeText==='function'){{
-                    c.memoizedProps.onChangeText({{target:{{value:{json.dumps(brand_name)}}}}});
-                    break}}c=c.return}}
-            var f2=window.__gf(bi),c2=f2;
-            for(var d=0;d<30;d++){{if(!c2)break;
-                if(c2.memoizedProps&&c2.memoizedProps.onClickBrand){{
-                    c2.memoizedProps.onClickBrand({{text:{json.dumps(brand_name)},phonetic:{json.dumps(brand_phonetic)},brand_id:{brand_id}}});
-                    return 'ok d='+d}}c2=c2.return}}
-            return 'onClickBrand not found'}})()""")
-        time.sleep(0.5)
-        val = page.evaluate(f"({find_brand_input})?.value||''")
-        ok = brand_phonetic in val or brand_name.lower() in val.lower()
-        print(f"    🏷️ ブランド: {val} → {'✅' if ok else '⚠️'} ({result})")
-        return ok
-
-    # brand_id == -1: サジェスト経由（brand_id 不明時のフォールバック）
-    page.evaluate(f"var bi={find_brand_input};if(bi)window.__si(bi,{json.dumps(brand_name)});")
-    for _ in range(10):
-        time.sleep(0.5)
+    # 2) サジェスト候補が描画されるのを最大5秒待つ
+    for _ in range(25):
+        time.sleep(0.2)
         if page.evaluate("document.querySelectorAll('.bmm-c-suggest__option--selectable').length>0"):
             break
-    clicked = page.evaluate(f"""(function(){{
-        var opts=document.querySelectorAll('.bmm-c-suggest__option--selectable');
-        if(!opts.length)return false;
-        var f=window.__gf(opts[0]),c=f;
-        for(var d=0;d<8;d++){{if(!c)break;
-            if(c.memoizedProps&&typeof c.memoizedProps.onClick==='function'){{
-                c.memoizedProps.onClick({{text:{json.dumps(brand_name)}}});return true}}c=c.return}}
-        return false}})()""")
-    if not clicked:
-        print(f"    ⚠️ ブランド未登録: {brand_name}"); return False
-    print(f"    🏷️ ブランド選択: {brand_name}"); return True
+    else:
+        print(f"    ⚠️ サジェスト候補が出ない: {brand_name}")
+        return False
+
+    # 3) 候補一覧から完全一致 → 部分一致の順で探して mousedown でクリック
+    result = page.evaluate(f"""(function(){{
+        var opts = document.querySelectorAll('.bmm-c-suggest__option--selectable');
+        var nameUpper = {json.dumps(brand_name)}.toUpperCase();
+        var phoneticStr = {json.dumps(brand_phonetic or '')};
+        function fire(el){{
+            // React 版 onClick を優先、無ければネイティブ click
+            var f = window.__gf(el), c = f;
+            for (var d = 0; d < 10; d++) {{
+                if (!c) break;
+                if (c.memoizedProps && typeof c.memoizedProps.onClick === 'function') {{
+                    try {{
+                        c.memoizedProps.onClick({{
+                            text: el.textContent.trim(),
+                            phonetic: phoneticStr,
+                            brand_id: {brand_id}
+                        }});
+                        return 'react';
+                    }} catch (e) {{}}
+                }}
+                c = c.return;
+            }}
+            el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+            el.click();
+            return 'native';
+        }}
+        // 完全一致
+        for (var i = 0; i < opts.length; i++) {{
+            var t = opts[i].textContent.toUpperCase();
+            if (t === nameUpper || t.startsWith(nameUpper + '(') || t.startsWith(nameUpper + ' ')) {{
+                return 'exact:' + fire(opts[i]);
+            }}
+        }}
+        // 部分一致
+        for (var i = 0; i < opts.length; i++) {{
+            if (opts[i].textContent.toUpperCase().indexOf(nameUpper) !== -1) {{
+                return 'partial:' + fire(opts[i]);
+            }}
+        }}
+        return 'no match';
+    }})()""")
+
+    time.sleep(0.7)
+
+    # 4) 検証: 入力欄の value に phonetic か brand_name が入っていて、
+    #       かつ「未登録」警告が出ていない事を確認
+    val = page.evaluate("document.querySelector('input.bmm-c-text-field[placeholder*=\"ブランド名\"]')?.value || ''")
+    has_warning = page.evaluate(
+        "document.body.textContent.includes('BUYMAに登録されていないブランド名のため')"
+    )
+
+    if "no match" in result:
+        print(f"    ⚠️ ブランド候補に該当なし: {brand_name}")
+        return False
+    if has_warning:
+        print(f"    ⚠️ ブランド警告残存: {val} (result={result})")
+        return False
+    ok = bool(val) and (brand_phonetic in val or brand_name.lower() in val.lower())
+    print(f"    🏷️ ブランド: {val} → {'✅' if ok else '⚠️'} ({result})")
+    return ok
 
 
 def set_shipping(page, price_jpy):
-    """配送チェックボックス。¥50,000以上は追跡あり3種のみ。"""
-    indices = [7, 8, 9] if price_jpy >= 50000 else [6, 7, 8, 9]
-    page.evaluate(f"""var cbs=document.querySelectorAll('input[type="checkbox"]');
-        {json.dumps(indices)}.forEach(function(i){{if(cbs[i]&&!cbs[i].checked)cbs[i].click()}});""")
-    print(f"    🚚 配送: インデックス{indices}")
+    """配送方法にチェックを入れる。
+
+    ラベル文字列で判定することで DOM 順番の変更に耐える。
+    デフォルト: ヤマト運輸「宅急便コンパクト」と「宅急便」。
+    """
+    # チェックしたい配送方法のラベル（部分一致）
+    targets = ["宅急便コンパクト", "宅急便"]
+
+    result = page.evaluate(f"""(function(){{
+        var targets = {json.dumps(targets)};
+        var results = [];
+        // label 要素や、checkbox の近傍テキストから配送方法を特定
+        var labels = document.querySelectorAll('label');
+        for (var i = 0; i < labels.length; i++) {{
+            var txt = labels[i].textContent.trim();
+            for (var j = 0; j < targets.length; j++) {{
+                if (txt.indexOf(targets[j]) !== -1) {{
+                    // label 内の checkbox を見つけてチェック
+                    var cb = labels[i].querySelector('input[type="checkbox"]');
+                    if (!cb) {{
+                        // for 属性で参照される checkbox を探す
+                        var forId = labels[i].getAttribute('for');
+                        if (forId) cb = document.getElementById(forId);
+                    }}
+                    if (cb && !cb.checked) {{
+                        cb.click();
+                        results.push(targets[j] + '=on');
+                    }} else if (cb && cb.checked) {{
+                        results.push(targets[j] + '=既にon');
+                    }}
+                    break;
+                }}
+            }}
+        }}
+        return results;
+    }})()""")
+    print(f"    🚚 配送: {result}")
 
 
-def set_region(page):
-    """買付地をイタリア、発送地を日本に設定"""
-    # 買付地域・発送地域の.Selectを特定して設定
-    result = page.evaluate("""
-        (function(){
-            var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
-            var results = [];
-            for(var i=0; i<summaries.length; i++){
-                var text = summaries[i].textContent.trim();
-                if(text.includes('買付地')){
-                    // 買付地の親要素内の.Selectを探す
-                    var parent = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
-                    var selects = parent.querySelectorAll('.Select');
-                    for(var j=0; j<selects.length; j++){
-                        // ヨーロッパ（2003）を選択してからイタリア（20039）を選択
-                        window.__srs(selects[j], '2003', 'ヨーロッパ');
-                    }
-                    results.push('買付地=ヨーロッパ');
-                }
-                if(text.includes('発送地')){
-                    var parent = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
-                    var selects = parent.querySelectorAll('.Select');
-                    for(var j=0; j<selects.length; j++){
-                        window.__srs(selects[j], '1001', '日本');
-                    }
-                    results.push('発送地=日本');
-                }
+def _select_by_label(page, dropdown_selector_js, label):
+    """任意のドロップダウン要素を開いて label のオプションを mousedown で選択する。
+
+    dropdown_selector_js: JavaScript 式で .Select 要素を返すもの（例: 'sels[3]'）。
+    成功時 True, 失敗時 False。
+    """
+    opened = page.evaluate(f"""(function(){{
+        var s = {dropdown_selector_js};
+        if (!s) return false;
+        var ctrl = s.querySelector('.Select-control');
+        if (!ctrl) return false;
+        ctrl.click();
+        return true;
+    }})()""")
+    if not opened:
+        return False
+    for _ in range(20):
+        time.sleep(0.1)
+        ready = page.evaluate("document.querySelectorAll('.Select-menu-outer .Select-option').length > 0")
+        if ready:
+            break
+    clicked = page.evaluate(f"""(function(){{
+        var opts = document.querySelectorAll('.Select-menu-outer .Select-option');
+        var target = {json.dumps(label)};
+        for (var i = 0; i < opts.length; i++) {{
+            if (opts[i].textContent.trim() === target) {{
+                opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                return true;
+            }}
+        }}
+        for (var i = 0; i < opts.length; i++) {{
+            if (opts[i].textContent.trim().indexOf(target) !== -1) {{
+                opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                return true;
+            }}
+        }}
+        return false;
+    }})()""")
+    time.sleep(0.6)
+    return bool(clicked)
+
+
+def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川県"):
+    """買付地と発送地を設定する。
+
+    - 買付地: 海外 → ヨーロッパ → イタリア
+    - 発送地: 国内 → 神奈川県 （ラジオボタンで「国内」を選択した上で都道府県ドロップダウン）
+    """
+    results = []
+
+    # --- 買付地 ---
+    # 買付地のセクション内の .Select を 2つ順番に開く
+    purchase_selects_idx = page.evaluate("""(function(){
+        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
+        for (var i = 0; i < summaries.length; i++) {
+            if (summaries[i].textContent.indexOf('買付地') !== -1) {
+                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
+                var sels = sec.querySelectorAll('.Select');
+                var allSels = document.querySelectorAll('.Select');
+                var idx = [];
+                sels.forEach(function(s){ idx.push(Array.from(allSels).indexOf(s)); });
+                return idx;
             }
-            // フォールバック: summary要素が見つからない場合
-            if(results.length === 0){
-                var allSelects = document.querySelectorAll('.Select');
-                for(var k=0; k<allSelects.length; k++){
-                    var html = allSelects[k].innerHTML;
-                    if(html.includes('2003') || html.includes('ヨーロッパ')){
-                        window.__srs(allSelects[k], '2003', 'ヨーロッパ');
-                        results.push('fallback_ヨーロッパ idx='+k);
+        }
+        return null;
+    })()""")
+    if purchase_selects_idx and len(purchase_selects_idx) >= 2:
+        # 最初が大陸、2つ目が国
+        if _select_by_label(page, f"document.querySelectorAll('.Select')[{purchase_selects_idx[0]}]", "ヨーロッパ"):
+            results.append("買付地_大陸=ヨーロッパ")
+        if _select_by_label(page, f"document.querySelectorAll('.Select')[{purchase_selects_idx[1]}]", purchase_country):
+            results.append(f"買付地_国={purchase_country}")
+    else:
+        results.append("買付地_セクション未検出")
+
+    # --- 発送地 ---
+    # 1) 「国内」ラジオボタンを押す
+    domestic_clicked = page.evaluate("""(function(){
+        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
+        for (var i = 0; i < summaries.length; i++) {
+            if (summaries[i].textContent.indexOf('発送地') !== -1) {
+                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
+                // label/button 配下で「国内」テキストを持つ要素を探す
+                var candidates = sec.querySelectorAll('label, button, div.bmm-c-radio, input[type="radio"]');
+                for (var j = 0; j < candidates.length; j++) {
+                    var el = candidates[j];
+                    var txt = (el.textContent || '').trim();
+                    if (txt === '国内' || txt.indexOf('国内') === 0) {
+                        el.click();
+                        return true;
                     }
                 }
+                return false;
             }
-            return results;
-        })()
-    """)
-    print(f"    🌍 地域: {result}")
+        }
+        return false;
+    })()""")
+    time.sleep(0.5)
+    if domestic_clicked:
+        results.append("発送地_国内選択")
+
+    # 2) 都道府県ドロップダウンを選択（発送地セクション内の .Select[0]）
+    ship_idx = page.evaluate("""(function(){
+        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
+        for (var i = 0; i < summaries.length; i++) {
+            if (summaries[i].textContent.indexOf('発送地') !== -1) {
+                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
+                var sels = sec.querySelectorAll('.Select');
+                var allSels = document.querySelectorAll('.Select');
+                if (sels.length === 0) return null;
+                return Array.from(allSels).indexOf(sels[0]);
+            }
+        }
+        return null;
+    })()""")
+    if ship_idx is not None and ship_idx >= 0:
+        if _select_by_label(page, f"document.querySelectorAll('.Select')[{ship_idx}]", ship_prefecture):
+            results.append(f"発送地={ship_prefecture}")
+        else:
+            results.append(f"発送地 '{ship_prefecture}' 失敗")
+
+    print(f"    🌍 地域: {results}")
 
 
 def set_purchase_deadline(page):
@@ -758,86 +1024,96 @@ def set_size_and_stock(page):
 
 
 def set_purchase_memo(page, product):
-    """買付先メモを設定（出品者の内部メモ。購入者には見えない）"""
-    vendor = normalize_text(product.get("vendor", ""))
+    """出品メモ・買付先メモを設定する。
+
+    - 出品メモ（内部用）: 利益計算サマリなど、自分向けの情報
+    - 買付先: ショップ名（BaseBlu）、URL、自由記入メモ
+    """
     product_url = product.get("product_url", "")
-    # v4.2: filter_baseblu_profitable.py (pricing.py 統合版) の新カラム名を参照
     sale_price_eur = product.get("sale_price_eur", product.get("sale_price_usd", "0"))
     recommended_price = product.get("recommended_price", "0")
     total_cost = product.get("total_cost_jpy", "0")
     profit = product.get("profit_jpy", product.get("estimated_profit_jpy", "0"))
+    title = product.get("title", "")
+    sku = product.get("sku", "")
 
-    memo_source = "BaseBlu"
-    memo_url = product_url
-    memo_desc = (
-        f"仕入れ元: BaseBlu ({sale_price_eur} EUR)\n"
-        f"総仕入れコスト: ¥{total_cost}\n"
-        f"販売価格: ¥{recommended_price}\n"
-        f"想定利益: ¥{profit}"
+    def _fmt(v):
+        try: return f"{int(float(v)):,}"
+        except: return str(v)
+
+    listing_memo = (
+        f"【選定理由】\n"
+        f"BaseBlu セールから抽出、想定利益 ¥{_fmt(profit)} で基準(¥5,000)クリア。\n\n"
+        f"【価格】\n"
+        f"仕入: {sale_price_eur} EUR\n"
+        f"総仕入コスト（送料・関税・税込）: ¥{_fmt(total_cost)}\n"
+        f"販売価格: ¥{_fmt(recommended_price)}\n"
+        f"想定利益: ¥{_fmt(profit)}\n\n"
+        f"【商品】\n"
+        f"タイトル: {title}\n"
+        f"品番: {sku}"
     )
+    buyer_memo = (
+        f"【仕入先】BaseBlu\n"
+        f"【商品URL】{product_url}\n"
+        f"【現地価格】{sale_price_eur} EUR\n"
+        f"【日本円換算コスト】¥{_fmt(total_cost)}"
+    )
+    shop_name = "BaseBlu"
 
-    # 買付先メモのフォーム要素を探して入力
-    result = page.evaluate(f"""(function(){{
-        var results = [];
-        // 買付先メモセクションを探す
-        var sections = document.querySelectorAll('.bmm-c-summary__ttl, h3, h4, label');
-        for(var i=0; i<sections.length; i++){{
-            if(sections[i].textContent.includes('買付先')){{
-                results.push('section found');
-                break;
-            }}
-        }}
-
-        // 買付先名の入力欄
-        var allInputs = document.querySelectorAll('input[type="text"]');
-        for(var i=0; i<allInputs.length; i++){{
-            var el = allInputs[i];
-            var a = el;
-            for(var d=0; d<6; d++){{
-                if(!a.parentElement) break;
-                a = a.parentElement;
-                if(a.textContent && a.textContent.includes('買付先名')){{
-                    window.__si(el, {json.dumps(memo_source)});
-                    results.push('買付先名=ok');
-                    break;
+    def _fill_by_label(label_keyword, value, is_textarea=False):
+        """ラベル（またはセクション見出し）に一致する入力欄 / textarea に value を入力する。"""
+        js = f"""(function(){{
+            var needle = {json.dumps(label_keyword)};
+            var val = {json.dumps(value)};
+            var tag = {('"textarea"' if is_textarea else '"input"')};
+            // まず label[for] で直接マッピング
+            var labels = document.querySelectorAll('label');
+            for (var i = 0; i < labels.length; i++) {{
+                if (labels[i].textContent.indexOf(needle) !== -1) {{
+                    var forId = labels[i].getAttribute('for');
+                    if (forId) {{
+                        var el = document.getElementById(forId);
+                        if (el && el.tagName.toLowerCase() === tag) {{
+                            if (tag === 'textarea') window.__sta(el, val); else window.__si(el, val);
+                            return 'label_for';
+                        }}
+                    }}
+                    // 同じ親要素内の input/textarea を使う
+                    var container = labels[i].closest('div, section, fieldset') || labels[i].parentElement;
+                    if (container) {{
+                        var el2 = container.querySelector(tag);
+                        if (el2) {{
+                            if (tag === 'textarea') window.__sta(el2, val); else window.__si(el2, val);
+                            return 'label_sibling';
+                        }}
+                    }}
                 }}
             }}
-        }}
-
-        // 買付先URL
-        for(var i=0; i<allInputs.length; i++){{
-            var el = allInputs[i];
-            var a = el;
-            for(var d=0; d<6; d++){{
-                if(!a.parentElement) break;
-                a = a.parentElement;
-                if(a.textContent && (a.textContent.includes('買付先URL') || a.textContent.includes('URL'))){{
-                    window.__si(el, {json.dumps(memo_url)});
-                    results.push('URL=ok');
-                    break;
+            // 祖先をたどって見出しを探す方式（既存のフォールバック）
+            var els = document.querySelectorAll(tag);
+            for (var i = 0; i < els.length; i++) {{
+                var a = els[i];
+                for (var d = 0; d < 6; d++) {{
+                    if (!a.parentElement) break;
+                    a = a.parentElement;
+                    if (a.textContent && a.textContent.indexOf(needle) !== -1) {{
+                        if (tag === 'textarea') window.__sta(els[i], val); else window.__si(els[i], val);
+                        return 'ancestor';
+                    }}
                 }}
             }}
-        }}
+            return 'not_found';
+        }})()"""
+        return page.evaluate(js)
 
-        // 買付先メモ（説明テキストエリア）
-        var textareas = document.querySelectorAll('textarea');
-        for(var i=0; i<textareas.length; i++){{
-            var ta = textareas[i];
-            var a = ta;
-            for(var d=0; d<6; d++){{
-                if(!a.parentElement) break;
-                a = a.parentElement;
-                if(a.textContent && a.textContent.includes('買付先')){{
-                    window.__sta(ta, {json.dumps(memo_desc)});
-                    results.push('メモ=ok');
-                    break;
-                }}
-            }}
-        }}
+    results = {}
+    results["出品メモ"]    = _fill_by_label("出品メモ",  listing_memo, is_textarea=True)
+    results["買付先名"]    = _fill_by_label("買付先名",  shop_name,    is_textarea=False)
+    results["買付先URL"]   = _fill_by_label("買付先URL", product_url,  is_textarea=False)
+    results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
 
-        return results.length ? results : 'not found';
-    }})()""")
-    print(f"    📝 買付先メモ: {result}")
+    print(f"    📝 メモ: {results}")
 
 
 def publish_product(page):
@@ -948,8 +1224,10 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     desc_en = product.get("description_en", "")
     img_url = product.get("image_url", "")
     sub_imgs = product.get("sub_images", "")
+    product_type = product.get("product_type", "")
 
-    cat_id, cat_label = get_category_id(title, cat_data)
+    cat_path = get_category_path(title, product_type, cat_data)
+    cat_label = " > ".join(cat_path)
     safe_vendor = normalize_text(vendor)
     b_id, b_phonetic = resolve_brand(vendor, brands_data)
 
@@ -958,7 +1236,7 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     desc = generate_description(title, vendor, sku, desc_en, cat_label)
 
     print(f"  📦 {display_title[:50]}")
-    print(f"     ブランド={safe_vendor}(id={b_id}) カテゴリ={cat_label}({cat_id}) ¥{price:,}")
+    print(f"     ブランド={safe_vendor}(id={b_id}) カテゴリ={cat_label} ¥{price:,}")
     if sku:
         print(f"     品番={sku}")
 
@@ -985,7 +1263,7 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     # 2-5. テキスト・カテゴリ・価格
     set_title(page, display_title); human_delay(0.3, 0.6)
     set_description(page, desc); human_delay(0.3, 0.6)
-    set_category(page, cat_id); human_delay(0.5, 1.0)
+    set_category(page, cat_path); human_delay(0.5, 1.0)
     set_price(page, price); human_delay(0.3, 0.6)
 
     # 6. ブランド
@@ -994,11 +1272,7 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
         return "brand_not_found", None
     human_delay(0.5, 1.0)
 
-    if draft_mode:
-        item_id = save_draft(page)
-        return ("draft", item_id) if item_id else ("save_failed", None)
-
-    # 7. 配送・地域
+    # 7. 配送・地域（draft_mode でも設定してから保存する）
     set_shipping(page, price); human_delay(0.3, 0.6)
     set_region(page); human_delay(0.3, 0.6)
 
@@ -1014,10 +1288,14 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     # 11. サイズ・在庫（買付可）
     set_size_and_stock(page); human_delay(0.5, 1.0)
 
-    # 12. 買付先メモ
+    # 12. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)
 
-    # 公開
+    # 保存 or 公開
+    if draft_mode:
+        item_id = save_draft(page)
+        return ("draft", item_id) if item_id else ("save_failed", None)
+
     ok = publish_product(page)
     return ("published", "published") if ok else ("publish_failed", None)
 

@@ -877,25 +877,45 @@ def publish_product(page):
 def save_draft(page):
     """下書き保存ボタンを押し、URLの遷移で成否を判定する。
 
-    BUYMA は保存後に以下のいずれかに遷移することが多い:
-      - /my/sell/{item_id}/edit
-      - /my/sell/edit/{item_id}
-      - /my/mypage/... （下書き一覧）
-    いずれでもない場合は URL が変わっているかだけでも判定する。
+    BUYMA の「下書き保存する」は手動クリックを前提とした React ボタン。
+    JS の .click() では反応しないため Playwright のネイティブクリックを使う。
+    成功時は /my/sell/{item_id}/edit?tab=b に遷移する。
     """
+    import re
     url_before = page.url
-    page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
-        .find(function(b){return b.textContent.trim().includes('下書き保存する')});if(b)b.click();""")
 
-    # URL の変化を最大 10 秒待つ（2.5 秒では足りないケースがあった）
+    # Playwright のネイティブクリック（React が hover/focus を要求するケースに対応）
+    btn = page.locator('button:has-text("下書き保存する")').first
+    try:
+        btn.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
+    try:
+        btn.click(timeout=5000)
+    except Exception as e:
+        print(f"    ⚠️ ボタンクリック失敗: {e}")
+        # フォールバック: JS 経由
+        page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
+            .find(function(b){return b.textContent.trim().includes('下書き保存する')});
+            if(b){b.scrollIntoView();b.click()}""")
+
+    # 確認モーダルがあればクリック（「保存する」「はい」「OK」など）
+    for modal_text in ["保存する", "はい", "OK"]:
+        try:
+            modal_btn = page.locator(f'button:has-text("{modal_text}")').first
+            if modal_btn.is_visible(timeout=1000):
+                modal_btn.click(timeout=2000)
+                break
+        except Exception:
+            continue
+
+    # URL の変化を最大 15 秒待つ
     item_id = None
-    for _ in range(20):
+    for _ in range(30):
         time.sleep(0.5)
         url = page.url
         if url == url_before:
             continue
-        # item_id を含むパターンを優先的に抽出
-        import re
         m = re.search(r"/my/sell/(\d+)(?:/edit)?", url)
         if m:
             item_id = m.group(1)
@@ -904,7 +924,6 @@ def save_draft(page):
         if m:
             item_id = m.group(1)
             break
-        # URL が変わっただけで ID が取れない場合も成功扱いにして継続
         if "/my/" in url and "/sell/new" not in url:
             break
 
@@ -913,7 +932,6 @@ def save_draft(page):
         print(f"    💾 下書き保存: ID={item_id}")
         return item_id
     if url_after != url_before and "/sell/new" not in url_after:
-        # 遷移したが ID が抽出できない → とりあえず保存成功扱い
         print(f"    💾 下書き保存（ID未確定）: {url_after}")
         return "saved"
     print(f"    ⚠️ 保存未確認 (url={url_after})")

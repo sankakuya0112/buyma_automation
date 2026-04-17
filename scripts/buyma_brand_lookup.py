@@ -28,7 +28,7 @@ BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR  = os.path.join(BASE_DIR, "outputs", "reports")
 BRANDS_PATH = os.path.join(BASE_DIR, "data", "brands.json")
 
-BUYMA_SUGGEST_URL = "https://www.buyma.com/rorapi/suggest/brands.json"
+BUYMA_SUGGEST_URL = "https://cdn-suggest.buyma.com/brand_suggest"
 
 HEADERS = {
     "User-Agent": (
@@ -36,7 +36,8 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json",
-    "Referer": "https://www.buyma.com/my/sell/new",
+    "Origin": "https://www.buyma.com",
+    "Referer": "https://www.buyma.com/",
 }
 
 
@@ -128,13 +129,20 @@ def main():
     new_found = 0
     new_unreg = 0
 
+    # 小文字化したキーで検索できるように既知ブランドを正規化
+    known_lc = {k.lower(): k for k in known.keys()}
+
     for vendor in sorted(vendors):
         safe_vendor = normalize_text(vendor)
+        key_lc = safe_vendor.lower()
 
-        # 既知ならスキップ
-        if safe_vendor in known:
-            print(f"  ✅ {safe_vendor} → ID={known[safe_vendor]['brand_id']} (既知)")
-            continue
+        # 既知（brand_id あり）ならスキップ
+        if key_lc in known_lc:
+            orig_key = known_lc[key_lc]
+            if known[orig_key].get("brand_id") is not None:
+                print(f"  ✅ {safe_vendor} → ID={known[orig_key]['brand_id']} (既知)")
+                continue
+            # brand_id が null ならフォールスルーして検索
         if safe_vendor in unregistered:
             print(f"  ⏭️  {safe_vendor} → 未登録 (既知)")
             continue
@@ -148,10 +156,13 @@ def main():
             brand_id = result.get("brand_id", -1)
             phonetic = result.get("phonetic", "")
             text = result.get("text", safe_vendor)
-            known[safe_vendor] = {
+            # 既存キー（大文字小文字違い）があればそれを使う、無ければ新規
+            target_key = known_lc.get(key_lc, key_lc)
+            known[target_key] = {
                 "brand_id": brand_id,
                 "phonetic": phonetic,
             }
+            known_lc[key_lc] = target_key
             print(f"→ ID={brand_id} ({text}, {phonetic})")
             new_found += 1
         else:

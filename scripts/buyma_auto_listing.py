@@ -56,6 +56,7 @@ DATA_DIR      = os.path.join(BASE_DIR, "data")
 
 BUYMA_LOGIN_URL   = "https://www.buyma.com/login/"
 BUYMA_LISTING_URL = "https://www.buyma.com/my/sell/new?tab=b"
+BRAND_SUGGEST_URL = "https://cdn-suggest.buyma.com/brand_suggest"
 
 # ========== React操作用JSヘルパー ==========
 JS_HELPERS = """
@@ -124,8 +125,55 @@ def load_brands():
     path = os.path.join(DATA_DIR, "brands.json")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    return {"brands": {}, "unregistered": []}
+            data = json.load(f)
+        data.setdefault("brands", {})
+        data.setdefault("unregistered", [])
+        data.setdefault("auto_lookup_enabled", True)
+        return data
+    return {"brands": {}, "unregistered": [], "auto_lookup_enabled": True}
+
+
+def save_brands(data):
+    path = os.path.join(DATA_DIR, "brands.json")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def lookup_brand_api(brand_name: str):
+    """BUYMAのCDNサジェストAPIでブランドIDを取得する。見つからなければ None。"""
+    try:
+        resp = req_lib.get(
+            BRAND_SUGGEST_URL,
+            params={"keyword": brand_name},
+            headers={
+                "Accept": "application/json",
+                "Origin": "https://www.buyma.com",
+                "Referer": "https://www.buyma.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        results = resp.json() or []
+    except Exception as e:
+        print(f"    ⚠️ ブランドAPIエラー: {e}")
+        return None
+    if not results:
+        return None
+    safe = normalize_text(brand_name).upper()
+    # 完全一致優先
+    for item in results:
+        if normalize_text(item.get("text", "")).upper() == safe:
+            return item
+    # 部分一致フォールバック
+    for item in results:
+        itext = normalize_text(item.get("text", "")).upper()
+        if safe in itext or itext in safe:
+            return item
+    return None
 
 def load_progress():
     """
@@ -179,14 +227,56 @@ def get_category_id(title: str, cat_data: dict) -> tuple:
     return cat_data.get("default_category_id", 3501), cat_data.get("default_label", "")
 
 def resolve_brand(vendor: str, brands_data: dict) -> tuple:
+    """
+    ブランド名 → (brand_id, phonetic) を返す。
+      brand_id >  0: 既知ブランド（onClickBrand経由で登録）
+      brand_id == 0: 未登録確定（スキップ）
+      brand_id == -1: 未知（DOMサジェスト経由で登録試行）
+
+    brands.json の brand_id が null の場合は CDN APIで自動lookup。
+    """
     safe = normalize_text(vendor)
+    key_lc = safe.lower()
     known = brands_data.get("brands", {})
     unreg = brands_data.get("unregistered", [])
-    if safe in known:
-        info = known[safe]
-        return info["brand_id"], info.get("phonetic", safe)
-    if safe in unreg:
+
+    # 大文字小文字を無視して既知ブランドを検索
+    known_lc = {k.lower(): k for k in known.keys()}
+    if key_lc in known_lc:
+        orig_key = known_lc[key_lc]
+        info = known[orig_key]
+        bid = info.get("brand_id")
+        phonetic = info.get("phonetic") or safe
+        if bid:
+            return bid, phonetic
+        # brand_id が null ならAPIでlookup
+        if brands_data.get("auto_lookup_enabled", True):
+            api_result = lookup_brand_api(safe)
+            if api_result:
+                bid = api_result.get("brand_id")
+                phonetic = api_result.get("phonetic") or phonetic
+                known[orig_key] = {"brand_id": bid, "phonetic": phonetic}
+                save_brands(brands_data)
+                return bid, phonetic
+        return -1, phonetic
+
+    if safe in unreg or safe.lower() in [u.lower() for u in unreg]:
         return 0, ""
+
+    # 未知: APIでlookup
+    if brands_data.get("auto_lookup_enabled", True):
+        api_result = lookup_brand_api(safe)
+        if api_result:
+            bid = api_result.get("brand_id")
+            phonetic = api_result.get("phonetic") or safe
+            known[key_lc] = {"brand_id": bid, "phonetic": phonetic}
+            save_brands(brands_data)
+            return bid, phonetic
+        else:
+            unreg.append(safe)
+            save_brands(brands_data)
+            return 0, ""
+
     return -1, safe
 
 
@@ -372,7 +462,14 @@ def login(page, email, password):
 
 
 def upload_image(page, image_url, max_retries=2):
-    """画像アップロード（リトライ付き）。ページ遷移直後に呼ぶこと。"""
+    """画像アップロード（リトライ付き）。ページ遷移直後に呼ぶこと。
+
+    BUYMA の画像アップロードAPI:
+      POST https://www.buyma.com/rorapi/item_image.json
+      Response: {status:"0", img_key, img_url, image_index, zoom_url, authenticity_token}
+
+    page.expect_response() を使い、POSTメソッドのレスポンスを確実に待機する。
+    """
     if not image_url:
         print("    ⚠️ 画像URLなし"); return False
 
@@ -391,19 +488,21 @@ def upload_image(page, image_url, max_retries=2):
             except: pass
             continue
 
-        upload_result = {"status": None}
-        def on_response(response):
-            if "item_image" in response.url:
-                upload_result["status"] = response.status
-                try: upload_result["body"] = response.json()
-                except: pass
-
-        page.on("response", on_response)
+        response = None
         try:
-            page.locator('input[type="file"]').set_input_files(tmp_path)
+            with page.expect_response(
+                lambda r: "item_image" in r.url and r.request.method == "POST",
+                timeout=30000,
+            ) as resp_info:
+                page.locator('input[type="file"]').set_input_files(tmp_path)
+            response = resp_info.value
+        except PWTimeout:
+            print("    ⚠️ タイムアウト（POST item_image.json が飛ばなかった）")
+            try: os.unlink(tmp_path)
+            except: pass
+            continue
         except Exception as e:
-            print(f"    ❌ ファイルセット失敗: {e}")
-            page.remove_listener("response", on_response)
+            print(f"    ❌ アップロード例外: {e}")
             try: os.unlink(tmp_path)
             except: pass
             continue
@@ -411,20 +510,18 @@ def upload_image(page, image_url, max_retries=2):
             try: os.unlink(tmp_path)
             except: pass
 
-        for _ in range(40):
-            if upload_result["status"] is not None: break
-            time.sleep(0.5)
-        page.remove_listener("response", on_response)
-
-        if upload_result["status"] == 200:
-            body = upload_result.get("body", {})
-            if str(body.get("status", "")) == "0":
-                print("    ✅ 画像アップロード成功"); return True
-            print(f"    ❌ アップロード失敗 (body={body})")
-        elif upload_result["status"] is not None:
-            print(f"    ❌ HTTP {upload_result['status']}")
-        else:
-            print("    ⚠️ タイムアウト")
+        if response.status != 200:
+            print(f"    ❌ HTTP {response.status}")
+            continue
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
+        if str(body.get("status", "")) == "0":
+            img_key = body.get("img_key", "")[:12] + "..." if body.get("img_key") else ""
+            print(f"    ✅ 画像アップロード成功 {img_key}")
+            return True
+        print(f"    ❌ アップロード失敗 (body={body})")
     return False
 
 
@@ -465,17 +562,27 @@ def set_price(page, price_jpy):
     print(f"    💴 ¥{int(price_jpy):,} → {result}")
 
 
+BRAND_INPUT_SELECTOR = 'input.bmm-c-text-field[placeholder*="ブランド名"]'
+
+
 def select_brand(page, brand_name, brand_phonetic, brand_id):
     if brand_id == 0:
         print(f"    ⚠️ ブランド未登録: {brand_name}"); return False
 
+    # placeholder ベースでブランド入力欄を特定するJS断片
+    find_brand_input = (
+        "document.querySelector('input.bmm-c-text-field[placeholder*=\"ブランド名\"]')"
+        " || document.querySelectorAll('input')[7]"
+    )
+
     if brand_id > 0:
         result = page.evaluate(f"""(function(){{
-            var bi=document.querySelectorAll('input')[7];if(!bi)return 'no input';
+            var bi={find_brand_input};if(!bi)return 'no input';
             var f=window.__gf(bi),c=f;
-            for(var d=0;d<8;d++){{if(!c)break;c=c.return}}
-            if(c&&c.memoizedProps&&c.memoizedProps.onChangeText)
-                c.memoizedProps.onChangeText({{target:{{value:{json.dumps(brand_name)}}}}});
+            for(var d=0;d<30;d++){{if(!c)break;
+                if(c.memoizedProps&&typeof c.memoizedProps.onChangeText==='function'){{
+                    c.memoizedProps.onChangeText({{target:{{value:{json.dumps(brand_name)}}}}});
+                    break}}c=c.return}}
             var f2=window.__gf(bi),c2=f2;
             for(var d=0;d<30;d++){{if(!c2)break;
                 if(c2.memoizedProps&&c2.memoizedProps.onClickBrand){{
@@ -483,13 +590,13 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
                     return 'ok d='+d}}c2=c2.return}}
             return 'onClickBrand not found'}})()""")
         time.sleep(0.5)
-        val = page.evaluate("document.querySelectorAll('input')[7]?.value||''")
+        val = page.evaluate(f"({find_brand_input})?.value||''")
         ok = brand_phonetic in val or brand_name.lower() in val.lower()
         print(f"    🏷️ ブランド: {val} → {'✅' if ok else '⚠️'} ({result})")
         return ok
 
-    # brand_id == -1: サジェスト経由
-    page.evaluate(f"var bi=document.querySelectorAll('input')[7];if(bi)window.__si(bi,{json.dumps(brand_name)});")
+    # brand_id == -1: サジェスト経由（brand_id 不明時のフォールバック）
+    page.evaluate(f"var bi={find_brand_input};if(bi)window.__si(bi,{json.dumps(brand_name)});")
     for _ in range(10):
         time.sleep(0.5)
         if page.evaluate("document.querySelectorAll('.bmm-c-suggest__option--selectable').length>0"):

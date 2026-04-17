@@ -875,14 +875,49 @@ def publish_product(page):
 
 
 def save_draft(page):
+    """下書き保存ボタンを押し、URLの遷移で成否を判定する。
+
+    BUYMA は保存後に以下のいずれかに遷移することが多い:
+      - /my/sell/{item_id}/edit
+      - /my/sell/edit/{item_id}
+      - /my/mypage/... （下書き一覧）
+    いずれでもない場合は URL が変わっているかだけでも判定する。
+    """
+    url_before = page.url
     page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
         .find(function(b){return b.textContent.trim().includes('下書き保存する')});if(b)b.click();""")
-    time.sleep(2.5)
-    url = page.url
-    if "/my/sell/" in url and "/edit" in url:
-        item_id = url.split("/my/sell/")[1].replace("/edit", "").split("?")[0]
-        print(f"    💾 下書き保存: ID={item_id}"); return item_id
-    print(f"    ⚠️ 保存未確認"); return None
+
+    # URL の変化を最大 10 秒待つ（2.5 秒では足りないケースがあった）
+    item_id = None
+    for _ in range(20):
+        time.sleep(0.5)
+        url = page.url
+        if url == url_before:
+            continue
+        # item_id を含むパターンを優先的に抽出
+        import re
+        m = re.search(r"/my/sell/(\d+)(?:/edit)?", url)
+        if m:
+            item_id = m.group(1)
+            break
+        m = re.search(r"/my/sell/edit/(\d+)", url)
+        if m:
+            item_id = m.group(1)
+            break
+        # URL が変わっただけで ID が取れない場合も成功扱いにして継続
+        if "/my/" in url and "/sell/new" not in url:
+            break
+
+    url_after = page.url
+    if item_id:
+        print(f"    💾 下書き保存: ID={item_id}")
+        return item_id
+    if url_after != url_before and "/sell/new" not in url_after:
+        # 遷移したが ID が抽出できない → とりあえず保存成功扱い
+        print(f"    💾 下書き保存（ID未確定）: {url_after}")
+        return "saved"
+    print(f"    ⚠️ 保存未確認 (url={url_after})")
+    return None
 
 
 # ========== 1商品の処理 ==========

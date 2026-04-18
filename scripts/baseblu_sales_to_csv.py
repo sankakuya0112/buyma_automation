@@ -91,6 +91,23 @@ def fetch_product_detail(handle):
         return {}
 
 
+def _extract_season(description: str) -> str:
+    """商品説明テキストから "Season: AW25" のようなシーズン情報を抽出する。
+
+    baseblu の body_html から得た description_en には
+      Sku: AA9C0962T666A_643
+      Season: AW25
+      Fit: Regular
+    のような情報が含まれることがある。
+    """
+    if not description:
+        return ""
+    m = re.search(r"Season\s*[:：]\s*([A-Z]{1,4}\d{2,4})", description, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    return ""
+
+
 def _extract_color(product: dict) -> str:
     """Shopify product の options から Color 情報を抽出する。無ければ空文字列。
 
@@ -185,10 +202,11 @@ def parse_product(product, fetch_details=True):
                     sku = detail_variants[0].get("sku", "")
         time.sleep(0.3)  # レート制限対策
 
-    # 色・サイズ抽出（BUYMA 出品フォームに流し込むため）
+    # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
     color = _extract_color(product)
     sizes = _extract_sizes(variants, only_available=False)
     available_sizes = _extract_sizes(variants, only_available=True)
+    season = _extract_season(description_en)
 
     return {
         "title": title,
@@ -198,6 +216,7 @@ def parse_product(product, fetch_details=True):
         "color": color,
         "sizes": sizes,
         "available_sizes": available_sizes,
+        "season": season,
         "sale_price": sale_price,
         "original_price": original_price,
         "discount_rate": discount_rate,
@@ -212,7 +231,7 @@ def parse_product(product, fetch_details=True):
 def save_to_csv(rows, output_path):
     fieldnames = [
         "title", "vendor", "product_type", "sku",
-        "color", "sizes", "available_sizes",
+        "color", "sizes", "available_sizes", "season",
         "sale_price", "original_price", "discount_rate", "available",
         "description_en", "image_url", "sub_images", "product_url"
     ]

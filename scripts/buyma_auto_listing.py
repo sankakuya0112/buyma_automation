@@ -149,20 +149,35 @@ FASHION_TERMS = {
     "crossbody": "クロスボディ", "clutch": "クラッチ",
 }
 
+def _strip_accents(text: str) -> str:
+    """Latin 系のアクセント文字 (è, é, â, ç 等) を ASCII に変換する。
+
+    BUYMA の商品コメント欄は「不正な文字 è」等で validation ブロックするため必須。
+    日本語や全角文字は NFD 分解しても combining mark が付かないので影響しない。
+    """
+    if not text:
+        return text
+    nfd = unicodedata.normalize("NFD", text)
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
 def translate_description(desc_en):
     """英語商品説明を和訳する。
 
     優先順位:
       1. app.utils.text.translate_description (DEEPL_API_KEY があれば DeepL 経由)
       2. FASHION_TERMS を使ったヒューリスティック置換
+
+    いずれの場合も末尾でアクセント文字を ASCII に正規化する
+    （BUYMA が è 等の文字を validation で弾くため）。
     """
     if not desc_en:
         return ""
-    if _translate_description_advanced is not None:
-        try:
-            return _translate_description_advanced(desc_en)
-        except Exception as e:
-            print(f"    ⚠️ DeepL翻訳失敗、ヒューリスティック置換に切替: {e}")
+    try:
+        if _translate_description_advanced is not None:
+            return _strip_accents(_translate_description_advanced(desc_en))
+    except Exception as e:
+        print(f"    ⚠️ DeepL翻訳失敗、ヒューリスティック置換に切替: {e}")
 
     lines = desc_en.strip().split('\n')
     translated = []
@@ -175,7 +190,7 @@ def translate_description(desc_en):
             if en in tl:
                 line = line.replace(en, ja).replace(en.title(), ja).replace(en.upper(), ja)
         translated.append(line)
-    return '\n'.join(translated)
+    return _strip_accents('\n'.join(translated))
 
 
 # ========== データ読み込み ==========
@@ -425,29 +440,21 @@ def generate_description(title, vendor, sku, description_en, cat_label):
 
 
 def generate_buyma_title(title, vendor, sku, cat_label):
-    """BUYMA用SEO最適化タイトル
-    形式: 【ブランド名】商品名 品番 カテゴリ 正規品 関税送料込
-    ※BUYMAタイトル上限は60文字程度
+    """BUYMA用 タイトル生成
+
+    形式: 【BRAND】 Title   （品番・正規品などは他フィールドに入るのでタイトルには含めない）
+    BUYMA のタイトル上限は 60文字程度。ブランド名を含めて 60文字で切る。
     """
-    sv = normalize_text(vendor)
-    st = normalize_text(title)
-    parts = [f"{sv}", st]
-    if sku:
-        parts.append(sku)
-    # SEOキーワード追加
-    parts.append("正規品")
-    parts.append("関税送料込")
+    sv = normalize_text(vendor).strip()
+    st = normalize_text(title).strip()
+    # 元タイトルに BRAND 名が含まれている場合は重複を避ける
+    if sv and st.upper().startswith(sv.upper()):
+        st = st[len(sv):].lstrip(" -:")
 
-    full = " ".join(parts)
-    # 60文字超えたらSEOキーワードを削る
-    if len(full) > 60:
-        full = " ".join(parts[:-1])  # 「関税送料込」を削除
-    if len(full) > 60:
-        full = " ".join(parts[:-2])  # 「正規品」も削除
-    if len(full) > 60:
-        full = full[:57] + "..."
-
-    return full
+    base = f"【{sv}】 {st}" if sv else st
+    if len(base) > 60:
+        base = base[:57] + "..."
+    return base
 
 
 def download_image(url, dest):
@@ -524,6 +531,7 @@ def load_products(max_price=None, min_profit=None):
                 "color": (row.get("color") or "").strip(),
                 "sizes": (row.get("sizes") or "").strip(),
                 "available_sizes": (row.get("available_sizes") or "").strip(),
+                "season": (row.get("season") or "").strip(),
                 "description_en": (row.get("description_en") or "").strip(),
                 "image_url": (row.get("image_url") or "").strip(),
                 "sub_images": (row.get("sub_images") or "").strip(),
@@ -708,23 +716,54 @@ def set_category(page, path):
             return 'no_match';
         }})()""")
         if clicked == "no_match":
-            dump = page.evaluate(f"""(function(){{
-                var opts = document.querySelectorAll({json.dumps(selector_union)});
-                var rows = [];
-                for (var i = 0; i < Math.min(opts.length, 20); i++) rows.push(opts[i].textContent.trim());
-                if (rows.length === 0) {{
-                    // 何も取れない場合は .Select 系の innerText を吐く
-                    var sels = document.querySelectorAll('.Select, .bmm-c-select');
-                    var meta = [];
-                    for (var j = 0; j < sels.length && j < 10; j++) {{
-                        meta.push(j + ':' + sels[j].className + ' | ' + (sels[j].textContent || '').slice(0,40));
+            # 3階層目のみ: 区切り文字で分割してトークン単位で再検索する
+            #    例 "シャツ・ブラウス" → "シャツ" / "ブラウス" を順番に試し、
+            #        それでもダメなら "その他" にフォールバック
+            alt_labels = []
+            if idx == len(path) - 1:
+                tokens = [t for t in label.replace("/", "・").split("・") if t.strip()]
+                alt_labels.extend(tokens)
+                alt_labels.append("その他")
+            retry_success = False
+            for alt in alt_labels:
+                retry = page.evaluate(f"""(function(){{
+                    var opts = document.querySelectorAll({json.dumps(selector_union)});
+                    var target = {json.dumps(alt)};
+                    for (var i = 0; i < opts.length; i++) {{
+                        if (opts[i].textContent.trim() === target) {{
+                            opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                            return 'exact';
+                        }}
                     }}
-                    return 'SELECTS: ' + meta.join(' || ');
-                }}
-                return rows;
-            }})()""")
-            print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし: {dump}")
-            return False
+                    for (var i = 0; i < opts.length; i++) {{
+                        if (opts[i].textContent.trim().indexOf(target) !== -1) {{
+                            opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                            return 'partial';
+                        }}
+                    }}
+                    return 'no_match';
+                }})()""")
+                if retry != "no_match":
+                    retry_success = True
+                    label = alt
+                    break
+            if not retry_success:
+                dump = page.evaluate(f"""(function(){{
+                    var opts = document.querySelectorAll({json.dumps(selector_union)});
+                    var rows = [];
+                    for (var i = 0; i < Math.min(opts.length, 20); i++) rows.push(opts[i].textContent.trim());
+                    if (rows.length === 0) {{
+                        var sels = document.querySelectorAll('.Select, .bmm-c-select');
+                        var meta = [];
+                        for (var j = 0; j < sels.length && j < 10; j++) {{
+                            meta.push(j + ':' + sels[j].className + ' | ' + (sels[j].textContent || '').slice(0,40));
+                        }}
+                        return 'SELECTS: ' + meta.join(' || ');
+                    }}
+                    return rows;
+                }})()""")
+                print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし: {dump}")
+                return False
         time.sleep(0.6)
 
     print(f"    📁 カテゴリ: {' > '.join(path)} → ✅")
@@ -1084,6 +1123,99 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     print(f"    🌍 地域: {results}")
 
 
+def set_sku(page, sku, identify_memo=""):
+    """品番 (SKU) + 識別メモ (非公開) を入力する。
+
+    BUYMA の品番フィールドは検索用のブランド公式品番。
+    識別メモはショッパーの在庫管理用で購入者には公開されない。
+    """
+    if not sku:
+        print("    🔖 品番: (なし)")
+        return
+    result = page.evaluate(f"""(function(){{
+        var sku = {json.dumps(sku)};
+        var memo = {json.dumps(identify_memo)};
+        var results = [];
+        // 「品番」セクションを探す。label/dt/h*/ span で「品番」を含む近傍の input を狙う
+        var labels = document.querySelectorAll('label, dt, h3, h4, span, .bmm-c-summary__ttl');
+        for (var i = 0; i < labels.length; i++) {{
+            var t = (labels[i].textContent || '').trim();
+            if (t !== '品番' && t.indexOf('品番') === -1) continue;
+            // 祖先を4レベル登り、input を収集
+            var parent = labels[i];
+            for (var d = 0; d < 6 && parent; d++) {{
+                var inputs = parent.querySelectorAll('input[type="text"], input:not([type])');
+                if (inputs.length >= 1) {{
+                    // 1つ目 = 品番
+                    window.__si(inputs[0], sku);
+                    results.push('品番=ok');
+                    // 2つ目 = 識別メモ（あれば）
+                    if (inputs.length >= 2 && memo) {{
+                        window.__si(inputs[1], memo);
+                        results.push('識別メモ=ok');
+                    }}
+                    return results;
+                }}
+                parent = parent.parentElement;
+            }}
+        }}
+        return 'not_found';
+    }})()""")
+    print(f"    🔖 品番: {sku} ({result})")
+
+
+def set_season(page, season):
+    """シーズンドロップダウン（例: AW25, SS24）を設定する。
+
+    BUYMA のシーズン欄は react-select のドロップダウンで、候補は
+    '2024 AW' / '2025 SS' / '2025 AW' のような表記が多い。
+    仕入先の 'AW25' → '2025 AW' に正規化して選択を試みる。
+    """
+    if not season:
+        return
+    s = season.strip().upper()
+    # "AW25" → year=2025, half="AW" のように分解
+    import re as _re
+    m = _re.match(r"([A-Z]{2,3})[\s\-]?(\d{2,4})", s)
+    if not m:
+        # "25AW" 形式にも対応
+        m = _re.match(r"(\d{2,4})[\s\-]?([A-Z]{2,3})", s)
+        if m:
+            year_raw, half = m.group(1), m.group(2)
+        else:
+            print(f"    🗓️ シーズン: パース失敗 ({season})")
+            return
+    else:
+        half, year_raw = m.group(1), m.group(2)
+    year = "20" + year_raw[-2:] if len(year_raw) <= 2 else year_raw
+    # 候補ラベルは複数パターンを試す
+    candidates = [f"{year} {half}", f"{year}{half}", f"{half} {year}", f"{half}{year}", f"{year}年{half}"]
+
+    # シーズン見出しの近傍で .Select を特定
+    idx = page.evaluate("""(function(){
+        var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label');
+        for (var i = 0; i < titles.length; i++) {
+            if ((titles[i].textContent || '').indexOf('シーズン') === -1) continue;
+            var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div') || titles[i].parentElement;
+            var sels = sec ? sec.querySelectorAll('.Select, .bmm-c-select') : [];
+            if (sels.length === 0) continue;
+            var all = document.querySelectorAll('.Select, .bmm-c-select');
+            return Array.from(all).indexOf(sels[0]);
+        }
+        return -1;
+    })()""")
+    if idx is None or idx < 0:
+        print(f"    🗓️ シーズン: ドロップダウンが見つからない ({season})")
+        return
+
+    dd = page.locator('.Select, .bmm-c-select').nth(idx)
+    for cand in candidates:
+        if _click_select_option(page, dd, cand, debug_name=f"シーズン[{cand}]"):
+            print(f"    🗓️ シーズン: {cand}")
+            return
+    print(f"    🗓️ シーズン: 候補該当なし ({season})")
+
+
 def set_purchase_deadline(page):
     """購入期限を90日後に設定"""
     deadline = (datetime.now() + timedelta(days=90)).strftime("%Y/%m/%d")
@@ -1241,12 +1373,17 @@ def set_color(page, color_name="マルチカラー", color_label=None):
     print(f"    🎨 色: {color_name} (ラベル={color_label!r} {result})")
 
 
-def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
-    """サイズタブを開いて バリエーション=なし、参考日本サイズ=FREE、在庫=買付可、数量= stock_qty を設定。
+def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
+    """サイズタブを開いて バリエーション=なし、サイズ名、参考日本サイズ=jp_size、
+    在庫=買付可、数量= stock_qty を設定。
 
-    react-select の option は Playwright の native click で選ばないと
-    内部 state が更新されない（ブランドと同じ問題）。
+    size_name: サイズ名テキスト欄 (placeholder "FREE SIZE") の値。
+               仕入先サイズ（"40" や "M" 等）をそのまま表示する。
+               未指定時は jp_size を流用。
     """
+    if size_name is None:
+        size_name = jp_size
+
     # サイズタブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='サイズ'});if(t)t.click();""")
@@ -1255,9 +1392,24 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
     panel = page.locator('#react-tabs-3')
 
     # 1) バリエーション: なし（パネル直下の最初の .Select）
-    #    既に「バリエーションなし」が選択済みのケースもあるので、失敗しても続行
     variation_dd = panel.locator('.Select').first
     _click_select_option(page, variation_dd, "バリエーションなし", debug_name="バリエーション")
+
+    # 1b) サイズ名テキスト欄（placeholder が "FREE SIZE" など）
+    name_result = page.evaluate(f"""(function(){{
+        var p = document.querySelector('#react-tabs-3') || document.querySelector('[role="tabpanel"]');
+        if (!p) return 'no_panel';
+        var inputs = p.querySelectorAll('input[type="text"], input:not([type])');
+        for (var i = 0; i < inputs.length; i++) {{
+            var el = inputs[i];
+            var ph = (el.getAttribute('placeholder') || '');
+            // サイズ名入力欄は placeholder が "FREE SIZE" / "S" / "M" 等の短い英数字
+            if (ph.indexOf('ブランド') !== -1) continue;
+            window.__si(el, {json.dumps(size_name)});
+            return 'set idx=' + i + ' ph=' + ph;
+        }}
+        return 'no_input';
+    }})()""")
 
     # 2) 参考日本サイズ（表中の .Select。現在値「指定なし」を含むもの）
     #    panel 内で current text が「指定なし」の .Select を探す
@@ -1650,7 +1802,21 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     set_shipping(page, price); human_delay(0.3, 0.6)
     set_region(page); human_delay(0.3, 0.6)
 
-    # 7. 購入期限（90日）
+    # 7a. 品番 (SKU) + 識別メモ (非公開: 色/サイズ/素材の簡易メモ)
+    raw_color = (product.get("color") or "").strip()
+    first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
+    raw_sizes_tmp = (product.get("sizes") or "").strip()
+    first_size_tmp = raw_sizes_tmp.split(",")[0].strip() if raw_sizes_tmp else ""
+    identify_parts = []
+    if first_color_en: identify_parts.append(f"色:{first_color_en}")
+    if first_size_tmp: identify_parts.append(f"サイズ:{first_size_tmp}")
+    identify_memo = "/".join(identify_parts)
+    set_sku(page, sku, identify_memo=identify_memo); human_delay(0.3, 0.6)
+
+    # 7b. シーズン（baseblu の "AW25" 等）
+    set_season(page, product.get("season", "")); human_delay(0.3, 0.6)
+
+    # 7c. 購入期限（90日）
     set_purchase_deadline(page); human_delay(0.3, 0.6)
 
     # 8. 関税チェック
@@ -1669,7 +1835,10 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     # 複数サイズの場合はとりあえず先頭 1 つを採用（将来バリエーション対応で拡張）
     raw_sizes = (product.get("sizes") or "").strip()
     first_size = raw_sizes.split(",")[0].strip() if raw_sizes else ""
-    set_size_and_stock(page, jp_size=first_size or "FREE"); human_delay(0.5, 1.0)
+    # サイズ名欄には仕入先の表記をそのまま。参考日本サイズ dropdown は jp_size と同じ値で検索
+    set_size_and_stock(page,
+                       jp_size=first_size or "FREE",
+                       size_name=first_size or "FREE"); human_delay(0.5, 1.0)
 
     # 11. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)

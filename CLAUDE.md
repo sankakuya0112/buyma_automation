@@ -10,8 +10,155 @@
 BUYMA 自動出品ツール。baseblu.com からセール商品をスクレイピングし、
 価格計算・翻訳を経て BUYMA に自動出品するパイプライン。
 
-**メインスクリプト**: `scripts/run_pipeline.py`  
+**メインスクリプト**: `scripts/buyma_auto_listing.py`  
 **ブランチ**: `claude/add-test-flag-HibqE`
+
+---
+
+## 🔑 BUYMA 出品フォームの仕様（Playwright 自動操作の知見）
+
+BUYMA の出品フォーム (`/my/sell/new?tab=b`) を自動操作する際の
+**罠と対策**を以下に記録する。同じミスを繰り返さないこと。
+
+### 1. 遅延描画 (lazy render) を使っている
+
+BUYMA のフォームは **画面外の要素を DOM にすら存在させない**。
+スクロールして近づいたときに初めて React が生成する。
+
+**対策**: `_scroll_through_page(page)` ヘルパーを呼んでからクエリする。
+12回 × 500px のホイールスクロールで全セクションを render させる。
+`page.mouse.wheel()` でユーザー操作を再現するのが効果的（JS の `window.scrollTo`
+だけだと IntersectionObserver が発火しないことがある）。
+
+### 2. 条件付きレンダリング（ブランド入力 → 品番出現）
+
+**ブランドを正しく選択すると初めて「品番/識別メモ」セクションが DOM に出現する。**
+ブランド未入力の状態ではスクロールしても品番 input は存在しない。
+
+**対策**: `process_product()` の処理順序を
+`… → set_purchase_memo → select_brand → set_sku → save_draft` に固定する。
+`set_sku` は必ず `select_brand` の後に呼ぶ。
+
+### 3. react-select の選択は DOM クリック必須
+
+`window.__srs()` で React の onChange prop を直接呼び出す方式は、
+BUYMA の内部 state を完全には更新しないケースがある。例:
+- ブランド: 「BUYMAに登録されていないブランド名」警告が残り保存拒否
+- 色/サイズ: 表示は変わるが保存時に無効扱い
+
+**対策**: `_click_select_option()` を使い、`mousedown` イベント dispatch または
+Playwright の `locator.click()` で**本物のマウスクリック**を再現する。
+
+### 4. サジェスト候補も DOM クリック必須
+
+ブランド input に文字を入れて現れるサジェスト候補 `.bmm-c-suggest__option--selectable`
+も同じく Playwright の `locator.click()` が必須。React onClick prop 直叩きでは
+状態が完全反映されない。`select_brand()` 参照。
+
+### 5. BUYMA のブランド API は移行済み
+
+旧: `https://www.buyma.com/rorapi/suggest/brands.json`（404）
+新: `https://cdn-suggest.buyma.com/brand_suggest?keyword=XXX`
+
+Response 形式: `[{"text": "GIVENCHY", "phonetic": "ジバンシィ", "brand_id": 43}]`
+
+画像アップロード API は依然 `/rorapi/item_image.json` で生きている
+（POST = upload、DELETE = 削除）。
+
+### 6. 画像アップロードは `page.expect_response()`
+
+`page.on("response", ...)` だと初回レスポンスを見逃してリトライが走り、
+**同じ画像が 2 回以上アップロード**される不具合が発生する。
+`page.expect_response(POST item_image.json)` で待機する方式が正解。
+
+### 7. 商品コメントのアクセント文字は validation エラー
+
+"Lavallière" など Latin アクセント付き文字が含まれると
+「商品コメントに不正な文字『è』が含まれています」で弾かれる。
+`_strip_accents()` で NFD 分解 + combining mark 除去を必ず適用する。
+
+### 8. タブパネル ID は固定ではない
+
+`#react-tabs-1` `#react-tabs-3` のような ID は BUYMA 側でバージョンによって変わる。
+`_click_tab_by_name(page, "色")` で `aria-controls` 属性から動的に panel id を
+取得すること。
+
+### 9. DOM 位置ベースのセクション内要素探索
+
+出品メモ と 買付先メモ の両 textarea は**共通祖先に両方のタイトル文字列を含む**ため、
+ancestor 探索だと誤って 1 つの textarea に両方書き込まれる。
+`_fill_in_section(section_title, value, tag, input_idx)` で、
+見出しの DOM 位置と次見出しの DOM 位置の**範囲内**で N番目の要素を選ぶ方式が正しい。
+
+### 10. 品番フィールドの特定方法
+
+`.sell-model-number-table` クラス配下の 1つ目 input が品番、2つ目が識別メモ。
+placeholder には SKU サンプル（例 `1BD075_2BLF_F0002_V_KOO`）が入っており、
+正規表現 `^[A-Z0-9][A-Z0-9_\-]{5,}$` で一意に特定できる（上述の条件付き
+レンダリングで DOM に出現してから）。
+
+### 11. ブランドは保存直前に設定
+
+他 setter の React 再レンダリングで brand state がリセットされる。
+`select_brand()` は `process_product()` の末尾 (save_draft 直前の、
+set_sku の直前) に配置する。
+
+### 12. 発送地・買付地は 2段セレクト
+
+- 買付地: 大陸 dropdown → 国 dropdown（例: ヨーロッパ → イタリア）
+- 発送地: 国内/海外 radio → 都道府県 dropdown（例: 国内 → 神奈川県）
+
+`set_region()` で `_find_section_selects()` を使いセクション内の Select を取得。
+
+### 13. 下書き保存ボタンは Playwright クリック必須
+
+JS の `button.click()` では React ボタンが反応しないケース多数。
+`page.locator('button:has-text("下書き保存する")').click()` を使う。
+
+### 14. CSV パイプラインから渡るデータ構造
+
+```
+baseblu_sales_to_csv.py → filter_baseblu_profitable.py → buyma_auto_listing.py
+```
+
+- **SKU**: variant SKU から末尾 `_<option1 値>` を剥がして製品レベルに正規化。
+  `description_en` に "Sku: XXX" と明記されている場合はそちらを優先
+- **color**: JSON options / variants.option2 / tags / body_html / title keyword /
+  **商品ページ HTML から抽出**（5+1段フォールバック）
+- **sizes**: `variants[].option1` から全バリアント取得（カンマ区切り）
+- **season**: `description_en` の "Season: AW25" 正規表現
+- **product_type**: Shopify の `product_type`。BUYMA カテゴリ 3階層マッピングの入口
+- **日本語翻訳**: DEEPL_API_KEY 設定時は DeepL 経由、無ければ FASHION_TERMS 辞書置換
+
+### 15. brands.json のスキーマ
+
+```json
+{
+  "brands": {"gucci": {"brand_id": 203, "phonetic": "グッチ"}},
+  "unregistered": ["..."],
+  "auto_lookup_enabled": true
+}
+```
+
+brand_id が `null` なら出品時に CDN API で自動取得して上書き保存する。
+手動追加時は brand_id を明示指定するか、一度実行すれば自動補完される。
+
+### 16. categories.json のスキーマ
+
+```json
+{
+  "default": ["レディースファッション", "小物", "その他"],
+  "mappings": [
+    {"product_type": "BAGS", "default": [...], "keywords": [
+      {"match": ["shoulder bag"], "path": ["レディースファッション", "バッグ・カバン", "ショルダーバッグ"]}
+    ]}
+  ]
+}
+```
+
+title 中のキーワードで 3階層パス（parent > middle > leaf）を決定。
+キーワードにマッチしなければ product_type の default、それもなければ
+グローバル default を使う。
 
 ---
 

@@ -1445,6 +1445,20 @@ def set_color(page, color_name="マルチカラー", color_label=None):
     if color_label is None:
         color_label = color_name
 
+    # 色・サイズ セクションを lazy render から起こす
+    _scroll_through_page(page, chunks=8)
+    # 色タブ周辺までスクロールして表示させる
+    page.evaluate("""(function(){
+        var tabs = document.querySelectorAll('[role="tab"]');
+        for (var i = 0; i < tabs.length; i++) {
+            if (tabs[i].textContent.trim() === '色') {
+                tabs[i].scrollIntoView({block: 'center'});
+                return;
+            }
+        }
+    })()""")
+    time.sleep(0.5)
+
     # 「色」タブをクリックして active panel を取得
     panel_sel = _click_tab_by_name(page, "色")
     if not panel_sel:
@@ -1517,6 +1531,19 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
     """
     if size_name is None:
         size_name = jp_size
+
+    # サイズ セクションを lazy render から起こす
+    _scroll_through_page(page, chunks=8)
+    page.evaluate("""(function(){
+        var tabs = document.querySelectorAll('[role="tab"]');
+        for (var i = 0; i < tabs.length; i++) {
+            if (tabs[i].textContent.trim() === 'サイズ') {
+                tabs[i].scrollIntoView({block: 'center'});
+                return;
+            }
+        }
+    })()""")
+    time.sleep(0.5)
 
     # サイズタブをクリックして active panel を取得
     panel_sel = _click_tab_by_name(page, "サイズ")

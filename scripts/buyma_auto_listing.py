@@ -1123,24 +1123,51 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     print(f"    🌍 地域: {results}")
 
 
+def _ensure_rendered(page, css_selector, max_scrolls=15, step_px=600):
+    """BUYMA の遅延描画フォームで、指定 CSS セレクタが DOM に現れるまで
+    ホイールスクロールを繰り返す。
+
+    返り値: True なら描画された、False なら最大回数でも出なかった。
+    """
+    # 最初の時点で既に存在していれば即 True
+    if page.evaluate(f"!!document.querySelector({json.dumps(css_selector)})"):
+        return True
+    for _ in range(max_scrolls):
+        try:
+            page.mouse.wheel(0, step_px)
+        except Exception:
+            page.evaluate(f"window.scrollBy(0, {step_px})")
+        time.sleep(0.35)
+        if page.evaluate(f"!!document.querySelector({json.dumps(css_selector)})"):
+            return True
+    return False
+
+
 def set_sku(page, sku, identify_memo=""):
     """品番 (SKU) + 識別メモ (非公開) を入力する。
 
-    BUYMA の品番 input は placeholder にサンプル SKU（例 "1BD075_2BLF_F0002_V_KOO"）が
-    表示されていることを利用して特定する。
-    品番セクションは遅延描画されるため、まず scrollIntoView で DOM を描画させる。
+    BUYMA の品番セクション (.sell-model-number-table) は遅延描画される。
+    画面外だと DOM に存在しないため、まずホイールスクロールで描画させる。
     """
     if not sku:
         print("    🔖 品番: (なし)")
         return
 
-    # 遅延描画される品番セクションを強制的に画面内へスクロールして DOM を生成させる
+    # 品番セクションを DOM に出すために下スクロール
+    rendered = _ensure_rendered(page, '.sell-model-number-table')
+    if not rendered:
+        # セクション固有クラスが見つからない場合、placeholder が SKU サンプル形式の input が出現するまで試す
+        _ensure_rendered(
+            page,
+            'input[placeholder^="1BD075"], input[placeholder^="AA"], input[placeholder*="_"]',
+        )
+
+    # 画面中央に寄せて、React の描画完了も少し待つ
     page.evaluate("""(function(){
         var t = document.querySelector('.sell-model-number-table');
-        if (t) { t.scrollIntoView({block: 'center'}); return 'scrolled'; }
-        return 'no_table';
+        if (t) t.scrollIntoView({block: 'center'});
     })()""")
-    time.sleep(1.0)
+    time.sleep(0.8)
 
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};

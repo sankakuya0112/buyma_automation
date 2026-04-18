@@ -1634,22 +1634,22 @@ def set_purchase_memo(page, product):
     results["出品メモ"]    = _fill_by_label("出品メモ",  listing_memo, is_textarea=True)
     results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
 
-    # 買付先ショップ名セクションは「ショップ名 input」と「URL input」の 2つの input を含む想定。
-    # 見出し「買付先ショップ名」の DOM 位置から、その直後〜次の見出しまでの input を拾う。
+    # 買付先ショップ名セクションは「URL input」「ショップ名 input」の 2つの input を含む想定。
+    # 見出し「買付先ショップ名」から次の大見出しまでの範囲で input を拾う。
+    # label 要素は除外（内部の項目名ラベルで範囲が狭まるのを防ぐ）。
+    # 1つ目の input = 買付先URL（空欄のケース）、2つ目 = ショップ名
     shop_url_result = page.evaluate(f"""(function(){{
         var shopName = {json.dumps(shop_name)};
         var url = {json.dumps(product_url)};
         var titles = document.querySelectorAll(
-            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label'
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
         );
-        var out = {{'ショップ名': 'skip', 'URL': 'skip'}};
         for (var i = 0; i < titles.length; i++) {{
             var t = (titles[i].textContent || '').trim();
-            if (t.indexOf('買付先ショップ名') === -1 && t !== '買付先') continue;
+            if (t.indexOf('買付先ショップ名') === -1) continue;
             var startEl = titles[i];
             var endEl = titles[i + 1] || null;
-            // セクション範囲内の input[type=text] を順番に拾う
-            var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+            var inputs = document.querySelectorAll('input.bmm-c-text-field, input[type="text"]');
             var picked = [];
             for (var j = 0; j < inputs.length; j++) {{
                 if (!(startEl.compareDocumentPosition(inputs[j]) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
@@ -1659,23 +1659,20 @@ def set_purchase_memo(page, product):
                 picked.push(inputs[j]);
                 if (picked.length >= 2) break;
             }}
-            if (picked.length >= 1 && shopName) {{
-                window.__si(picked[0], shopName);
-                out['ショップ名'] = 'ok';
-            }}
-            if (picked.length >= 2 && url) {{
-                window.__si(picked[1], url);
+            var out = {{'URL': 'skip', 'ショップ名': 'skip', 'picked_count': picked.length}};
+            if (picked.length >= 1 && url) {{
+                window.__si(picked[0], url);
                 out['URL'] = 'ok';
-            }} else if (picked.length === 1 && url) {{
-                // 1つしかないケースは URL を入れる（ショップ名省略）
-                window.__si(picked[0], shopName + ' ' + url);
-                out['URL'] = 'combined_into_1';
+            }}
+            if (picked.length >= 2 && shopName) {{
+                window.__si(picked[1], shopName);
+                out['ショップ名'] = 'ok';
             }}
             return out;
         }}
         return 'section_not_found';
     }})()""")
-    results["買付先ショップ名+URL"] = shop_url_result
+    results["買付先URL+ショップ名"] = shop_url_result
 
     print(f"    📝 メモ: {results}")
 

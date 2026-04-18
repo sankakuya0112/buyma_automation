@@ -113,6 +113,16 @@ def _extract_color_from_html(html: str) -> str:
     """
     if not html:
         return ""
+
+    # パターン0（baseblu 固有・最優先）: product-page__colors__info__title(--desktop)?
+    m = re.search(
+        r'<div[^>]*class="[^"]*product-page__colors__info__title(?:--desktop)?[^"]*"[^>]*>\s*([A-Za-z][A-Za-z \-/]+?)\s*</div>',
+        html,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().title()
+
     # パターン1: data-color / data-color-name 属性
     for pat in [
         r'data-color(?:-name)?\s*=\s*["\']([A-Za-z][A-Za-z \-/]+)["\']',
@@ -286,6 +296,27 @@ def _extract_color(product: dict) -> str:
     return ""
 
 
+def _extract_sizes_from_html(html: str) -> str:
+    """baseblu の HTML から <div id="wrapper-option1-XS">... を抽出。
+    JSON の variants にサイズ情報がない場合のフォールバック。
+    """
+    if not html:
+        return ""
+    # id="wrapper-option1-<SIZE>" パターン
+    matches = re.findall(
+        r'id=["\']wrapper-option1-([A-Za-z0-9][A-Za-z0-9 \./\-]{0,10})["\']',
+        html,
+    )
+    seen = set()
+    out = []
+    for s in matches:
+        key = s.strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return ", ".join(out)
+
+
 def _extract_sizes(variants: list, only_available: bool = False) -> str:
     """variants から Size 情報（option1）を抽出。only_available=True なら在庫ありのみ。"""
     seen = set()
@@ -361,14 +392,20 @@ def parse_product(product, fetch_details=True):
 
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
     color = _extract_color(product)
-    # JSON API で色が取れなかった場合、商品ページ HTML から追加取得を試みる
-    if not color and fetch_details and handle:
-        html = fetch_product_html(handle)
-        color = _extract_color_from_html(html)
-        time.sleep(0.3)  # レート制限対策
     sizes = _extract_sizes(variants, only_available=False)
     available_sizes = _extract_sizes(variants, only_available=True)
     season = _extract_season(description_en)
+
+    # JSON API で色またはサイズが取れなかった場合、商品ページ HTML から追加取得
+    if fetch_details and handle and (not color or not sizes):
+        html = fetch_product_html(handle)
+        if not color:
+            color = _extract_color_from_html(html)
+        if not sizes:
+            sizes = _extract_sizes_from_html(html)
+            if sizes and not available_sizes:
+                available_sizes = sizes  # HTML 由来の在庫は不明のため同一扱い
+        time.sleep(0.3)  # レート制限対策
 
     # description_en に "Sku: XXX" が明記されていれば、それを優先（variant SKU より正確）
     desc_sku = _extract_sku_from_description(description_en)

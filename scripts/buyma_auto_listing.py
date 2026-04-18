@@ -111,6 +111,22 @@ COLOR_JA_MAP = [
 ]
 
 
+def normalize_size_for_buyma(raw_size: str) -> str:
+    """仕入先の size 表記を BUYMA の 参考日本サイズ ドロップダウンに合う値に変換する。
+
+    - "UNI" / "ONE SIZE" / 空 → "FREE"
+    - "XS" / "S" / "M" / "L" / "XL" / "XXL" → そのまま（アパレル用）
+    - 数字のみ（例 "40", "42"）→ そのまま（シューズ・バッグ用の EU サイズ想定）
+    - それ以外 → そのまま返し、BUYMA 側で partial match に任せる
+    """
+    if not raw_size:
+        return "FREE"
+    s = raw_size.strip().upper()
+    if s in ("UNI", "UNIC", "UNICA", "ONE SIZE", "ONESIZE", "OS", "FREE SIZE", "FREESIZE", "TU", "TAILLE UNIQUE"):
+        return "FREE"
+    return raw_size.strip()
+
+
 def translate_color_to_jp(en_color: str) -> str:
     """英語の色名を BUYMA 色の系統ラベル（日本語）に変換する。
 
@@ -1947,9 +1963,11 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     # 仕入先（baseblu）から取得した sizes があれば単一サイズ選択を試みる。
     raw_sizes = (product.get("sizes") or "").strip()
     first_size = raw_sizes.split(",")[0].strip() if raw_sizes else ""
+    # 仕入先表記 (UNI / 40 / XS 等) を BUYMA 側で受け入れやすい形に正規化
+    jp_size = normalize_size_for_buyma(first_size)
     set_size_and_stock(page,
-                       jp_size=first_size or "FREE",
-                       size_name=first_size or "FREE"); human_delay(0.5, 1.0)
+                       jp_size=jp_size,
+                       size_name=first_size or jp_size); human_delay(0.5, 1.0)
 
     # 12. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)

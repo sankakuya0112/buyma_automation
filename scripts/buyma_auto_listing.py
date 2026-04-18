@@ -1126,8 +1126,8 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
 def set_sku(page, sku, identify_memo=""):
     """品番 (SKU) + 識別メモ (非公開) を入力する。
 
-    BUYMA の品番フィールドは検索用のブランド公式品番。
-    識別メモはショッパーの在庫管理用で購入者には公開されない。
+    BUYMA の品番フィールドは .sell-model-number-table の中に 2つの input があり、
+    1つ目 = 品番、2つ目 = 識別メモ（色:Black/サイズ:M/素材:レザー 等）。
     """
     if not sku:
         print("    🔖 品番: (なし)")
@@ -1135,26 +1135,37 @@ def set_sku(page, sku, identify_memo=""):
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};
         var memo = {json.dumps(identify_memo)};
-        var results = [];
-        // 「品番」セクションを探す。label/dt/h*/ span で「品番」を含む近傍の input を狙う
+        // 1) .sell-model-number-table の tbody > tr > td の順に input を取得
+        var table = document.querySelector('.sell-model-number-table');
+        if (table) {{
+            var inputs = table.querySelectorAll('input[type="text"], input:not([type])');
+            if (inputs.length >= 1) {{
+                window.__si(inputs[0], sku);
+                var ret = ['品番=ok(idx=0)'];
+                if (inputs.length >= 2 && memo) {{
+                    window.__si(inputs[1], memo);
+                    ret.push('識別メモ=ok(idx=1)');
+                }}
+                return ret;
+            }}
+            return 'table_no_input';
+        }}
+        // 2) フォールバック: 「品番」ラベル近傍
         var labels = document.querySelectorAll('label, dt, h3, h4, span, .bmm-c-summary__ttl');
         for (var i = 0; i < labels.length; i++) {{
             var t = (labels[i].textContent || '').trim();
             if (t !== '品番' && t.indexOf('品番') === -1) continue;
-            // 祖先を4レベル登り、input を収集
             var parent = labels[i];
             for (var d = 0; d < 6 && parent; d++) {{
                 var inputs = parent.querySelectorAll('input[type="text"], input:not([type])');
                 if (inputs.length >= 1) {{
-                    // 1つ目 = 品番
                     window.__si(inputs[0], sku);
-                    results.push('品番=ok');
-                    // 2つ目 = 識別メモ（あれば）
+                    var ret = ['品番=fallback(label)'];
                     if (inputs.length >= 2 && memo) {{
                         window.__si(inputs[1], memo);
-                        results.push('識別メモ=ok');
+                        ret.push('識別メモ=fallback');
                     }}
-                    return results;
+                    return ret;
                 }}
                 parent = parent.parentElement;
             }}
@@ -1336,6 +1347,26 @@ def _click_select_option(page, dropdown_locator, option_label, debug_name=""):
     return False
 
 
+def _click_tab_by_name(page, tab_name):
+    """[role=\"tab\"] の中から textContent が tab_name に一致するものをクリックし、
+    aria-controls で対応する tabpanel のCSSセレクタ("#id") を返す。
+    見つからない場合は None。
+    """
+    panel_id = page.evaluate(f"""(function(){{
+        var target = {json.dumps(tab_name)};
+        var tabs = document.querySelectorAll('[role="tab"]');
+        for (var i = 0; i < tabs.length; i++) {{
+            if (tabs[i].textContent.trim() === target) {{
+                tabs[i].click();
+                return tabs[i].getAttribute('aria-controls');
+            }}
+        }}
+        return null;
+    }})()""")
+    time.sleep(0.8)
+    return ("#" + panel_id) if panel_id else None
+
+
 def set_color(page, color_name="マルチカラー", color_label=None):
     """色タブを開いて 色の系統 + 色名 の両方を設定する。
 
@@ -1346,19 +1377,20 @@ def set_color(page, color_name="マルチカラー", color_label=None):
     if color_label is None:
         color_label = color_name
 
-    # 「色」タブを選択
-    page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
-        var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='色'});if(t)t.click();""")
-    time.sleep(0.8)
+    # 「色」タブをクリックして active panel を取得
+    panel_sel = _click_tab_by_name(page, "色")
+    if not panel_sel:
+        print(f"    🎨 色: 色タブが見つからない")
+        return
 
     # 1) 色の系統ドロップダウン
-    panel = page.locator('#react-tabs-1')
+    panel = page.locator(panel_sel)
     color_dd = panel.locator('.Select').first
     _click_select_option(page, color_dd, color_name, debug_name="色の系統")
 
     # 2) 色名テキスト入力
     result = page.evaluate(f"""(function(){{
-        var p = document.querySelector('#react-tabs-1') || document.querySelector('[role="tabpanel"]');
+        var p = document.querySelector({json.dumps(panel_sel)});
         if (!p) return 'no_panel';
         var inputs = p.querySelectorAll('input[type="text"], input:not([type])');
         for (var i = 0; i < inputs.length; i++) {{
@@ -1370,7 +1402,7 @@ def set_color(page, color_name="マルチカラー", color_label=None):
         }}
         return 'no_input';
     }})()""")
-    print(f"    🎨 色: {color_name} (ラベル={color_label!r} {result})")
+    print(f"    🎨 色: {color_name} (ラベル={color_label!r} {result} panel={panel_sel})")
 
 
 def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
@@ -1384,12 +1416,12 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
     if size_name is None:
         size_name = jp_size
 
-    # サイズタブを選択
-    page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
-        var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='サイズ'});if(t)t.click();""")
-    time.sleep(0.8)
-
-    panel = page.locator('#react-tabs-3')
+    # サイズタブをクリックして active panel を取得
+    panel_sel = _click_tab_by_name(page, "サイズ")
+    if not panel_sel:
+        print(f"    📦 サイズタブが見つからない")
+        return
+    panel = page.locator(panel_sel)
 
     # 1) バリエーション: なし（パネル直下の最初の .Select）
     variation_dd = panel.locator('.Select').first
@@ -1397,13 +1429,12 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
 
     # 1b) サイズ名テキスト欄（placeholder が "FREE SIZE" など）
     name_result = page.evaluate(f"""(function(){{
-        var p = document.querySelector('#react-tabs-3') || document.querySelector('[role="tabpanel"]');
+        var p = document.querySelector({json.dumps(panel_sel)});
         if (!p) return 'no_panel';
         var inputs = p.querySelectorAll('input[type="text"], input:not([type])');
         for (var i = 0; i < inputs.length; i++) {{
             var el = inputs[i];
             var ph = (el.getAttribute('placeholder') || '');
-            // サイズ名入力欄は placeholder が "FREE SIZE" / "S" / "M" 等の短い英数字
             if (ph.indexOf('ブランド') !== -1) continue;
             window.__si(el, {json.dumps(size_name)});
             return 'set idx=' + i + ' ph=' + ph;
@@ -1411,25 +1442,21 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
         return 'no_input';
     }})()""")
 
-    # 2) 参考日本サイズ（表中の .Select。現在値「指定なし」を含むもの）
-    #    panel 内で current text が「指定なし」の .Select を探す
+    # 2) 参考日本サイズ: 全ページから「指定なし」を表示している .Select を探す
     target_dd_js = """(function(){
-        var p = document.querySelector('#react-tabs-3');
-        if (!p) return -1;
-        var sels = p.querySelectorAll('.Select');
-        var all = document.querySelectorAll('.Select');
-        for (var i = 0; i < sels.length; i++) {
-            var lbl = sels[i].querySelector('.Select-value-label, .Select-placeholder');
-            var t = lbl ? lbl.textContent.trim() : '';
-            if (t === '指定なし' || t.indexOf('指定なし') !== -1) {
-                return Array.from(all).indexOf(sels[i]);
+        var all = document.querySelectorAll('.Select, .bmm-c-custom-select');
+        for (var i = 0; i < all.length; i++) {
+            var lbl = all[i].querySelector('.Select-value-label, .Select-placeholder');
+            var t = lbl ? (lbl.textContent || '').trim() : '';
+            if (t === '指定なし') {
+                return i;
             }
         }
         return -1;
     })()"""
     idx = page.evaluate(target_dd_js)
     if idx is not None and idx >= 0:
-        ref_size_dd = page.locator('.Select').nth(idx)
+        ref_size_dd = page.locator('.Select, .bmm-c-custom-select').nth(idx)
         _click_select_option(page, ref_size_dd, jp_size, debug_name="参考日本サイズ")
     else:
         print(f"       [参考日本サイズ] '指定なし' dropdown が見つからない")
@@ -1605,24 +1632,50 @@ def set_purchase_memo(page, product):
 
     results = {}
     results["出品メモ"]    = _fill_by_label("出品メモ",  listing_memo, is_textarea=True)
-    results["買付先名"]    = _fill_by_label("買付先名",  shop_name,    is_textarea=False,
-                                              placeholder_keywords=["ショップ名", "買付先"])
-    results["買付先URL"]   = _fill_by_label("買付先URL", product_url,  is_textarea=False,
-                                              placeholder_keywords=["URL", "http"])
     results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
 
-    # 買付先URLが見つからないときは input 候補を dump
-    if results.get("買付先URL") == "not_found":
-        dump = page.evaluate("""
-            Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).slice(0, 25).map(function(el){
-                return {
-                    placeholder: (el.getAttribute('placeholder') || '').slice(0, 40),
-                    name: (el.getAttribute('name') || '').slice(0, 40),
-                    value_len: (el.value || '').length
-                };
-            })
-        """)
-        print(f"       [買付先URL dump] input候補: {dump}")
+    # 買付先ショップ名セクションは「ショップ名 input」と「URL input」の 2つの input を含む想定。
+    # 見出し「買付先ショップ名」の DOM 位置から、その直後〜次の見出しまでの input を拾う。
+    shop_url_result = page.evaluate(f"""(function(){{
+        var shopName = {json.dumps(shop_name)};
+        var url = {json.dumps(product_url)};
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label'
+        );
+        var out = {{'ショップ名': 'skip', 'URL': 'skip'}};
+        for (var i = 0; i < titles.length; i++) {{
+            var t = (titles[i].textContent || '').trim();
+            if (t.indexOf('買付先ショップ名') === -1 && t !== '買付先') continue;
+            var startEl = titles[i];
+            var endEl = titles[i + 1] || null;
+            // セクション範囲内の input[type=text] を順番に拾う
+            var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+            var picked = [];
+            for (var j = 0; j < inputs.length; j++) {{
+                if (!(startEl.compareDocumentPosition(inputs[j]) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                if (endEl && !(endEl.compareDocumentPosition(inputs[j]) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+                var ph = (inputs[j].getAttribute('placeholder') || '');
+                if (ph.indexOf('ブランド名') !== -1) continue;
+                picked.push(inputs[j]);
+                if (picked.length >= 2) break;
+            }}
+            if (picked.length >= 1 && shopName) {{
+                window.__si(picked[0], shopName);
+                out['ショップ名'] = 'ok';
+            }}
+            if (picked.length >= 2 && url) {{
+                window.__si(picked[1], url);
+                out['URL'] = 'ok';
+            }} else if (picked.length === 1 && url) {{
+                // 1つしかないケースは URL を入れる（ショップ名省略）
+                window.__si(picked[0], shopName + ' ' + url);
+                out['URL'] = 'combined_into_1';
+            }}
+            return out;
+        }}
+        return 'section_not_found';
+    }})()""")
+    results["買付先ショップ名+URL"] = shop_url_result
 
     print(f"    📝 メモ: {results}")
 

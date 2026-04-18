@@ -1097,33 +1097,78 @@ def set_customs_checkbox(page):
     print(f"    🏛️ 関税負担: {result}")
 
 
-def set_color(page, color_name="マルチカラー"):
-    """色タブを開いて 色の系統 + 色名 の両方を設定する。
+def _click_select_option(page, dropdown_locator, option_label, debug_name=""):
+    """Playwright locator 経由で任意の react-select を開いて option をクリックする。
 
-    BUYMA では 色名 が空だと「色名称を入力してください」エラーで保存が通らない。
-    色の系統はドロップダウン（「マルチカラー」等の定型値）、色名はテキスト入力。
+    dropdown_locator: page.locator(...) で取得した .Select 要素
+    option_label: 選びたい option のテキスト（完全一致 or 部分一致）
     """
+    try:
+        dropdown_locator.scroll_into_view_if_needed(timeout=2000)
+        dropdown_locator.click(timeout=3000)
+    except Exception as e:
+        print(f"       [_click_select_option:{debug_name}] ドロップダウン開けず: {e}")
+        return False
+    # オプション描画待ち
+    try:
+        page.wait_for_selector(
+            ".Select-menu-outer .Select-option, [role=\"listbox\"] [role=\"option\"]",
+            timeout=3000,
+            state="visible",
+        )
+    except Exception:
+        print(f"       [_click_select_option:{debug_name}] オプション未描画")
+        return False
+    # 完全一致優先 → 部分一致
+    OPT_SEL = '.Select-menu-outer .Select-option, [role="listbox"] [role="option"]'
+    opts = page.locator(OPT_SEL)
+    count = opts.count()
+    for i in range(count):
+        try:
+            t = (opts.nth(i).text_content() or "").strip()
+        except Exception:
+            continue
+        if t == option_label:
+            try:
+                opts.nth(i).click(timeout=2000)
+                time.sleep(0.4)
+                return True
+            except Exception:
+                pass
+    for i in range(count):
+        try:
+            t = (opts.nth(i).text_content() or "").strip()
+        except Exception:
+            continue
+        if option_label in t:
+            try:
+                opts.nth(i).click(timeout=2000)
+                time.sleep(0.4)
+                return True
+            except Exception:
+                pass
+    dump = [((opts.nth(i).text_content() or "").strip())[:30] for i in range(min(count, 15))]
+    print(f"       [_click_select_option:{debug_name}] '{option_label}' 候補なし: {dump}")
+    # 閉じる
+    try: page.locator("body").click(timeout=1000)
+    except Exception: pass
+    return False
+
+
+def set_color(page, color_name="マルチカラー"):
+    """色タブを開いて 色の系統 + 色名 の両方を設定する。"""
     # 「色」タブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='色'});if(t)t.click();""")
     time.sleep(0.8)
 
-    # 1) 色の系統を react-select で「マルチカラー」に設定
-    #    既存の __srs (onChange直叩き) 方式を維持しつつ、DOM click もフォールバック
-    page.evaluate(f"""(function(){{
-        var p = document.querySelector('#react-tabs-1') || document;
-        var s = p.querySelector('.Select');
-        if (s) {{
-            try {{
-                window.__srs(s, 99, {json.dumps(color_name)});
-            }} catch (e) {{}}
-        }}
-        return s ? 'select_found' : 'no_select';
-    }})()""")
-    time.sleep(0.5)
+    # 1) 色の系統ドロップダウン → 「マルチカラー」 (Playwright click 方式)
+    panel = page.locator('#react-tabs-1')
+    # パネル内の最初の .Select = 色の系統
+    color_dd = panel.locator('.Select').first
+    _click_select_option(page, color_dd, color_name, debug_name="色の系統")
 
-    # 2) 色名のテキスト入力欄に文字列を入れる
-    #    色タブ内の input[type=text] のうち、ブランド入力ではない（placeholder に「ブランド」を含まない）もの
+    # 2) 色名テキスト入力に文字列を入れる（ブランド入力欄以外）
     result = page.evaluate(f"""(function(){{
         var p = document.querySelector('#react-tabs-1') || document.querySelector('[role="tabpanel"]');
         if (!p) return 'no_panel';
@@ -1132,73 +1177,86 @@ def set_color(page, color_name="マルチカラー"):
             var el = inputs[i];
             var ph = (el.getAttribute('placeholder') || '').toLowerCase();
             if (ph.indexOf('ブランド') !== -1) continue;
-            // 色名フィールドを特定: 親要素に「色名」ヘッダがあれば優先
             window.__si(el, {json.dumps(color_name)});
             return 'set idx=' + i;
         }}
         return 'no_input';
     }})()""")
-
-    print(f"    🎨 色: {color_name} ({result})")
+    print(f"    🎨 色: {color_name} (色名={result})")
 
 
 def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
     """サイズタブを開いて バリエーション=なし、参考日本サイズ=FREE、在庫=買付可、数量= stock_qty を設定。
 
-    「検索用サイズは有効な値ではありません」エラーを防ぐため、参考日本サイズは
-    「指定なし」ではなく具体的な値（FREE など）を必ず選択する。
+    react-select の option は Playwright の native click で選ばないと
+    内部 state が更新されない（ブランドと同じ問題）。
     """
     # サイズタブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='サイズ'});if(t)t.click();""")
     time.sleep(0.8)
 
-    # バリエーション: なし
-    page.evaluate("""var p=document.querySelector('#react-tabs-3');
-        var s=p?p.querySelector('.Select'):null;if(s)window.__srs(s,'none','バリエーションなし');""")
-    time.sleep(0.5)
+    panel = page.locator('#react-tabs-3')
 
-    # 参考日本サイズを FREE に設定（サイズタブパネル内の .Select で「指定なし」を含むもの）
-    jp_size_result = page.evaluate(f"""(function(){{
-        var p = document.querySelector('#react-tabs-3') || document.querySelector('[role="tabpanel"]');
-        if (!p) return 'no_panel';
+    # 1) バリエーション: なし（パネル直下の最初の .Select）
+    #    既に「バリエーションなし」が選択済みのケースもあるので、失敗しても続行
+    variation_dd = panel.locator('.Select').first
+    _click_select_option(page, variation_dd, "バリエーションなし", debug_name="バリエーション")
+
+    # 2) 参考日本サイズ（表中の .Select。現在値「指定なし」を含むもの）
+    #    panel 内で current text が「指定なし」の .Select を探す
+    target_dd_js = """(function(){
+        var p = document.querySelector('#react-tabs-3');
+        if (!p) return -1;
         var sels = p.querySelectorAll('.Select');
-        for (var i = 0; i < sels.length; i++) {{
-            // 現在の表示ラベルが「指定なし」だったら参考日本サイズのドロップダウン
+        var all = document.querySelectorAll('.Select');
+        for (var i = 0; i < sels.length; i++) {
             var lbl = sels[i].querySelector('.Select-value-label, .Select-placeholder');
-            var curText = lbl ? lbl.textContent.trim() : '';
-            if (curText.indexOf('指定なし') !== -1 || curText === '' || curText.indexOf('バリエ') === -1) {{
-                try {{
-                    window.__srs(sels[i], {json.dumps(jp_size)}, {json.dumps(jp_size)});
-                    return 'set idx=' + i + ' (was: ' + curText + ')';
-                }} catch (e) {{}}
-            }}
-        }}
-        return 'no_target';
-    }})()""")
-    time.sleep(0.5)
+            var t = lbl ? lbl.textContent.trim() : '';
+            if (t === '指定なし' || t.indexOf('指定なし') !== -1) {
+                return Array.from(all).indexOf(sels[i]);
+            }
+        }
+        return -1;
+    })()"""
+    idx = page.evaluate(target_dd_js)
+    if idx is not None and idx >= 0:
+        ref_size_dd = page.locator('.Select').nth(idx)
+        _click_select_option(page, ref_size_dd, jp_size, debug_name="参考日本サイズ")
+    else:
+        print(f"       [参考日本サイズ] '指定なし' dropdown が見つからない")
 
-    # 在庫設定: 「買付可」(value=1) に変更
-    page.evaluate("var ss=document.querySelectorAll('.Select');if(ss[7])window.__srs(ss[7],1,'買付可');")
-    time.sleep(0.5)
+    # 3) 在庫設定: 「買付可」(販売可否/在庫セクション table 行内)
+    #    現在値が「手元に在庫あり」or「買付不可」になってる可能性に対応
+    stock_dd_js = """(function(){
+        var all = document.querySelectorAll('.Select');
+        for (var i = 0; i < all.length; i++) {
+            var lbl = all[i].querySelector('.Select-value-label, .Select-placeholder');
+            var t = lbl ? lbl.textContent.trim() : '';
+            if (t === '手元に在庫あり' || t === '買付不可' || t === '買付可') {
+                return i;
+            }
+        }
+        return -1;
+    })()"""
+    stock_idx = page.evaluate(stock_dd_js)
+    if stock_idx is not None and stock_idx >= 0:
+        stock_dd = page.locator('.Select').nth(stock_idx)
+        _click_select_option(page, stock_dd, "買付可", debug_name="在庫ステータス")
 
-    # 買付できる合計数量（販売可否/在庫セクションの input）
-    # 販売可否/在庫セクション近傍の数値入力欄に 1 を入れる
+    # 4) 買付できる合計数量
     stock_result = page.evaluate(f"""(function(){{
         var qty = {stock_qty};
         var results = [];
-        // ① placeholder="数量" が付いた input（旧UIの色別数量欄）
         document.querySelectorAll('input[placeholder="数量"]').forEach(function(el){{
             window.__si(el, String(qty));
             results.push('placeholder=数量');
         }});
-        // ② 「買付できる合計数量」近傍の input
         var titles = document.querySelectorAll('*');
         for (var i = 0; i < titles.length; i++) {{
             var t = (titles[i].textContent || '').trim();
             if (t.length > 40) continue;
             if (t.indexOf('買付できる合計数量') === -1) continue;
-            // 見つけた要素の近傍（親を数レベル遡り）で input を検索
             var parent = titles[i];
             for (var d = 0; d < 6 && parent; d++) {{
                 var inp = parent.querySelector('input[type="number"], input[type="text"], input:not([type])');
@@ -1212,8 +1270,7 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
         }}
         return results;
     }})()""")
-
-    print(f"    📦 サイズ: バリエーションなし / 参考日本サイズ={jp_size} ({jp_size_result}) / 在庫=買付可 数量={stock_qty} ({stock_result})")
+    print(f"    📦 サイズ/在庫: 数量={stock_qty} ({stock_result})")
 
 
 def set_purchase_memo(page, product):

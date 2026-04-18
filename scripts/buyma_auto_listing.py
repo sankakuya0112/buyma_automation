@@ -473,6 +473,7 @@ def load_products(max_price=None, min_profit=None):
                 "estimated_profit_jpy": str(profit),  # 後方互換用エイリアス
                 "profit_jpy": str(profit),
                 "sku": (row.get("sku") or "").strip(),
+                "product_type": (row.get("product_type") or "").strip(),
                 "description_en": (row.get("description_en") or "").strip(),
                 "image_url": (row.get("image_url") or "").strip(),
                 "sub_images": (row.get("sub_images") or "").strip(),
@@ -604,59 +605,77 @@ def set_category(page, path):
         print(f"    ⚠️ カテゴリパス不正: {path}")
         return False
 
-    # カテゴリドロップダウンは最初の3つの .Select であることが多い。
-    # 買付地などの .Select が先に存在する場合は Select 要素の並びが変わる可能性がある。
-    # そのため毎回「open & click by label」で確実に選択する。
+    # 候補セレクタ（BUYMA が独自クラスで包む可能性に備えて複数候補を試す）
+    OPTION_SELECTORS = (
+        ".Select-menu-outer .Select-option",
+        ".Select-menu .Select-option",
+        ".Select--menu-outer .Select-option",
+        "[role=\"listbox\"] [role=\"option\"]",
+        ".bmm-c-select__option",
+        ".bmm-c-select-menu__option",
+    )
+    selector_union = ", ".join(OPTION_SELECTORS)
+
     for idx, label in enumerate(path):
         # ドロップダウンを開く
         opened = page.evaluate(f"""(function(){{
-            var sels = document.querySelectorAll('.Select');
-            if (!sels[{idx}]) return false;
-            var ctrl = sels[{idx}].querySelector('.Select-control');
-            if (!ctrl) return false;
+            var sels = document.querySelectorAll('.Select, .bmm-c-select');
+            if (!sels[{idx}]) return 'no_select';
+            var ctrl = sels[{idx}].querySelector('.Select-control, .bmm-c-select__control');
+            if (!ctrl) ctrl = sels[{idx}];
+            // mousedown で開くケースが多い
+            ctrl.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
             ctrl.click();
-            return true;
+            return 'opened';
         }})()""")
-        if not opened:
+        if opened == "no_select":
             print(f"    ⚠️ カテゴリ{idx+1}: .Select[{idx}] 見つからず")
             return False
 
-        # メニューが描画されるのを待つ（最大 2 秒）
-        for _ in range(20):
-            ready = page.evaluate("document.querySelectorAll('.Select-menu-outer .Select-option').length > 0")
+        # メニュー描画待ち
+        for _ in range(25):
+            time.sleep(0.12)
+            ready = page.evaluate(f"document.querySelectorAll({json.dumps(selector_union)}).length > 0")
             if ready:
                 break
-            time.sleep(0.1)
 
-        # 完全一致でオプションを探してクリック（mousedown で発火）
+        # クリック
         clicked = page.evaluate(f"""(function(){{
-            var opts = document.querySelectorAll('.Select-menu-outer .Select-option');
+            var opts = document.querySelectorAll({json.dumps(selector_union)});
             var target = {json.dumps(label)};
             for (var i = 0; i < opts.length; i++) {{
-                var t = opts[i].textContent.trim();
-                if (t === target) {{
-                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true, cancelable: true}}));
+                if (opts[i].textContent.trim() === target) {{
+                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
                     return 'exact';
                 }}
             }}
-            // 完全一致がなければ部分一致
             for (var i = 0; i < opts.length; i++) {{
-                var t = opts[i].textContent.trim();
-                if (t.indexOf(target) !== -1) {{
-                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true, cancelable: true}}));
-                    return 'partial: ' + t;
+                if (opts[i].textContent.trim().indexOf(target) !== -1) {{
+                    opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                    return 'partial';
                 }}
             }}
-            return 'no match';
+            return 'no_match';
         }})()""")
-        if "no match" in str(clicked):
-            # デバッグ用にメニュー内の候補を列挙する
-            dump = page.evaluate(
-                "Array.from(document.querySelectorAll('.Select-menu-outer .Select-option')).slice(0,15).map(function(o){return o.textContent.trim()})"
-            )
-            print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし (選択肢先頭15: {dump})")
+        if clicked == "no_match":
+            dump = page.evaluate(f"""(function(){{
+                var opts = document.querySelectorAll({json.dumps(selector_union)});
+                var rows = [];
+                for (var i = 0; i < Math.min(opts.length, 20); i++) rows.push(opts[i].textContent.trim());
+                if (rows.length === 0) {{
+                    // 何も取れない場合は .Select 系の innerText を吐く
+                    var sels = document.querySelectorAll('.Select, .bmm-c-select');
+                    var meta = [];
+                    for (var j = 0; j < sels.length && j < 10; j++) {{
+                        meta.push(j + ':' + sels[j].className + ' | ' + (sels[j].textContent || '').slice(0,40));
+                    }}
+                    return 'SELECTS: ' + meta.join(' || ');
+                }}
+                return rows;
+            }})()""")
+            print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし: {dump}")
             return False
-        time.sleep(0.6)  # 次階層のオプションがロードされるのを待つ
+        time.sleep(0.6)
 
     print(f"    📁 カテゴリ: {' > '.join(path)} → ✅")
     return True
@@ -775,34 +794,44 @@ def set_shipping(page, price_jpy):
     ラベル文字列で判定することで DOM 順番の変更に耐える。
     デフォルト: ヤマト運輸「宅急便コンパクト」と「宅急便」。
     """
-    # チェックしたい配送方法のラベル（部分一致）
+    # チェックしたい配送方法のラベル（部分一致）。
+    # 完全一致を優先するため、より具体的な "宅急便コンパクト" を先にしておく。
     targets = ["宅急便コンパクト", "宅急便"]
 
     result = page.evaluate(f"""(function(){{
         var targets = {json.dumps(targets)};
         var results = [];
-        // label 要素や、checkbox の近傍テキストから配送方法を特定
-        var labels = document.querySelectorAll('label');
-        for (var i = 0; i < labels.length; i++) {{
-            var txt = labels[i].textContent.trim();
+        // checkbox をすべて拾い、その近傍（label / 親要素）のテキストから配送方法を特定する
+        var cbs = document.querySelectorAll('input[type="checkbox"]');
+        var matched = {{}};
+        for (var j = 0; j < targets.length; j++) matched[targets[j]] = false;
+        for (var i = 0; i < cbs.length; i++) {{
+            var cb = cbs[i];
+            // 近傍テキストを拾う（親 label / 親の親 / 隣接 span）
+            var near = '';
+            var p = cb.parentElement;
+            for (var d = 0; d < 3 && p; d++) {{ near += ' ' + (p.textContent || ''); p = p.parentElement; }}
             for (var j = 0; j < targets.length; j++) {{
-                if (txt.indexOf(targets[j]) !== -1) {{
-                    // label 内の checkbox を見つけてチェック
-                    var cb = labels[i].querySelector('input[type="checkbox"]');
-                    if (!cb) {{
-                        // for 属性で参照される checkbox を探す
-                        var forId = labels[i].getAttribute('for');
-                        if (forId) cb = document.getElementById(forId);
-                    }}
-                    if (cb && !cb.checked) {{
-                        cb.click();
-                        results.push(targets[j] + '=on');
-                    }} else if (cb && cb.checked) {{
-                        results.push(targets[j] + '=既にon');
-                    }}
+                if (matched[targets[j]]) continue;
+                if (near.indexOf(targets[j]) !== -1) {{
+                    if (!cb.checked) cb.click();
+                    matched[targets[j]] = true;
+                    results.push(targets[j] + '=on');
                     break;
                 }}
             }}
+        }}
+        // 見つからないターゲットはデバッグ情報を出す
+        var missing = targets.filter(function(t){{ return !matched[t]; }});
+        if (missing.length) {{
+            // label / 近傍テキストの候補を列挙
+            var labels = document.querySelectorAll('label');
+            var dump = [];
+            for (var k = 0; k < labels.length && dump.length < 15; k++) {{
+                var t = labels[k].textContent.trim();
+                if (t && t.length < 50) dump.push(t);
+            }}
+            results.push('未検出=' + missing.join(',') + ' | label候補=' + JSON.stringify(dump));
         }}
         return results;
     }})()""")
@@ -862,12 +891,17 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     # --- 買付地 ---
     # 買付地のセクション内の .Select を 2つ順番に開く
     purchase_selects_idx = page.evaluate("""(function(){
-        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
-        for (var i = 0; i < summaries.length; i++) {
-            if (summaries[i].textContent.indexOf('買付地') !== -1) {
-                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
-                var sels = sec.querySelectorAll('.Select');
-                var allSels = document.querySelectorAll('.Select');
+        // 複数のセレクタで見出しを探す
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
+        );
+        for (var i = 0; i < titles.length; i++) {
+            if (titles[i].textContent.indexOf('買付地') !== -1) {
+                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
+                    || titles[i].parentElement.parentElement;
+                if (!sec) continue;
+                var sels = sec.querySelectorAll('.Select, .bmm-c-select');
+                var allSels = document.querySelectorAll('.Select, .bmm-c-select');
                 var idx = [];
                 sels.forEach(function(s){ idx.push(Array.from(allSels).indexOf(s)); });
                 return idx;
@@ -875,6 +909,15 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         }
         return null;
     })()""")
+
+    # 見出し候補のデバッグダンプ
+    if not purchase_selects_idx:
+        dump = page.evaluate("""
+            Array.from(document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'))
+                .map(function(e){return e.textContent.trim().slice(0,30)})
+                .filter(function(t){return t.length>0}).slice(0,20)
+        """)
+        results.append(f"買付地_見出し未検出 (候補: {dump})")
     if purchase_selects_idx and len(purchase_selects_idx) >= 2:
         # 最初が大陸、2つ目が国
         if _select_by_label(page, f"document.querySelectorAll('.Select')[{purchase_selects_idx[0]}]", "ヨーロッパ"):
@@ -887,12 +930,17 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     # --- 発送地 ---
     # 1) 「国内」ラジオボタンを押す
     domestic_clicked = page.evaluate("""(function(){
-        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
-        for (var i = 0; i < summaries.length; i++) {
-            if (summaries[i].textContent.indexOf('発送地') !== -1) {
-                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
-                // label/button 配下で「国内」テキストを持つ要素を探す
-                var candidates = sec.querySelectorAll('label, button, div.bmm-c-radio, input[type="radio"]');
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
+        );
+        for (var i = 0; i < titles.length; i++) {
+            if (titles[i].textContent.indexOf('発送地') !== -1) {
+                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
+                    || titles[i].parentElement.parentElement;
+                if (!sec) continue;
+                var candidates = sec.querySelectorAll(
+                    'label, button, div.bmm-c-radio, input[type="radio"]'
+                );
                 for (var j = 0; j < candidates.length; j++) {
                     var el = candidates[j];
                     var txt = (el.textContent || '').trim();
@@ -912,12 +960,16 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
 
     # 2) 都道府県ドロップダウンを選択（発送地セクション内の .Select[0]）
     ship_idx = page.evaluate("""(function(){
-        var summaries = document.querySelectorAll('.bmm-c-summary__ttl');
-        for (var i = 0; i < summaries.length; i++) {
-            if (summaries[i].textContent.indexOf('発送地') !== -1) {
-                var sec = summaries[i].closest('.bmm-c-summary') || summaries[i].parentElement.parentElement;
-                var sels = sec.querySelectorAll('.Select');
-                var allSels = document.querySelectorAll('.Select');
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
+        );
+        for (var i = 0; i < titles.length; i++) {
+            if (titles[i].textContent.indexOf('発送地') !== -1) {
+                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
+                    || titles[i].parentElement.parentElement;
+                if (!sec) continue;
+                var sels = sec.querySelectorAll('.Select, .bmm-c-select');
+                var allSels = document.querySelectorAll('.Select, .bmm-c-select');
                 if (sels.length === 0) return null;
                 return Array.from(allSels).indexOf(sels[0]);
             }

@@ -1097,32 +1097,123 @@ def set_customs_checkbox(page):
     print(f"    🏛️ 関税負担: {result}")
 
 
-def set_color(page):
+def set_color(page, color_name="マルチカラー"):
+    """色タブを開いて 色の系統 + 色名 の両方を設定する。
+
+    BUYMA では 色名 が空だと「色名称を入力してください」エラーで保存が通らない。
+    色の系統はドロップダウン（「マルチカラー」等の定型値）、色名はテキスト入力。
+    """
+    # 「色」タブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='色'});if(t)t.click();""")
     time.sleep(0.8)
-    page.evaluate("""var p=document.querySelector('#react-tabs-1');
-        var s=p?p.querySelector('.Select'):null;var inp=p?p.querySelector('input[type="text"]'):null;
-        if(s)window.__srs(s,99,'マルチカラー');if(inp)window.__si(inp,'マルチカラー');""")
-    print("    🎨 色: マルチカラー")
+
+    # 1) 色の系統を react-select で「マルチカラー」に設定
+    #    既存の __srs (onChange直叩き) 方式を維持しつつ、DOM click もフォールバック
+    page.evaluate(f"""(function(){{
+        var p = document.querySelector('#react-tabs-1') || document;
+        var s = p.querySelector('.Select');
+        if (s) {{
+            try {{
+                window.__srs(s, 99, {json.dumps(color_name)});
+            }} catch (e) {{}}
+        }}
+        return s ? 'select_found' : 'no_select';
+    }})()""")
+    time.sleep(0.5)
+
+    # 2) 色名のテキスト入力欄に文字列を入れる
+    #    色タブ内の input[type=text] のうち、ブランド入力ではない（placeholder に「ブランド」を含まない）もの
+    result = page.evaluate(f"""(function(){{
+        var p = document.querySelector('#react-tabs-1') || document.querySelector('[role="tabpanel"]');
+        if (!p) return 'no_panel';
+        var inputs = p.querySelectorAll('input[type="text"], input:not([type])');
+        for (var i = 0; i < inputs.length; i++) {{
+            var el = inputs[i];
+            var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+            if (ph.indexOf('ブランド') !== -1) continue;
+            // 色名フィールドを特定: 親要素に「色名」ヘッダがあれば優先
+            window.__si(el, {json.dumps(color_name)});
+            return 'set idx=' + i;
+        }}
+        return 'no_input';
+    }})()""")
+
+    print(f"    🎨 色: {color_name} ({result})")
 
 
-def set_size_and_stock(page):
-    """サイズ=バリエーションなし、在庫=買付可、数量=1"""
+def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
+    """サイズタブを開いて バリエーション=なし、参考日本サイズ=FREE、在庫=買付可、数量= stock_qty を設定。
+
+    「検索用サイズは有効な値ではありません」エラーを防ぐため、参考日本サイズは
+    「指定なし」ではなく具体的な値（FREE など）を必ず選択する。
+    """
+    # サイズタブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='サイズ'});if(t)t.click();""")
     time.sleep(0.8)
+
+    # バリエーション: なし
     page.evaluate("""var p=document.querySelector('#react-tabs-3');
         var s=p?p.querySelector('.Select'):null;if(s)window.__srs(s,'none','バリエーションなし');""")
     time.sleep(0.5)
 
-    # 在庫設定: 「買付可」(value=1) に変更（v3までは「手元に在庫あり」=2だった）
-    page.evaluate("var ss=document.querySelectorAll('.Select');if(ss[7])window.__srs(ss[7],1,'買付可');")
-    time.sleep(0.6)
+    # 参考日本サイズを FREE に設定（サイズタブパネル内の .Select で「指定なし」を含むもの）
+    jp_size_result = page.evaluate(f"""(function(){{
+        var p = document.querySelector('#react-tabs-3') || document.querySelector('[role="tabpanel"]');
+        if (!p) return 'no_panel';
+        var sels = p.querySelectorAll('.Select');
+        for (var i = 0; i < sels.length; i++) {{
+            // 現在の表示ラベルが「指定なし」だったら参考日本サイズのドロップダウン
+            var lbl = sels[i].querySelector('.Select-value-label, .Select-placeholder');
+            var curText = lbl ? lbl.textContent.trim() : '';
+            if (curText.indexOf('指定なし') !== -1 || curText === '' || curText.indexOf('バリエ') === -1) {{
+                try {{
+                    window.__srs(sels[i], {json.dumps(jp_size)}, {json.dumps(jp_size)});
+                    return 'set idx=' + i + ' (was: ' + curText + ')';
+                }} catch (e) {{}}
+            }}
+        }}
+        return 'no_target';
+    }})()""")
+    time.sleep(0.5)
 
-    # 数量
-    page.evaluate("""var q=document.querySelector('input[placeholder="数量"]');if(q)window.__si(q,'1');""")
-    print("    📦 サイズ/在庫: バリエーションなし / 買付可 / 数量1")
+    # 在庫設定: 「買付可」(value=1) に変更
+    page.evaluate("var ss=document.querySelectorAll('.Select');if(ss[7])window.__srs(ss[7],1,'買付可');")
+    time.sleep(0.5)
+
+    # 買付できる合計数量（販売可否/在庫セクションの input）
+    # 販売可否/在庫セクション近傍の数値入力欄に 1 を入れる
+    stock_result = page.evaluate(f"""(function(){{
+        var qty = {stock_qty};
+        var results = [];
+        // ① placeholder="数量" が付いた input（旧UIの色別数量欄）
+        document.querySelectorAll('input[placeholder="数量"]').forEach(function(el){{
+            window.__si(el, String(qty));
+            results.push('placeholder=数量');
+        }});
+        // ② 「買付できる合計数量」近傍の input
+        var titles = document.querySelectorAll('*');
+        for (var i = 0; i < titles.length; i++) {{
+            var t = (titles[i].textContent || '').trim();
+            if (t.length > 40) continue;
+            if (t.indexOf('買付できる合計数量') === -1) continue;
+            // 見つけた要素の近傍（親を数レベル遡り）で input を検索
+            var parent = titles[i];
+            for (var d = 0; d < 6 && parent; d++) {{
+                var inp = parent.querySelector('input[type="number"], input[type="text"], input:not([type])');
+                if (inp && (inp.value === '' || inp.value === '0')) {{
+                    window.__si(inp, String(qty));
+                    results.push('買付合計=ok');
+                    return results;
+                }}
+                parent = parent.parentElement;
+            }}
+        }}
+        return results;
+    }})()""")
+
+    print(f"    📦 サイズ: バリエーションなし / 参考日本サイズ={jp_size} ({jp_size_result}) / 在庫=買付可 数量={stock_qty} ({stock_result})")
 
 
 def set_purchase_memo(page, product):
@@ -1143,23 +1234,43 @@ def set_purchase_memo(page, product):
         try: return f"{int(float(v)):,}"
         except: return str(v)
 
+    def _num(v, default=0):
+        try: return int(float(v))
+        except: return default
+
+    # 経費内訳を概算（total_cost から仕入価格を引いた残りを送料+関税+税とみなす）
+    eur_rate = 160  # EUR_TO_JPY デフォルト（厳密には config から取るべきだが概算でOK）
+    purchase_jpy = _num(sale_price_eur) * eur_rate
+    total_cost_n = _num(total_cost)
+    recommended_n = _num(recommended_price)
+    profit_n = _num(profit)
+    fees_jpy = max(total_cost_n - purchase_jpy, 0)  # 送料+関税+税の合計（概算）
+    buyma_commission = int(recommended_n * 0.058)  # BUYMA 手数料 5.8% 概算
+    profit_rate = (profit_n / recommended_n * 100) if recommended_n else 0
+
     listing_memo = (
         f"【選定理由】\n"
-        f"BaseBlu セールから抽出、想定利益 ¥{_fmt(profit)} で基準(¥5,000)クリア。\n\n"
-        f"【価格】\n"
-        f"仕入: {sale_price_eur} EUR\n"
-        f"総仕入コスト（送料・関税・税込）: ¥{_fmt(total_cost)}\n"
+        f"BaseBlu セールから抽出、想定利益 ¥{_fmt(profit)} / 利益率 {profit_rate:.1f}% で基準クリア。\n\n"
+        f"【売価 / 利益】\n"
         f"販売価格: ¥{_fmt(recommended_price)}\n"
-        f"想定利益: ¥{_fmt(profit)}\n\n"
+        f"総仕入コスト: ¥{_fmt(total_cost)}\n"
+        f"想定利益: ¥{_fmt(profit)}\n"
+        f"利益率: {profit_rate:.1f}%\n\n"
+        f"【コスト内訳（概算）】\n"
+        f"仕入価格: {sale_price_eur} EUR (≒ ¥{_fmt(purchase_jpy)} @ {eur_rate}円/EUR)\n"
+        f"送料・関税・消費税 小計: ¥{_fmt(fees_jpy)}\n"
+        f"BUYMA 手数料(5.8%): ¥{_fmt(buyma_commission)} (販売価格から控除)\n\n"
         f"【商品】\n"
         f"タイトル: {title}\n"
         f"品番: {sku}"
     )
+    # 買付先メモ: 仕入先名 + 商品URL + 現地価格を明記（購入者には見えない）
     buyer_memo = (
         f"【仕入先】BaseBlu\n"
         f"【商品URL】{product_url}\n"
         f"【現地価格】{sale_price_eur} EUR\n"
-        f"【日本円換算コスト】¥{_fmt(total_cost)}"
+        f"【品番】{sku}\n"
+        f"【日本円換算総コスト】¥{_fmt(total_cost)}"
     )
     shop_name = "BaseBlu"
 

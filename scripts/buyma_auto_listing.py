@@ -1123,13 +1123,29 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     print(f"    🌍 地域: {results}")
 
 
+def _scroll_through_page(page, chunks=12, step_px=500, pause=0.25):
+    """ページを上から下まで段階的にスクロールし、全ての lazy render セクションを
+    DOM に出現させる。スクロール後は元の位置には戻さない。
+    """
+    try:
+        page.evaluate("window.scrollTo({top: 0, behavior: 'auto'})")
+    except Exception:
+        pass
+    time.sleep(0.3)
+    for _ in range(chunks):
+        try:
+            page.mouse.wheel(0, step_px)
+        except Exception:
+            page.evaluate(f"window.scrollBy(0, {step_px})")
+        time.sleep(pause)
+
+
 def _ensure_rendered(page, css_selector, max_scrolls=15, step_px=600):
     """BUYMA の遅延描画フォームで、指定 CSS セレクタが DOM に現れるまで
     ホイールスクロールを繰り返す。
 
     返り値: True なら描画された、False なら最大回数でも出なかった。
     """
-    # 最初の時点で既に存在していれば即 True
     if page.evaluate(f"!!document.querySelector({json.dumps(css_selector)})"):
         return True
     for _ in range(max_scrolls):
@@ -1146,49 +1162,59 @@ def _ensure_rendered(page, css_selector, max_scrolls=15, step_px=600):
 def set_sku(page, sku, identify_memo=""):
     """品番 (SKU) + 識別メモ (非公開) を入力する。
 
-    BUYMA の品番セクション (.sell-model-number-table) は遅延描画される。
-    画面外だと DOM に存在しないため、まずホイールスクロールで描画させる。
+    BUYMA の品番セクションは遅延描画されるため、まずページ全体をスクロールして
+    全セクションを DOM に出現させてから、複数セレクタで品番 input を探す。
     """
     if not sku:
         print("    🔖 品番: (なし)")
         return
 
-    # 品番セクションを DOM に出すために下スクロール
-    rendered = _ensure_rendered(page, '.sell-model-number-table')
-    if not rendered:
-        # セクション固有クラスが見つからない場合、placeholder が SKU サンプル形式の input が出現するまで試す
-        _ensure_rendered(
-            page,
-            'input[placeholder^="1BD075"], input[placeholder^="AA"], input[placeholder*="_"]',
-        )
+    # まずページ全体を舐めるように下スクロールして lazy render を全部起こす
+    _scroll_through_page(page)
 
-    # 画面中央に寄せて、React の描画完了も少し待つ
-    page.evaluate("""(function(){
-        var t = document.querySelector('.sell-model-number-table');
-        if (t) t.scrollIntoView({block: 'center'});
-    })()""")
-    time.sleep(0.8)
-
+    # 品番 input を複数戦略で探す:
+    #   戦略A: .sell-model-number-table クラス
+    #   戦略B: placeholder が SKU サンプル形式
+    #   戦略C: placeholder が既知の特定文字列 "1BD075" から始まる
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};
         var memo = {json.dumps(identify_memo)};
         var SKU_RE = /^[A-Z0-9][A-Z0-9_\\-]{{5,}}$/;
 
-        // デバッグ用: 全input の placeholder を集める
-        var allTextInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+        // 全 bmm-c-text-field の placeholder を dump（診断用）
+        var bmmFields = document.querySelectorAll('input.bmm-c-text-field');
         var phDump = [];
-        var skuInputs = [];
-        for (var i = 0; i < allTextInputs.length; i++) {{
-            var el = allTextInputs[i];
-            // .placeholder プロパティと getAttribute 両方見る
-            var ph = el.placeholder || el.getAttribute('placeholder') || '';
-            if (ph && phDump.length < 30) phDump.push(ph.slice(0, 40));
-            if (ph && SKU_RE.test(ph)) {{
-                skuInputs.push(el);
+        for (var i = 0; i < bmmFields.length && phDump.length < 40; i++) {{
+            var ph = bmmFields[i].placeholder || bmmFields[i].getAttribute('placeholder') || '';
+            if (ph) phDump.push(ph.slice(0, 40));
+        }}
+
+        var skuInput = null;
+
+        // 戦略A: .sell-model-number-table
+        var table = document.querySelector('.sell-model-number-table');
+        if (table) {{
+            var tableInputs = table.querySelectorAll('input[type="text"], input:not([type])');
+            if (tableInputs.length >= 1) {{
+                skuInput = tableInputs[0];
+                window.__si(skuInput, sku);
+                if (tableInputs.length >= 2 && memo) {{
+                    window.__si(tableInputs[1], memo);
+                    return ['品番=table_idx0', '識別メモ=table_idx1'];
+                }}
+                return ['品番=table_idx0'];
             }}
         }}
 
-        // 1) placeholder が SKU サンプル形式の input
+        // 戦略B: placeholder が SKU 正規表現にマッチ
+        var all = document.querySelectorAll('input.bmm-c-text-field, input[type="text"], input:not([type])');
+        var skuInputs = [];
+        for (var i = 0; i < all.length; i++) {{
+            var ph2 = all[i].placeholder || all[i].getAttribute('placeholder') || '';
+            if (ph2 && SKU_RE.test(ph2)) {{
+                skuInputs.push(all[i]);
+            }}
+        }}
         if (skuInputs.length >= 1) {{
             window.__si(skuInputs[0], sku);
             var ret = ['品番=placeholder_match'];
@@ -1196,7 +1222,6 @@ def set_sku(page, sku, identify_memo=""):
                 window.__si(skuInputs[1], memo);
                 ret.push('識別メモ=placeholder_idx1');
             }} else if (memo) {{
-                // 同じ <tr> 内の隣接 input を探して識別メモに
                 var tr = skuInputs[0].closest('tr');
                 if (tr) {{
                     var rowInputs = tr.querySelectorAll('input[type="text"], input:not([type])');
@@ -1212,23 +1237,8 @@ def set_sku(page, sku, identify_memo=""):
             return ret;
         }}
 
-        // 2) .sell-model-number-table フォールバック
-        var table = document.querySelector('.sell-model-number-table');
-        if (table) {{
-            var inputs = table.querySelectorAll('input[type="text"], input:not([type])');
-            if (inputs.length >= 1) {{
-                window.__si(inputs[0], sku);
-                var ret = ['品番=table_idx0'];
-                if (inputs.length >= 2 && memo) {{
-                    window.__si(inputs[1], memo);
-                    ret.push('識別メモ=table_idx1');
-                }}
-                return ret;
-            }}
-        }}
-
-        // 3) 見つからない場合は placeholder dump を返す（診断用）
-        return {{not_found: true, placeholders: phDump}};
+        // 戦略C: 見つからない場合は全 bmm-c-text-field の placeholder を dump（診断用）
+        return {{not_found: true, bmm_field_count: bmmFields.length, placeholders: phDump}};
     }})()""")
     print(f"    🔖 品番: {sku} ({result})")
 

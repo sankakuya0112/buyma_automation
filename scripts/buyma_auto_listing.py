@@ -1127,9 +1127,7 @@ def set_sku(page, sku, identify_memo=""):
     """品番 (SKU) + 識別メモ (非公開) を入力する。
 
     BUYMA の品番 input は placeholder にサンプル SKU（例 "1BD075_2BLF_F0002_V_KOO"）が
-    表示されていることを利用して特定する。英大文字・数字・アンダースコアのみで
-    6文字以上のパターンはほぼ SKU 欄一択。
-    見つからない場合は .sell-model-number-table セレクタ、最後にラベル近傍探索にフォールバック。
+    表示されていることを利用して特定する。
     """
     if not sku:
         print("    🔖 品番: (なし)")
@@ -1137,15 +1135,23 @@ def set_sku(page, sku, identify_memo=""):
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};
         var memo = {json.dumps(identify_memo)};
-        // 1) placeholder が SKU サンプル形式 (英大文字・数字・アンダースコア 6文字以上) の input を探す
+        var SKU_RE = /^[A-Z0-9][A-Z0-9_\\-]{{5,}}$/;
+
+        // デバッグ用: 全input の placeholder を集める
+        var allTextInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+        var phDump = [];
         var skuInputs = [];
-        var allInputs = document.querySelectorAll('input[placeholder]');
-        for (var i = 0; i < allInputs.length; i++) {{
-            var ph = allInputs[i].getAttribute('placeholder') || '';
-            if (/^[A-Z0-9][A-Z0-9_]{{5,}}$/.test(ph)) {{
-                skuInputs.push(allInputs[i]);
+        for (var i = 0; i < allTextInputs.length; i++) {{
+            var el = allTextInputs[i];
+            // .placeholder プロパティと getAttribute 両方見る
+            var ph = el.placeholder || el.getAttribute('placeholder') || '';
+            if (ph && phDump.length < 30) phDump.push(ph.slice(0, 40));
+            if (ph && SKU_RE.test(ph)) {{
+                skuInputs.push(el);
             }}
         }}
+
+        // 1) placeholder が SKU サンプル形式の input
         if (skuInputs.length >= 1) {{
             window.__si(skuInputs[0], sku);
             var ret = ['品番=placeholder_match'];
@@ -1153,7 +1159,7 @@ def set_sku(page, sku, identify_memo=""):
                 window.__si(skuInputs[1], memo);
                 ret.push('識別メモ=placeholder_idx1');
             }} else if (memo) {{
-                // 2つ目の SKU like input がなければ、同じ行の隣接 input を探して識別メモに使う
+                // 同じ <tr> 内の隣接 input を探して識別メモに
                 var tr = skuInputs[0].closest('tr');
                 if (tr) {{
                     var rowInputs = tr.querySelectorAll('input[type="text"], input:not([type])');
@@ -1168,6 +1174,7 @@ def set_sku(page, sku, identify_memo=""):
             }}
             return ret;
         }}
+
         // 2) .sell-model-number-table フォールバック
         var table = document.querySelector('.sell-model-number-table');
         if (table) {{
@@ -1182,7 +1189,9 @@ def set_sku(page, sku, identify_memo=""):
                 return ret;
             }}
         }}
-        return 'not_found';
+
+        // 3) 見つからない場合は placeholder dump を返す（診断用）
+        return {{not_found: true, placeholders: phDump}};
     }})()""")
     print(f"    🔖 品番: {sku} ({result})")
 
@@ -1397,8 +1406,36 @@ def set_color(page, color_name="マルチカラー", color_label=None):
 
     # 1) 色の系統ドロップダウン
     panel = page.locator(panel_sel)
-    color_dd = panel.locator('.Select').first
-    _click_select_option(page, color_dd, color_name, debug_name="色の系統")
+    color_dd = panel.locator('.Select, .bmm-c-custom-select').first
+    # color_name そのまま失敗時は一般的な色名にフォールバックして試す
+    candidates = [color_name]
+    if color_name not in ("マルチカラー",):
+        candidates.append("マルチカラー")
+    ok = False
+    for cand in candidates:
+        if _click_select_option(page, color_dd, cand, debug_name=f"色の系統[{cand}]"):
+            color_name = cand
+            ok = True
+            break
+    if not ok:
+        # option dump
+        dump = page.evaluate(f"""(function(){{
+            var p = document.querySelector({json.dumps(panel_sel)});
+            if (!p) return 'no_panel';
+            var sels = p.querySelectorAll('.Select, .bmm-c-custom-select');
+            if (!sels.length) return 'no_select_in_panel';
+            var ctrl = sels[0].querySelector('.Select-control');
+            if (ctrl) ctrl.click();
+            // wait tick
+            return 'opened';
+        }})()""")
+        time.sleep(0.5)
+        opts_dump = page.evaluate("""
+            Array.from(document.querySelectorAll('.Select-menu-outer .Select-option, [role=\"listbox\"] [role=\"option\"]'))
+                .slice(0, 25)
+                .map(function(o){ return o.textContent.trim().slice(0, 20); })
+        """)
+        print(f"       [色の系統] 候補 dump: {opts_dump}")
 
     # 2) 色名テキスト入力
     result = page.evaluate(f"""(function(){{

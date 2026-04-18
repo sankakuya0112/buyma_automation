@@ -1612,10 +1612,12 @@ def set_purchase_memo(page, product):
     # 買付先ショップ名 (1 input) — 15文字制限があるため "BaseBlu" のみ
     results["買付先ショップ名"] = _fill_in_section("買付先ショップ名", shop_name, tag="input")
 
-    # 買付先メモ (3 inputs: 買付先名 / URL / 説明) — placeholder で選別
-    results["買付先メモ_名"]  = _fill_in_section("買付先メモ", buyer_name, tag="input", match_placeholder="買付先名")
-    results["買付先メモ_URL"] = _fill_in_section("買付先メモ", buyer_url,  tag="input", match_placeholder="URL")
-    results["買付先メモ_説明"] = _fill_in_section("買付先メモ", buyer_desc, tag="input", match_placeholder="説明")
+    # 買付先メモ (3 inputs: 買付先名 / URL / 説明)
+    # 実際の DOM では placeholder が空なので、位置ベース（セクション内の 1/2/3番目）で判定する。
+    # 視覚上のラベル文字 ("買付先名" / "URL" / "説明") は別要素でレンダリングされている。
+    results["買付先メモ_名"]  = _fill_in_section("買付先メモ", buyer_name, tag="input", input_idx=0)
+    results["買付先メモ_URL"] = _fill_in_section("買付先メモ", buyer_url,  tag="input", input_idx=1)
+    results["買付先メモ_説明"] = _fill_in_section("買付先メモ", buyer_desc, tag="input", input_idx=2)
 
     print(f"    📝 メモ: {results}")
 

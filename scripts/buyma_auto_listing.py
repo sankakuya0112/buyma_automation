@@ -27,6 +27,7 @@ BUYMAへの自動出品スクリプト（統合版）
   python3 scripts/buyma_auto_listing.py                       # 全件・直接公開
   python3 scripts/buyma_auto_listing.py --draft               # 下書き保存のみ
   python3 scripts/buyma_auto_listing.py --test                # 1件テスト
+  python3 scripts/buyma_auto_listing.py --hold                # 終了時にブラウザ保持（Enter待機）
   python3 scripts/buyma_auto_listing.py --resume              # 前回の続きから
   python3 scripts/buyma_auto_listing.py --from 3              # 3件目から
   python3 scripts/buyma_auto_listing.py --max-price 30000     # ¥30,000以下のみ
@@ -1463,6 +1464,7 @@ def main():
     test_mode   = "--test"   in args
     resume_mode = "--resume" in args
     draft_mode  = "--draft"  in args
+    hold_mode   = "--hold"   in args
     start_from  = 1
     max_price = None
     min_profit = None
@@ -1562,6 +1564,17 @@ def main():
                 wait = random.uniform(8, 15)
                 print(f"  ⏳ {wait:.0f}秒待機...")
                 time.sleep(wait)
+
+        if hold_mode:
+            print("\n" + "=" * 50)
+            print("🔍 --hold モード: ブラウザウィンドウを開いたままにしています。")
+            print("   BUYMA の画面で手動操作・DevTools 確認をしてください。")
+            print("   終了するには、このターミナルで Enter キーを押してください。")
+            print("=" * 50)
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                pass
 
         browser.close()
 

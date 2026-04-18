@@ -1126,8 +1126,10 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
 def set_sku(page, sku, identify_memo=""):
     """品番 (SKU) + 識別メモ (非公開) を入力する。
 
-    BUYMA の品番フィールドは .sell-model-number-table の中に 2つの input があり、
-    1つ目 = 品番、2つ目 = 識別メモ（色:Black/サイズ:M/素材:レザー 等）。
+    BUYMA の品番 input は placeholder にサンプル SKU（例 "1BD075_2BLF_F0002_V_KOO"）が
+    表示されていることを利用して特定する。英大文字・数字・アンダースコアのみで
+    6文字以上のパターンはほぼ SKU 欄一択。
+    見つからない場合は .sell-model-number-table セレクタ、最後にラベル近傍探索にフォールバック。
     """
     if not sku:
         print("    🔖 品番: (なし)")
@@ -1135,39 +1137,49 @@ def set_sku(page, sku, identify_memo=""):
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};
         var memo = {json.dumps(identify_memo)};
-        // 1) .sell-model-number-table の tbody > tr > td の順に input を取得
+        // 1) placeholder が SKU サンプル形式 (英大文字・数字・アンダースコア 6文字以上) の input を探す
+        var skuInputs = [];
+        var allInputs = document.querySelectorAll('input[placeholder]');
+        for (var i = 0; i < allInputs.length; i++) {{
+            var ph = allInputs[i].getAttribute('placeholder') || '';
+            if (/^[A-Z0-9][A-Z0-9_]{{5,}}$/.test(ph)) {{
+                skuInputs.push(allInputs[i]);
+            }}
+        }}
+        if (skuInputs.length >= 1) {{
+            window.__si(skuInputs[0], sku);
+            var ret = ['品番=placeholder_match'];
+            if (skuInputs.length >= 2 && memo) {{
+                window.__si(skuInputs[1], memo);
+                ret.push('識別メモ=placeholder_idx1');
+            }} else if (memo) {{
+                // 2つ目の SKU like input がなければ、同じ行の隣接 input を探して識別メモに使う
+                var tr = skuInputs[0].closest('tr');
+                if (tr) {{
+                    var rowInputs = tr.querySelectorAll('input[type="text"], input:not([type])');
+                    for (var k = 0; k < rowInputs.length; k++) {{
+                        if (rowInputs[k] !== skuInputs[0]) {{
+                            window.__si(rowInputs[k], memo);
+                            ret.push('識別メモ=row_sibling');
+                            break;
+                        }}
+                    }}
+                }}
+            }}
+            return ret;
+        }}
+        // 2) .sell-model-number-table フォールバック
         var table = document.querySelector('.sell-model-number-table');
         if (table) {{
             var inputs = table.querySelectorAll('input[type="text"], input:not([type])');
             if (inputs.length >= 1) {{
                 window.__si(inputs[0], sku);
-                var ret = ['品番=ok(idx=0)'];
+                var ret = ['品番=table_idx0'];
                 if (inputs.length >= 2 && memo) {{
                     window.__si(inputs[1], memo);
-                    ret.push('識別メモ=ok(idx=1)');
+                    ret.push('識別メモ=table_idx1');
                 }}
                 return ret;
-            }}
-            return 'table_no_input';
-        }}
-        // 2) フォールバック: 「品番」ラベル近傍
-        var labels = document.querySelectorAll('label, dt, h3, h4, span, .bmm-c-summary__ttl');
-        for (var i = 0; i < labels.length; i++) {{
-            var t = (labels[i].textContent || '').trim();
-            if (t !== '品番' && t.indexOf('品番') === -1) continue;
-            var parent = labels[i];
-            for (var d = 0; d < 6 && parent; d++) {{
-                var inputs = parent.querySelectorAll('input[type="text"], input:not([type])');
-                if (inputs.length >= 1) {{
-                    window.__si(inputs[0], sku);
-                    var ret = ['品番=fallback(label)'];
-                    if (inputs.length >= 2 && memo) {{
-                        window.__si(inputs[1], memo);
-                        ret.push('識別メモ=fallback');
-                    }}
-                    return ret;
-                }}
-                parent = parent.parentElement;
             }}
         }}
         return 'not_found';
@@ -1540,7 +1552,7 @@ def set_purchase_memo(page, product):
     buyma_commission = int(recommended_n * 0.058)
     profit_rate = (profit_n / recommended_n * 100) if recommended_n else 0
 
-    # 出品メモ: 仕入先・商品URLは含めず（買付先メモ側にある）
+    # 出品メモ: 仕入先・商品URL・品番は含めない（それぞれ専用フィールドがある）
     listing_memo = (
         f"【選定理由】\n"
         f"BaseBlu セールから抽出、想定利益 ¥{_fmt(profit)} / 利益率 {profit_rate:.1f}% で基準クリア。\n\n"
@@ -1554,14 +1566,14 @@ def set_purchase_memo(page, product):
         f"送料・関税・消費税 小計: ¥{_fmt(fees_jpy)}\n"
         f"BUYMA 手数料(5.8%): ¥{_fmt(buyma_commission)}\n\n"
         f"【商品】\n"
-        f"タイトル: {title}\n"
-        f"品番: {sku}"
+        f"タイトル: {title}"
     )
     shop_name = "BaseBlu"
     buyer_name = "BaseBlu"
     buyer_url = product_url
+    # 買付先メモ 説明: 現地価格と総コストのみ（品番は専用フィールドに入る）
     buyer_desc = (
-        f"現地価格: {sale_price_eur} EUR / 総コスト: ¥{_fmt(total_cost)} / 品番: {sku}"
+        f"現地価格: {sale_price_eur} EUR / 総コスト: ¥{_fmt(total_cost)}"
     )
 
     def _fill_in_section(section_title, value, tag="textarea", input_idx=0, match_placeholder=None):

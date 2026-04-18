@@ -1509,10 +1509,11 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
 
 
 def set_purchase_memo(page, product):
-    """出品メモ・買付先メモを設定する。
+    """出品メモ・買付先ショップ名・買付先メモ を設定する。
 
-    - 出品メモ（内部用）: 利益計算サマリなど、自分向けの情報
-    - 買付先: ショップ名（BaseBlu）、URL、自由記入メモ
+    - 出品メモ: 選定理由・利益計算・コスト内訳（BUYMAの商品問合せ欄で確認できる内部メモ）
+    - 買付先ショップ名: BaseBlu（15文字制限あり）
+    - 買付先メモ: 買付先名 / URL / 説明 の 3input
     """
     product_url = product.get("product_url", "")
     sale_price_eur = product.get("sale_price_eur", product.get("sale_price_usd", "0"))
@@ -1530,16 +1531,16 @@ def set_purchase_memo(page, product):
         try: return int(float(v))
         except: return default
 
-    # 経費内訳を概算（total_cost から仕入価格を引いた残りを送料+関税+税とみなす）
-    eur_rate = 160  # EUR_TO_JPY デフォルト（厳密には config から取るべきだが概算でOK）
+    eur_rate = 160
     purchase_jpy = _num(sale_price_eur) * eur_rate
     total_cost_n = _num(total_cost)
     recommended_n = _num(recommended_price)
     profit_n = _num(profit)
-    fees_jpy = max(total_cost_n - purchase_jpy, 0)  # 送料+関税+税の合計（概算）
-    buyma_commission = int(recommended_n * 0.058)  # BUYMA 手数料 5.8% 概算
+    fees_jpy = max(total_cost_n - purchase_jpy, 0)
+    buyma_commission = int(recommended_n * 0.058)
     profit_rate = (profit_n / recommended_n * 100) if recommended_n else 0
 
+    # 出品メモ: 仕入先・商品URLは含めず（買付先メモ側にある）
     listing_memo = (
         f"【選定理由】\n"
         f"BaseBlu セールから抽出、想定利益 ¥{_fmt(profit)} / 利益率 {profit_rate:.1f}% で基準クリア。\n\n"
@@ -1551,128 +1552,70 @@ def set_purchase_memo(page, product):
         f"【コスト内訳（概算）】\n"
         f"仕入価格: {sale_price_eur} EUR (≒ ¥{_fmt(purchase_jpy)} @ {eur_rate}円/EUR)\n"
         f"送料・関税・消費税 小計: ¥{_fmt(fees_jpy)}\n"
-        f"BUYMA 手数料(5.8%): ¥{_fmt(buyma_commission)} (販売価格から控除)\n\n"
+        f"BUYMA 手数料(5.8%): ¥{_fmt(buyma_commission)}\n\n"
         f"【商品】\n"
         f"タイトル: {title}\n"
         f"品番: {sku}"
     )
-    # 買付先メモ: 仕入先名 + 商品URL + 現地価格を明記（購入者には見えない）
-    buyer_memo = (
-        f"【仕入先】BaseBlu\n"
-        f"【商品URL】{product_url}\n"
-        f"【現地価格】{sale_price_eur} EUR\n"
-        f"【品番】{sku}\n"
-        f"【日本円換算総コスト】¥{_fmt(total_cost)}"
-    )
     shop_name = "BaseBlu"
+    buyer_name = "BaseBlu"
+    buyer_url = product_url
+    buyer_desc = (
+        f"現地価格: {sale_price_eur} EUR / 総コスト: ¥{_fmt(total_cost)} / 品番: {sku}"
+    )
 
-    def _fill_by_label(label_keyword, value, is_textarea=False, placeholder_keywords=None):
-        """ラベル / セクション見出し / placeholder から入力欄を特定して value を入れる。
+    def _fill_in_section(section_title, value, tag="textarea", input_idx=0, match_placeholder=None):
+        """section_title の見出しから次の見出しまでの範囲で、N番目の tag 要素に value を入れる。
 
-        placeholder_keywords: 見出しで見つからない場合、input の placeholder に含まれる
-        文字列で検索するフォールバック用キーワードの配列。
+        match_placeholder が指定された場合は、範囲内の input のうち placeholder が
+        一致するものを優先的に選ぶ（input が複数あるセクション向け）。
         """
-        placeholder_keywords = placeholder_keywords or []
         js = f"""(function(){{
-            var needle = {json.dumps(label_keyword)};
+            var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt');
+            var title = {json.dumps(section_title)};
             var val = {json.dumps(value)};
-            var tag = {('"textarea"' if is_textarea else '"input"')};
-            var phKws = {json.dumps(placeholder_keywords)};
-            // 1) label[for=...]
-            var labels = document.querySelectorAll('label');
-            for (var i = 0; i < labels.length; i++) {{
-                if (labels[i].textContent.indexOf(needle) !== -1) {{
-                    var forId = labels[i].getAttribute('for');
-                    if (forId) {{
-                        var el = document.getElementById(forId);
-                        if (el && el.tagName.toLowerCase() === tag) {{
-                            if (tag === 'textarea') window.__sta(el, val); else window.__si(el, val);
-                            return 'label_for';
-                        }}
+            var tag = {json.dumps(tag)};
+            var idx = {input_idx};
+            var ph_key = {json.dumps(match_placeholder or "")};
+            for (var i = 0; i < titles.length; i++) {{
+                var tt = (titles[i].textContent || '').trim();
+                if (tt !== title) continue;
+                var startEl = titles[i];
+                var endEl = titles[i + 1] || null;
+                var els = document.querySelectorAll(tag);
+                var picked = [];
+                for (var j = 0; j < els.length; j++) {{
+                    if (!(startEl.compareDocumentPosition(els[j]) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                    if (endEl && !(endEl.compareDocumentPosition(els[j]) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+                    if (ph_key) {{
+                        var ph = els[j].getAttribute('placeholder') || '';
+                        if (ph.indexOf(ph_key) === -1) continue;
                     }}
-                    var container = labels[i].closest('div, section, fieldset, dl') || labels[i].parentElement;
-                    if (container) {{
-                        var el2 = container.querySelector(tag);
-                        if (el2) {{
-                            if (tag === 'textarea') window.__sta(el2, val); else window.__si(el2, val);
-                            return 'label_sibling';
-                        }}
-                    }}
+                    picked.push(els[j]);
                 }}
-            }}
-            // 2) placeholder フォールバック
-            if (phKws.length > 0) {{
-                var inputs = document.querySelectorAll(tag);
-                for (var i = 0; i < inputs.length; i++) {{
-                    var ph = inputs[i].getAttribute('placeholder') || '';
-                    for (var k = 0; k < phKws.length; k++) {{
-                        if (ph.indexOf(phKws[k]) !== -1) {{
-                            if (tag === 'textarea') window.__sta(inputs[i], val); else window.__si(inputs[i], val);
-                            return 'placeholder:' + phKws[k];
-                        }}
-                    }}
+                if (picked.length > idx) {{
+                    var target = picked[idx];
+                    if (tag === 'textarea') window.__sta(target, val);
+                    else window.__si(target, val);
+                    return 'ok(count=' + picked.length + ')';
                 }}
+                return 'no_element(count=' + picked.length + ')';
             }}
-            // 3) 祖先見出し探索
-            var els = document.querySelectorAll(tag);
-            for (var i = 0; i < els.length; i++) {{
-                var a = els[i];
-                for (var d = 0; d < 6; d++) {{
-                    if (!a.parentElement) break;
-                    a = a.parentElement;
-                    if (a.textContent && a.textContent.indexOf(needle) !== -1) {{
-                        if (tag === 'textarea') window.__sta(els[i], val); else window.__si(els[i], val);
-                        return 'ancestor';
-                    }}
-                }}
-            }}
-            return 'not_found';
+            return 'title_not_found';
         }})()"""
         return page.evaluate(js)
 
     results = {}
-    results["出品メモ"]    = _fill_by_label("出品メモ",  listing_memo, is_textarea=True)
-    results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
+    # 出品メモ (textarea)
+    results["出品メモ"] = _fill_in_section("出品メモ", listing_memo, tag="textarea")
 
-    # 買付先ショップ名セクションは「URL input」「ショップ名 input」の 2つの input を含む想定。
-    # 見出し「買付先ショップ名」から次の大見出しまでの範囲で input を拾う。
-    # label 要素は除外（内部の項目名ラベルで範囲が狭まるのを防ぐ）。
-    # 1つ目の input = 買付先URL（空欄のケース）、2つ目 = ショップ名
-    shop_url_result = page.evaluate(f"""(function(){{
-        var shopName = {json.dumps(shop_name)};
-        var url = {json.dumps(product_url)};
-        var titles = document.querySelectorAll(
-            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
-        );
-        for (var i = 0; i < titles.length; i++) {{
-            var t = (titles[i].textContent || '').trim();
-            if (t.indexOf('買付先ショップ名') === -1) continue;
-            var startEl = titles[i];
-            var endEl = titles[i + 1] || null;
-            var inputs = document.querySelectorAll('input.bmm-c-text-field, input[type="text"]');
-            var picked = [];
-            for (var j = 0; j < inputs.length; j++) {{
-                if (!(startEl.compareDocumentPosition(inputs[j]) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-                if (endEl && !(endEl.compareDocumentPosition(inputs[j]) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
-                var ph = (inputs[j].getAttribute('placeholder') || '');
-                if (ph.indexOf('ブランド名') !== -1) continue;
-                picked.push(inputs[j]);
-                if (picked.length >= 2) break;
-            }}
-            var out = {{'URL': 'skip', 'ショップ名': 'skip', 'picked_count': picked.length}};
-            if (picked.length >= 1 && url) {{
-                window.__si(picked[0], url);
-                out['URL'] = 'ok';
-            }}
-            if (picked.length >= 2 && shopName) {{
-                window.__si(picked[1], shopName);
-                out['ショップ名'] = 'ok';
-            }}
-            return out;
-        }}
-        return 'section_not_found';
-    }})()""")
-    results["買付先URL+ショップ名"] = shop_url_result
+    # 買付先ショップ名 (1 input) — 15文字制限があるため "BaseBlu" のみ
+    results["買付先ショップ名"] = _fill_in_section("買付先ショップ名", shop_name, tag="input")
+
+    # 買付先メモ (3 inputs: 買付先名 / URL / 説明) — placeholder で選別
+    results["買付先メモ_名"]  = _fill_in_section("買付先メモ", buyer_name, tag="input", match_placeholder="買付先名")
+    results["買付先メモ_URL"] = _fill_in_section("買付先メモ", buyer_url,  tag="input", match_placeholder="URL")
+    results["買付先メモ_説明"] = _fill_in_section("買付先メモ", buyer_desc, tag="input", match_placeholder="説明")
 
     print(f"    📝 メモ: {results}")
 

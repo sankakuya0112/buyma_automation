@@ -1341,16 +1341,21 @@ def save_draft(page):
     if url_after != url_before and "/sell/new" not in url_after:
         print(f"    💾 下書き保存（ID未確定）: {url_after}")
         return "saved"
-    # 失敗時はフォーム上のエラー表示を dump する
+    # 失敗時はフォーム上のエラー表示を dump する（visible なものだけ）
     errors = page.evaluate("""(function(){
         var errs = [];
-        // BUYMA のエラー表示候補
         document.querySelectorAll('.bmm-c-error, .bmm-c-field-error, .error, [class*="error"]')
             .forEach(function(e){
                 var t = (e.textContent || '').trim();
-                if (t && t.length < 120 && !/^\s*$/.test(t)) errs.push(t);
+                if (!t || t.length > 120) return;
+                // visible かどうかを判定: getBoundingClientRect で幅/高さがあり、
+                // かつ style.display !== 'none' && visibility !== 'hidden'
+                var rect = e.getBoundingClientRect();
+                var style = window.getComputedStyle(e);
+                var visible = rect.width > 0 && rect.height > 0
+                    && style.display !== 'none' && style.visibility !== 'hidden';
+                errs.push({text: t, visible: visible, cls: e.className});
             });
-        // button disabled 状態
         var btn = Array.from(document.querySelectorAll('button'))
             .find(function(b){return b.textContent.trim().indexOf('下書き保存') !== -1});
         var btnInfo = btn ? ('btn disabled=' + btn.disabled) : 'no_button';
@@ -1413,30 +1418,31 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     set_category(page, cat_path); human_delay(0.5, 1.0)
     set_price(page, price); human_delay(0.3, 0.6)
 
-    # 6. ブランド
-    brand_ok = select_brand(page, safe_vendor, b_phonetic, b_id)
-    if not brand_ok:
-        return "brand_not_found", None
-    human_delay(0.5, 1.0)
-
-    # 7. 配送・地域（draft_mode でも設定してから保存する）
+    # 6. 配送・地域（draft_mode でも設定してから保存する）
     set_shipping(page, price); human_delay(0.3, 0.6)
     set_region(page); human_delay(0.3, 0.6)
 
-    # 8. 購入期限（90日）
+    # 7. 購入期限（90日）
     set_purchase_deadline(page); human_delay(0.3, 0.6)
 
-    # 9. 関税チェック
+    # 8. 関税チェック
     set_customs_checkbox(page); human_delay(0.3, 0.6)
 
-    # 10. 色
+    # 9. 色
     set_color(page); human_delay(0.3, 0.6)
 
-    # 11. サイズ・在庫（買付可）
+    # 10. サイズ・在庫（買付可）
     set_size_and_stock(page); human_delay(0.5, 1.0)
 
-    # 12. 出品メモ・買付先メモ
+    # 11. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)
+
+    # 12. ブランド（最後に設定: 他フィールドの React 再レンダリングで
+    #     brand state がリセットされ「未登録」警告が残るのを防ぐ）
+    brand_ok = select_brand(page, safe_vendor, b_phonetic, b_id)
+    if not brand_ok:
+        return "brand_not_found", None
+    human_delay(1.0, 1.5)
 
     # 保存 or 公開
     if draft_mode:

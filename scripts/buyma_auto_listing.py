@@ -693,13 +693,16 @@ def set_price(page, price_jpy):
 
 
 BRAND_INPUT_SELECTOR = 'input.bmm-c-text-field[placeholder*="ブランド名"]'
+BRAND_OPTION_SELECTOR = '.bmm-c-suggest__option--selectable'
 
 
 def select_brand(page, brand_name, brand_phonetic, brand_id):
     """
-    ブランド選択は「テキスト入力 → サジェスト候補クリック」の人間の操作を
-    そのまま再現する。onClickBrand の React prop 直叩きは BUYMA 側の内部 state
-    を全部は更新しないケースがあり、UI 上で「未登録ブランド」警告が残る。
+    ブランド選択: カテゴリ同様に
+      ① ブランド入力欄に名前を入力 → サジェスト展開
+      ② サジェスト候補を Playwright の native click で選択
+    の流れで行う。React prop (onClickBrand) を直接呼び出す方式は内部 state が
+    完全に更新されず「未登録」警告が残り、保存が validation で弾かれる。
     """
     if brand_id == 0:
         print(f"    ⚠️ ブランド未登録（既知）: {brand_name}")
@@ -707,89 +710,89 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
 
     # 1) 入力欄にブランド名を入れてサジェストを開く
     typed = page.evaluate(f"""(function(){{
-        var bi = document.querySelector('input.bmm-c-text-field[placeholder*="ブランド名"]');
-        if (!bi) return 'no input';
-        window.__si(bi, {json.dumps(brand_name)});
+        var bi = document.querySelector({json.dumps(BRAND_INPUT_SELECTOR)});
+        if (!bi) return 'no_input';
         bi.focus();
+        window.__si(bi, {json.dumps(brand_name)});
         return 'typed';
     }})()""")
-    if typed == "no input":
+    if typed == "no_input":
         print(f"    ⚠️ ブランド入力欄が見つからない")
         return False
 
-    # 2) サジェスト候補が描画されるのを最大5秒待つ
-    for _ in range(25):
-        time.sleep(0.2)
-        if page.evaluate("document.querySelectorAll('.bmm-c-suggest__option--selectable').length>0"):
-            break
-    else:
+    # 2) サジェスト候補を最大 5 秒待つ
+    try:
+        page.wait_for_selector(BRAND_OPTION_SELECTOR, timeout=5000, state="visible")
+    except Exception:
         print(f"    ⚠️ サジェスト候補が出ない: {brand_name}")
         return False
 
-    # 3) 候補一覧から完全一致 → 部分一致の順で探して mousedown でクリック
-    #    onClick に渡す text は phonetic を含まない生のブランド名のみ。
-    #    候補の textContent（例: "BRUNELLO CUCINELLI(ブルネロクチネリ)"）を
-    #    そのまま渡すと BUYMA 側で phonetic が二重に付与される。
-    result = page.evaluate(f"""(function(){{
-        var opts = document.querySelectorAll('.bmm-c-suggest__option--selectable');
-        var nameRaw = {json.dumps(brand_name)};
-        var nameUpper = nameRaw.toUpperCase();
-        var phoneticStr = {json.dumps(brand_phonetic or '')};
-        var brandId = {brand_id};
-        function fire(el){{
-            // React 版 onClick を優先、無ければネイティブ click
-            var f = window.__gf(el), c = f;
-            for (var d = 0; d < 10; d++) {{
-                if (!c) break;
-                if (c.memoizedProps && typeof c.memoizedProps.onClick === 'function') {{
-                    try {{
-                        c.memoizedProps.onClick({{
-                            text: nameRaw,
-                            phonetic: phoneticStr,
-                            brand_id: brandId
-                        }});
-                        return 'react';
-                    }} catch (e) {{}}
-                }}
-                c = c.return;
-            }}
-            el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-            el.click();
-            return 'native';
-        }}
-        // 完全一致（候補 textContent が "NAME(phonetic)" 形式である想定）
-        for (var i = 0; i < opts.length; i++) {{
-            var t = opts[i].textContent.toUpperCase();
-            if (t === nameUpper || t.startsWith(nameUpper + '(') || t.startsWith(nameUpper + '（') || t.startsWith(nameUpper + ' ')) {{
-                return 'exact:' + fire(opts[i]);
-            }}
-        }}
-        // 部分一致
-        for (var i = 0; i < opts.length; i++) {{
-            if (opts[i].textContent.toUpperCase().indexOf(nameUpper) !== -1) {{
-                return 'partial:' + fire(opts[i]);
-            }}
-        }}
-        return 'no match';
-    }})()""")
+    # 3) Playwright の native click で候補をクリック
+    options = page.locator(BRAND_OPTION_SELECTOR)
+    count = options.count()
+    name_upper = brand_name.upper()
 
-    time.sleep(0.7)
+    def _pick_index():
+        # 完全一致優先（候補textContentは "NAME(phonetic)" 形式を想定）
+        for i in range(count):
+            try:
+                t = (options.nth(i).text_content() or "").strip().upper()
+            except Exception:
+                continue
+            if (t == name_upper
+                    or t.startswith(name_upper + "(")
+                    or t.startswith(name_upper + "(")
+                    or t.startswith(name_upper + " ")):
+                return i, "exact"
+        # 部分一致フォールバック
+        for i in range(count):
+            try:
+                t = (options.nth(i).text_content() or "").strip().upper()
+            except Exception:
+                continue
+            if name_upper in t:
+                return i, "partial"
+        return -1, "no_match"
 
-    # 4) 検証: 入力欄の value に phonetic か brand_name が入っていて、
-    #       かつ「未登録」警告が出ていない事を確認
-    val = page.evaluate("document.querySelector('input.bmm-c-text-field[placeholder*=\"ブランド名\"]')?.value || ''")
-    has_warning = page.evaluate(
-        "document.body.textContent.includes('BUYMAに登録されていないブランド名のため')"
-    )
-
-    if "no match" in result:
-        print(f"    ⚠️ ブランド候補に該当なし: {brand_name}")
+    idx, match_type = _pick_index()
+    if idx < 0:
+        all_opts = page.evaluate(f"""
+            Array.from(document.querySelectorAll({json.dumps(BRAND_OPTION_SELECTOR)}))
+                .slice(0, 10).map(function(o){{return o.textContent.trim().slice(0, 50)}})
+        """)
+        print(f"    ⚠️ ブランド候補に該当なし: {brand_name} / 候補: {all_opts}")
         return False
-    if has_warning:
-        print(f"    ⚠️ ブランド警告残存: {val} (result={result})")
+
+    try:
+        options.nth(idx).click(timeout=3000)
+    except Exception as e:
+        print(f"    ⚠️ ブランド候補クリック失敗: {e}")
+        return False
+
+    time.sleep(0.8)
+
+    # 4) 検証: 入力欄の value と「未登録」警告の visible 判定
+    val = page.evaluate(f"document.querySelector({json.dumps(BRAND_INPUT_SELECTOR)})?.value || ''")
+    warning_visible = page.evaluate("""(function(){
+        var warns = document.querySelectorAll('.bmm-c-error-msg, .bmm-c-error');
+        for (var i = 0; i < warns.length; i++) {
+            var w = warns[i];
+            if ((w.textContent || '').indexOf('BUYMAに登録されていない') === -1) continue;
+            var rect = w.getBoundingClientRect();
+            var style = window.getComputedStyle(w);
+            if (rect.width > 0 && rect.height > 0
+                && style.display !== 'none' && style.visibility !== 'hidden') {
+                return true;
+            }
+        }
+        return false;
+    })()""")
+
+    if warning_visible:
+        print(f"    ⚠️ ブランド警告残存: {val} (match={match_type})")
         return False
     ok = bool(val) and (brand_phonetic in val or brand_name.lower() in val.lower())
-    print(f"    🏷️ ブランド: {val} → {'✅' if ok else '⚠️'} ({result})")
+    print(f"    🏷️ ブランド: {val} → {'✅' if ok else '⚠️'} ({match_type})")
     return ok
 
 

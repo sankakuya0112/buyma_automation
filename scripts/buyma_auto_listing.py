@@ -1128,10 +1128,20 @@ def set_sku(page, sku, identify_memo=""):
 
     BUYMA の品番 input は placeholder にサンプル SKU（例 "1BD075_2BLF_F0002_V_KOO"）が
     表示されていることを利用して特定する。
+    品番セクションは遅延描画されるため、まず scrollIntoView で DOM を描画させる。
     """
     if not sku:
         print("    🔖 品番: (なし)")
         return
+
+    # 遅延描画される品番セクションを強制的に画面内へスクロールして DOM を生成させる
+    page.evaluate("""(function(){
+        var t = document.querySelector('.sell-model-number-table');
+        if (t) { t.scrollIntoView({block: 'center'}); return 'scrolled'; }
+        return 'no_table';
+    })()""")
+    time.sleep(1.0)
+
     result = page.evaluate(f"""(function(){{
         var sku = {json.dumps(sku)};
         var memo = {json.dumps(identify_memo)};
@@ -1407,7 +1417,32 @@ def set_color(page, color_name="マルチカラー", color_label=None):
     # 1) 色の系統ドロップダウン
     panel = page.locator(panel_sel)
     color_dd = panel.locator('.Select, .bmm-c-custom-select').first
-    # color_name そのまま失敗時は一般的な色名にフォールバックして試す
+
+    # 診断: ドロップダウンを一旦開いて候補を全件 dump し、そのまま閉じる
+    # (成否に関わらず実行する。毎回 1回だけロギングして COLOR_JA_MAP 調整の手がかりにする)
+    page.evaluate(f"""(function(){{
+        var p = document.querySelector({json.dumps(panel_sel)});
+        if (!p) return;
+        var sel = p.querySelector('.Select, .bmm-c-custom-select');
+        if (!sel) return;
+        var ctrl = sel.querySelector('.Select-control');
+        if (ctrl) ctrl.click();
+    }})()""")
+    time.sleep(0.4)
+    peek = page.evaluate("""
+        Array.from(document.querySelectorAll(
+            '.Select-menu-outer .Select-option, [role=\"listbox\"] [role=\"option\"]'
+        )).slice(0, 40).map(function(o){ return o.textContent.trim().slice(0, 30); })
+    """)
+    print(f"       [色の系統] options ({len(peek)}): {peek}")
+    # 閉じる（次のクリック処理のため）
+    try:
+        page.locator('body').click(position={'x': 5, 'y': 5}, timeout=500)
+    except Exception:
+        pass
+    time.sleep(0.3)
+
+    # color_name そのまま失敗時はマルチカラーにフォールバック
     candidates = [color_name]
     if color_name not in ("マルチカラー",):
         candidates.append("マルチカラー")
@@ -1417,25 +1452,6 @@ def set_color(page, color_name="マルチカラー", color_label=None):
             color_name = cand
             ok = True
             break
-    if not ok:
-        # option dump
-        dump = page.evaluate(f"""(function(){{
-            var p = document.querySelector({json.dumps(panel_sel)});
-            if (!p) return 'no_panel';
-            var sels = p.querySelectorAll('.Select, .bmm-c-custom-select');
-            if (!sels.length) return 'no_select_in_panel';
-            var ctrl = sels[0].querySelector('.Select-control');
-            if (ctrl) ctrl.click();
-            // wait tick
-            return 'opened';
-        }})()""")
-        time.sleep(0.5)
-        opts_dump = page.evaluate("""
-            Array.from(document.querySelectorAll('.Select-menu-outer .Select-option, [role=\"listbox\"] [role=\"option\"]'))
-                .slice(0, 25)
-                .map(function(o){ return o.textContent.trim().slice(0, 20); })
-        """)
-        print(f"       [色の系統] 候補 dump: {opts_dump}")
 
     # 2) 色名テキスト入力
     result = page.evaluate(f"""(function(){{

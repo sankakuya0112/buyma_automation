@@ -91,6 +91,77 @@ def fetch_product_detail(handle):
         return {}
 
 
+def fetch_product_html(handle):
+    """個別商品の HTML ページを取得する。JSON API に含まれない色ラベル等を
+    抽出するために使う。失敗時は空文字列。"""
+    if not handle:
+        return ""
+    url = PRODUCT_BASE_URL + handle
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        return resp.text or ""
+    except Exception:
+        return ""
+
+
+def _extract_color_from_html(html: str) -> str:
+    """baseblu の商品ページ HTML から色ラベルを抽出する。
+
+    ALAÏA ブラウスのような商品では右サイドバーに 'GREEN' のようなテキストが
+    表示される。Shopify テーマの実装パターンは複数あるため、代表的な構造を順に試す。
+    """
+    if not html:
+        return ""
+    # パターン1: data-color / data-color-name 属性
+    for pat in [
+        r'data-color(?:-name)?\s*=\s*["\']([A-Za-z][A-Za-z \-/]+)["\']',
+        r'data-swatch(?:-color)?\s*=\s*["\']([A-Za-z][A-Za-z \-/]+)["\']',
+    ]:
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+
+    # パターン2: <span class="...color...">NAME</span> / <div class="swatch-label">NAME</div>
+    for pat in [
+        r'<span[^>]*class="[^"]*(?:color-name|product-color|swatch-label)[^"]*"[^>]*>\s*([A-Z][A-Za-z \-/]+)\s*</span>',
+        r'<div[^>]*class="[^"]*(?:color-name|product-color|swatch-label)[^"]*"[^>]*>\s*([A-Z][A-Za-z \-/]+)\s*</div>',
+    ]:
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+
+    # パターン3: 関連商品ラベルやアクセシビリティ属性に色が載っているケース
+    # 例: <a ... aria-label="GREEN"> / <img alt="Green">
+    for pat in [
+        r'aria-label="([A-Z]{3,15})"[^>]*(?:product|color|swatch)',
+        r'(?:product|color|swatch)[^>]*aria-label="([A-Z]{3,15})"',
+    ]:
+        m = re.search(pat, html)
+        if m:
+            return m.group(1).strip().title()
+
+    # パターン4: Shopify の productJson / 埋め込み JSON に "color" キーがあるケース
+    m = re.search(r'"color"\s*:\s*"([A-Za-z][A-Za-z \-/]+)"', html)
+    if m:
+        return m.group(1).strip()
+
+    # パターン5: 右サイドバー系のシンプルな色ラベル。典型例:
+    #   <span class="color">GREEN</span> や <div class="variant-color">Green</div>
+    m = re.search(
+        r'<(?:span|div|p)[^>]*>\s*([A-Z]{3,15})\s*</(?:span|div|p)>\s*(?:</a>|<img[^>]*variant)',
+        html,
+    )
+    if m:
+        token = m.group(1).strip()
+        # ALL_UPPERCASE の単語のうち、色キーワードに合致する場合だけ採用
+        for kw in _COLOR_KEYWORDS:
+            if kw.upper() == token or kw.upper() in token:
+                return token.title()
+
+    return ""
+
+
 def _extract_sku_from_description(description: str) -> str:
     """body_html/description_en に "Sku: XXXXX" と明記されている場合に抽出する。
 
@@ -290,6 +361,11 @@ def parse_product(product, fetch_details=True):
 
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
     color = _extract_color(product)
+    # JSON API で色が取れなかった場合、商品ページ HTML から追加取得を試みる
+    if not color and fetch_details and handle:
+        html = fetch_product_html(handle)
+        color = _extract_color_from_html(html)
+        time.sleep(0.3)  # レート制限対策
     sizes = _extract_sizes(variants, only_available=False)
     available_sizes = _extract_sizes(variants, only_available=True)
     season = _extract_season(description_en)

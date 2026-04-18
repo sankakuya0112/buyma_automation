@@ -880,107 +880,135 @@ def _select_by_label(page, dropdown_selector_js, label):
     return bool(clicked)
 
 
+def _find_section_selects(page, section_title_keyword):
+    """
+    指定の見出しテキストに続く .Select 要素のインデックスを配列で返す。
+
+    .bmm-c-summary__ttl や h3/dt の直後に .Select が並ぶ BUYMA の DOM 構造で、
+    closest() が効かない／別セクションの Select まで拾ってしまう事を避けるため、
+    「見出し要素の位置」と「次の見出し要素の位置」の間にある .Select を対象にする。
+    """
+    return page.evaluate(f"""(function(){{
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
+        );
+        var allSels = Array.from(document.querySelectorAll('.Select, .bmm-c-select'));
+        var keyword = {json.dumps(section_title_keyword)};
+        // このセクションの開始見出しと、次の見出しの DOM 位置を特定する
+        var startIdx = -1;
+        for (var i = 0; i < titles.length; i++) {{
+            var t = titles[i].textContent.trim();
+            if (t === keyword || t.indexOf(keyword) === 0) {{ startIdx = i; break; }}
+        }}
+        if (startIdx < 0) return {{error: 'no_title', found_titles: Array.from(titles).map(function(t){{return t.textContent.trim().slice(0,20)}})}};
+        var startEl = titles[startIdx];
+        var endEl = titles[startIdx + 1] || null;
+        // startEl の後ろ、endEl の前にある .Select を収集
+        function afterStart(el){{
+            return startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+        }}
+        function beforeEnd(el){{
+            if (!endEl) return true;
+            return endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING;
+        }}
+        var result = [];
+        for (var j = 0; j < allSels.length; j++) {{
+            if (afterStart(allSels[j]) && beforeEnd(allSels[j])) {{
+                result.push(j);
+            }}
+        }}
+        // セクション内のラジオボタンやサブ見出しもついでに返す
+        var radios = [];
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        var el;
+        while ((el = walker.nextNode())) {{
+            if (!afterStart(el) || !beforeEnd(el)) continue;
+            if (el.tagName === 'INPUT' && el.type === 'radio') {{
+                var parent = el.closest('label') || el.parentElement;
+                var labelTxt = parent ? (parent.textContent || '').trim().slice(0, 20) : '';
+                radios.push({{label: labelTxt, id: el.id || null}});
+            }}
+        }}
+        return {{selects: result, radios: radios}};
+    }})()""")
+
+
 def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川県"):
     """買付地と発送地を設定する。
 
-    - 買付地: 海外 → ヨーロッパ → イタリア
-    - 発送地: 国内 → 神奈川県 （ラジオボタンで「国内」を選択した上で都道府県ドロップダウン）
+    - 買付地: 海外 → ヨーロッパ → イタリア（.Select が2つ並ぶ想定）
+    - 発送地: 国内ラジオ選択 → 神奈川県 ドロップダウン
     """
     results = []
 
     # --- 買付地 ---
-    # 買付地のセクション内の .Select を 2つ順番に開く
-    purchase_selects_idx = page.evaluate("""(function(){
-        // 複数のセレクタで見出しを探す
-        var titles = document.querySelectorAll(
-            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
-        );
-        for (var i = 0; i < titles.length; i++) {
-            if (titles[i].textContent.indexOf('買付地') !== -1) {
-                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
-                    || titles[i].parentElement.parentElement;
-                if (!sec) continue;
-                var sels = sec.querySelectorAll('.Select, .bmm-c-select');
-                var allSels = document.querySelectorAll('.Select, .bmm-c-select');
-                var idx = [];
-                sels.forEach(function(s){ idx.push(Array.from(allSels).indexOf(s)); });
-                return idx;
-            }
-        }
-        return null;
-    })()""")
-
-    # 見出し候補のデバッグダンプ
-    if not purchase_selects_idx:
-        dump = page.evaluate("""
-            Array.from(document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'))
-                .map(function(e){return e.textContent.trim().slice(0,30)})
-                .filter(function(t){return t.length>0}).slice(0,20)
-        """)
-        results.append(f"買付地_見出し未検出 (候補: {dump})")
-    if purchase_selects_idx and len(purchase_selects_idx) >= 2:
-        # 最初が大陸、2つ目が国
-        if _select_by_label(page, f"document.querySelectorAll('.Select')[{purchase_selects_idx[0]}]", "ヨーロッパ"):
-            results.append("買付地_大陸=ヨーロッパ")
-        if _select_by_label(page, f"document.querySelectorAll('.Select')[{purchase_selects_idx[1]}]", purchase_country):
-            results.append(f"買付地_国={purchase_country}")
+    info = _find_section_selects(page, "買付地")
+    if isinstance(info, dict) and info.get("error"):
+        results.append(f"買付地_見出し未検出 (found: {info.get('found_titles', [])[:15]})")
     else:
-        results.append("買付地_セクション未検出")
+        sel_indices = info.get("selects", []) if isinstance(info, dict) else []
+        if len(sel_indices) >= 2:
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", "ヨーロッパ"):
+                results.append("買付地_大陸=ヨーロッパ")
+            else:
+                results.append("買付地_大陸 失敗")
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[1]}]", purchase_country):
+                results.append(f"買付地_国={purchase_country}")
+            else:
+                results.append(f"買付地_国 '{purchase_country}' 失敗")
+        elif len(sel_indices) == 1:
+            # ドロップダウンが 1 つしかない場合（BUYMA の仕様変更等）は 1 段だけ選択を試す
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", purchase_country):
+                results.append(f"買付地={purchase_country} (1段)")
+            else:
+                results.append("買付地 1段選択 失敗")
+        else:
+            results.append(f"買付地_Select未検出 (section内 selects={sel_indices})")
 
     # --- 発送地 ---
-    # 1) 「国内」ラジオボタンを押す
-    domestic_clicked = page.evaluate("""(function(){
-        var titles = document.querySelectorAll(
-            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
-        );
-        for (var i = 0; i < titles.length; i++) {
-            if (titles[i].textContent.indexOf('発送地') !== -1) {
-                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
-                    || titles[i].parentElement.parentElement;
-                if (!sec) continue;
-                var candidates = sec.querySelectorAll(
-                    'label, button, div.bmm-c-radio, input[type="radio"]'
-                );
-                for (var j = 0; j < candidates.length; j++) {
-                    var el = candidates[j];
-                    var txt = (el.textContent || '').trim();
-                    if (txt === '国内' || txt.indexOf('国内') === 0) {
-                        el.click();
-                        return true;
-                    }
+    info2 = _find_section_selects(page, "発送地")
+    if isinstance(info2, dict) and not info2.get("error"):
+        # ラジオから「国内」をクリック
+        domestic_clicked = page.evaluate("""(function(){
+            var titles = document.querySelectorAll(
+                '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
+            );
+            var startIdx = -1;
+            for (var i = 0; i < titles.length; i++) {
+                var t = titles[i].textContent.trim();
+                if (t === '発送地' || t.indexOf('発送地') === 0) { startIdx = i; break; }
+            }
+            if (startIdx < 0) return false;
+            var startEl = titles[startIdx];
+            var endEl = titles[startIdx + 1] || null;
+            var cands = document.querySelectorAll('label, button, div.bmm-c-radio');
+            for (var i = 0; i < cands.length; i++) {
+                var el = cands[i];
+                if (!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                if (endEl && !(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+                var txt = (el.textContent || '').trim();
+                if (txt === '国内' || txt.indexOf('国内') === 0) {
+                    el.click();
+                    return true;
                 }
-                return false;
             }
-        }
-        return false;
-    })()""")
-    time.sleep(0.5)
-    if domestic_clicked:
-        results.append("発送地_国内選択")
-
-    # 2) 都道府県ドロップダウンを選択（発送地セクション内の .Select[0]）
-    ship_idx = page.evaluate("""(function(){
-        var titles = document.querySelectorAll(
-            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, label, legend, dt'
-        );
-        for (var i = 0; i < titles.length; i++) {
-            if (titles[i].textContent.indexOf('発送地') !== -1) {
-                var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div.bmm-c-form-field')
-                    || titles[i].parentElement.parentElement;
-                if (!sec) continue;
-                var sels = sec.querySelectorAll('.Select, .bmm-c-select');
-                var allSels = document.querySelectorAll('.Select, .bmm-c-select');
-                if (sels.length === 0) return null;
-                return Array.from(allSels).indexOf(sels[0]);
-            }
-        }
-        return null;
-    })()""")
-    if ship_idx is not None and ship_idx >= 0:
-        if _select_by_label(page, f"document.querySelectorAll('.Select')[{ship_idx}]", ship_prefecture):
-            results.append(f"発送地={ship_prefecture}")
+            return false;
+        })()""")
+        time.sleep(0.6)
+        if domestic_clicked:
+            results.append("発送地_国内選択")
+        # 都道府県ドロップダウンを選択（発送地セクション内の .Select を再取得）
+        info2b = _find_section_selects(page, "発送地")
+        sel2 = info2b.get("selects", []) if isinstance(info2b, dict) else []
+        if sel2:
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel2[0]}]", ship_prefecture):
+                results.append(f"発送地={ship_prefecture}")
+            else:
+                results.append(f"発送地 '{ship_prefecture}' 失敗")
         else:
-            results.append(f"発送地 '{ship_prefecture}' 失敗")
+            results.append("発送地_Select未検出")
+    else:
+        results.append("発送地_見出し未検出")
 
     print(f"    🌍 地域: {results}")
 
@@ -1113,13 +1141,19 @@ def set_purchase_memo(page, product):
     )
     shop_name = "BaseBlu"
 
-    def _fill_by_label(label_keyword, value, is_textarea=False):
-        """ラベル（またはセクション見出し）に一致する入力欄 / textarea に value を入力する。"""
+    def _fill_by_label(label_keyword, value, is_textarea=False, placeholder_keywords=None):
+        """ラベル / セクション見出し / placeholder から入力欄を特定して value を入れる。
+
+        placeholder_keywords: 見出しで見つからない場合、input の placeholder に含まれる
+        文字列で検索するフォールバック用キーワードの配列。
+        """
+        placeholder_keywords = placeholder_keywords or []
         js = f"""(function(){{
             var needle = {json.dumps(label_keyword)};
             var val = {json.dumps(value)};
             var tag = {('"textarea"' if is_textarea else '"input"')};
-            // まず label[for] で直接マッピング
+            var phKws = {json.dumps(placeholder_keywords)};
+            // 1) label[for=...]
             var labels = document.querySelectorAll('label');
             for (var i = 0; i < labels.length; i++) {{
                 if (labels[i].textContent.indexOf(needle) !== -1) {{
@@ -1131,8 +1165,7 @@ def set_purchase_memo(page, product):
                             return 'label_for';
                         }}
                     }}
-                    // 同じ親要素内の input/textarea を使う
-                    var container = labels[i].closest('div, section, fieldset') || labels[i].parentElement;
+                    var container = labels[i].closest('div, section, fieldset, dl') || labels[i].parentElement;
                     if (container) {{
                         var el2 = container.querySelector(tag);
                         if (el2) {{
@@ -1142,7 +1175,20 @@ def set_purchase_memo(page, product):
                     }}
                 }}
             }}
-            // 祖先をたどって見出しを探す方式（既存のフォールバック）
+            // 2) placeholder フォールバック
+            if (phKws.length > 0) {{
+                var inputs = document.querySelectorAll(tag);
+                for (var i = 0; i < inputs.length; i++) {{
+                    var ph = inputs[i].getAttribute('placeholder') || '';
+                    for (var k = 0; k < phKws.length; k++) {{
+                        if (ph.indexOf(phKws[k]) !== -1) {{
+                            if (tag === 'textarea') window.__sta(inputs[i], val); else window.__si(inputs[i], val);
+                            return 'placeholder:' + phKws[k];
+                        }}
+                    }}
+                }}
+            }}
+            // 3) 祖先見出し探索
             var els = document.querySelectorAll(tag);
             for (var i = 0; i < els.length; i++) {{
                 var a = els[i];
@@ -1161,8 +1207,10 @@ def set_purchase_memo(page, product):
 
     results = {}
     results["出品メモ"]    = _fill_by_label("出品メモ",  listing_memo, is_textarea=True)
-    results["買付先名"]    = _fill_by_label("買付先名",  shop_name,    is_textarea=False)
-    results["買付先URL"]   = _fill_by_label("買付先URL", product_url,  is_textarea=False)
+    results["買付先名"]    = _fill_by_label("買付先名",  shop_name,    is_textarea=False,
+                                              placeholder_keywords=["ショップ名", "買付先"])
+    results["買付先URL"]   = _fill_by_label("買付先URL", product_url,  is_textarea=False,
+                                              placeholder_keywords=["URL", "http"])
     results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
 
     print(f"    📝 メモ: {results}")
@@ -1262,7 +1310,23 @@ def save_draft(page):
     if url_after != url_before and "/sell/new" not in url_after:
         print(f"    💾 下書き保存（ID未確定）: {url_after}")
         return "saved"
+    # 失敗時はフォーム上のエラー表示を dump する
+    errors = page.evaluate("""(function(){
+        var errs = [];
+        // BUYMA のエラー表示候補
+        document.querySelectorAll('.bmm-c-error, .bmm-c-field-error, .error, [class*="error"]')
+            .forEach(function(e){
+                var t = (e.textContent || '').trim();
+                if (t && t.length < 120 && !/^\s*$/.test(t)) errs.push(t);
+            });
+        // button disabled 状態
+        var btn = Array.from(document.querySelectorAll('button'))
+            .find(function(b){return b.textContent.trim().indexOf('下書き保存') !== -1});
+        var btnInfo = btn ? ('btn disabled=' + btn.disabled) : 'no_button';
+        return {errors: errs.slice(0, 10), button: btnInfo};
+    })()""")
     print(f"    ⚠️ 保存未確認 (url={url_after})")
+    print(f"       診断: {errors}")
     return None
 
 

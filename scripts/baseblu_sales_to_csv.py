@@ -91,6 +91,20 @@ def fetch_product_detail(handle):
         return {}
 
 
+def _extract_sku_from_description(description: str) -> str:
+    """body_html/description_en に "Sku: XXXXX" と明記されている場合に抽出する。
+
+    baseblu は商品説明に "Sku: AA9C0962T666A_643" のように表示するため、
+    これが最も正確な製品 SKU。variant SKU よりこちらを優先する。
+    """
+    if not description:
+        return ""
+    m = re.search(r"Sku\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-]*)", description, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 def _extract_season(description: str) -> str:
     """商品説明テキストから "Season: AW25" のようなシーズン情報を抽出する。
 
@@ -108,19 +122,61 @@ def _extract_season(description: str) -> str:
     return ""
 
 
-def _extract_color(product: dict) -> str:
-    """Shopify product の options から Color 情報を抽出する。無ければ空文字列。
+def _extract_sku_from_variant(variant_sku: str, option1_value: str) -> str:
+    """variant の SKU からサイズ suffix (_40, _XL 等) を剥がして製品レベルの SKU を返す。
 
-    例1: options = [{"name": "Size", "values": [...]}, {"name": "Color", "values": ["Black"]}]
-         → "Black"
-    例2: options に Color がない場合、variants の option2 からカラー値を収集してカンマ区切り
+    Shopify では各 variant に別 SKU が割り当てられるため、"AA9C0962T666A_643_40" の
+    ように variant の option1 (サイズ) が末尾に付いていることが多い。
+    BUYMA の品番欄には "AA9C0962T666A_643" のような製品共通 SKU を入れたい。
     """
+    if not variant_sku:
+        return ""
+    opt = (option1_value or "").strip()
+    if not opt:
+        return variant_sku
+    # "_{option1}" が末尾にあれば剥がす
+    suffix = "_" + opt
+    if variant_sku.endswith(suffix):
+        return variant_sku[: -len(suffix)]
+    # case-insensitive 比較（例: variant の sku が大文字、option1 が小文字など）
+    if variant_sku.lower().endswith(suffix.lower()):
+        return variant_sku[: -len(suffix)]
+    return variant_sku
+
+
+# 色キーワード（body_html / タイトル / tags 文字列中の検出用）。
+# より具体的なもの (multi-word) を先に並べて誤一致を避ける。
+_COLOR_KEYWORDS = [
+    "off white", "off-white",
+    "navy blue", "royal blue", "sky blue", "light blue", "dark blue",
+    "wine red", "light pink", "dark green", "forest green",
+    "black", "white", "red", "pink", "blue", "green", "yellow",
+    "orange", "purple", "violet", "gray", "grey", "brown", "beige",
+    "cream", "gold", "silver", "khaki", "burgundy", "bordeaux",
+    "navy", "ivory", "camel", "mustard", "turquoise",
+]
+
+
+def _extract_color(product: dict) -> str:
+    """Shopify product から色情報を抽出する。複数ソースを順番に試す。
+
+    優先順位:
+      1. options[name="Color"/"Colour"/"Colore"]
+      2. variants[].option2 (Shopify 慣例)
+      3. tags (例: "color:green" / "Green")
+      4. body_html の "Color: XXX" パターン
+      5. title 中の色キーワード
+    """
+    # 1) options
     for option in product.get("options", []) or []:
         name = (option.get("name") or "").strip().lower()
         if name in ("color", "colour", "colore"):
             values = option.get("values") or []
-            return ", ".join(v for v in values if v)
-    # variants の option2 (Shopify 慣例で option2 が color) をフォールバック
+            out = ", ".join(v for v in values if v)
+            if out:
+                return out
+
+    # 2) variants.option2
     seen = set()
     colors = []
     for v in product.get("variants", []) or []:
@@ -128,7 +184,35 @@ def _extract_color(product: dict) -> str:
         if c and c not in seen:
             seen.add(c)
             colors.append(c)
-    return ", ".join(colors)
+    if colors:
+        return ", ".join(colors)
+
+    # 3) tags - "color:green" or just "green"
+    tags = product.get("tags", []) or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    for tag in tags:
+        tl = tag.lower().strip()
+        if tl.startswith("color:") or tl.startswith("colour:"):
+            return tag.split(":", 1)[1].strip()
+        for kw in _COLOR_KEYWORDS:
+            if tl == kw:
+                return tag.strip()
+
+    # 4) body_html - "Color: XXX" pattern
+    body = product.get("body_html", "") or ""
+    if body:
+        m = re.search(r"Colou?r\s*[:：]\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)", body, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().title()
+
+    # 5) title - scan for color keywords
+    title = (product.get("title") or "").lower()
+    for kw in _COLOR_KEYWORDS:
+        if kw in title:
+            return kw.title()
+
+    return ""
 
 
 def _extract_sizes(variants: list, only_available: bool = False) -> str:
@@ -166,7 +250,8 @@ def parse_product(product, fetch_details=True):
 
     variant = variants[0]
     available = variant.get("available", False)
-    sku = variant.get("sku", "")
+    # variant SKU からサイズ suffix を剥がして製品レベル SKU にする
+    sku = _extract_sku_from_variant(variant.get("sku", ""), variant.get("option1", ""))
 
     try:
         sale_price = float(variant.get("price", 0))
@@ -199,7 +284,8 @@ def parse_product(product, fetch_details=True):
             if not sku:
                 detail_variants = detail.get("variants", [])
                 if detail_variants:
-                    sku = detail_variants[0].get("sku", "")
+                    dv = detail_variants[0]
+                    sku = _extract_sku_from_variant(dv.get("sku", ""), dv.get("option1", ""))
         time.sleep(0.3)  # レート制限対策
 
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
@@ -207,6 +293,11 @@ def parse_product(product, fetch_details=True):
     sizes = _extract_sizes(variants, only_available=False)
     available_sizes = _extract_sizes(variants, only_available=True)
     season = _extract_season(description_en)
+
+    # description_en に "Sku: XXX" が明記されていれば、それを優先（variant SKU より正確）
+    desc_sku = _extract_sku_from_description(description_en)
+    if desc_sku:
+        sku = desc_sku
 
     return {
         "title": title,

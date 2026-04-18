@@ -91,6 +91,43 @@ def fetch_product_detail(handle):
         return {}
 
 
+def _extract_color(product: dict) -> str:
+    """Shopify product の options から Color 情報を抽出する。無ければ空文字列。
+
+    例1: options = [{"name": "Size", "values": [...]}, {"name": "Color", "values": ["Black"]}]
+         → "Black"
+    例2: options に Color がない場合、variants の option2 からカラー値を収集してカンマ区切り
+    """
+    for option in product.get("options", []) or []:
+        name = (option.get("name") or "").strip().lower()
+        if name in ("color", "colour", "colore"):
+            values = option.get("values") or []
+            return ", ".join(v for v in values if v)
+    # variants の option2 (Shopify 慣例で option2 が color) をフォールバック
+    seen = set()
+    colors = []
+    for v in product.get("variants", []) or []:
+        c = (v.get("option2") or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            colors.append(c)
+    return ", ".join(colors)
+
+
+def _extract_sizes(variants: list, only_available: bool = False) -> str:
+    """variants から Size 情報（option1）を抽出。only_available=True なら在庫ありのみ。"""
+    seen = set()
+    out = []
+    for v in variants or []:
+        if only_available and not v.get("available", False):
+            continue
+        s = (v.get("option1") or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return ", ".join(out)
+
+
 def parse_product(product, fetch_details=True):
     """Shopify APIの商品データから必要な項目を抽出する"""
     title = product.get("title", "")
@@ -148,11 +185,19 @@ def parse_product(product, fetch_details=True):
                     sku = detail_variants[0].get("sku", "")
         time.sleep(0.3)  # レート制限対策
 
+    # 色・サイズ抽出（BUYMA 出品フォームに流し込むため）
+    color = _extract_color(product)
+    sizes = _extract_sizes(variants, only_available=False)
+    available_sizes = _extract_sizes(variants, only_available=True)
+
     return {
         "title": title,
         "vendor": vendor,
         "product_type": product_type,
         "sku": sku,
+        "color": color,
+        "sizes": sizes,
+        "available_sizes": available_sizes,
         "sale_price": sale_price,
         "original_price": original_price,
         "discount_rate": discount_rate,
@@ -167,6 +212,7 @@ def parse_product(product, fetch_details=True):
 def save_to_csv(rows, output_path):
     fieldnames = [
         "title", "vendor", "product_type", "sku",
+        "color", "sizes", "available_sizes",
         "sale_price", "original_price", "discount_rate", "available",
         "description_en", "image_url", "sub_images", "product_url"
     ]

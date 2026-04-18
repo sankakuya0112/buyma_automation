@@ -27,6 +27,8 @@ BUYMAへの自動出品スクリプト（統合版）
   python3 scripts/buyma_auto_listing.py                       # 全件・直接公開
   python3 scripts/buyma_auto_listing.py --draft               # 下書き保存のみ
   python3 scripts/buyma_auto_listing.py --test                # 1件テスト
+  python3 scripts/buyma_auto_listing.py --limit 5             # 先頭5件だけ処理
+  python3 scripts/buyma_auto_listing.py --from 3 --limit 5    # 3番目から5件
   python3 scripts/buyma_auto_listing.py --hold                # 終了時にブラウザ保持（Enter待機）
   python3 scripts/buyma_auto_listing.py --resume              # 前回の続きから
   python3 scripts/buyma_auto_listing.py --from 3              # 3件目から
@@ -78,6 +80,50 @@ window.__sta=function(e,v){Object.getOwnPropertyDescriptor(window.HTMLTextAreaEl
 window.__srs=function(s,v,l){var f=window.__gf(s),c=f;for(var d=0;d<20;d++){if(!c)break;if(c.memoizedProps&&typeof c.memoizedProps.onChange==='function'){c.memoizedProps.onChange({value:v,label:l||String(v)});return 'ok d='+d}c=c.return}return 'not found'};
 'helpers ok';
 """
+
+# ========== 色の英日マッピング（BUYMA 色の系統ドロップダウン用）==========
+# baseblu は英語のカラー名（Black, Navy など）、BUYMA は日本語（ブラック、ネイビー等）。
+# 部分一致ベースなので順序重要: より長いキーから先に並べる。
+COLOR_JA_MAP = [
+    # 長い / 複合キーを先に判定させる
+    ("multicolor", "マルチカラー"), ("multi color", "マルチカラー"), ("multi-color", "マルチカラー"),
+    ("off white", "ホワイト"), ("off-white", "ホワイト"),
+    ("navy blue", "ネイビー"),
+    ("wine red", "ワインレッド"), ("bordeaux", "ワインレッド"), ("burgundy", "ワインレッド"),
+    # 単色
+    ("navy", "ネイビー"),
+    ("black", "ブラック"),
+    ("white", "ホワイト"),
+    ("red", "レッド"),
+    ("pink", "ピンク"),
+    ("blue", "ブルー"),
+    ("green", "グリーン"),
+    ("yellow", "イエロー"),
+    ("orange", "オレンジ"),
+    ("purple", "パープル"), ("violet", "パープル"),
+    ("gray", "グレー"), ("grey", "グレー"),
+    ("brown", "ブラウン"),
+    ("beige", "ベージュ"), ("cream", "ベージュ"),
+    ("gold", "ゴールド"),
+    ("silver", "シルバー"),
+    ("khaki", "カーキ"),
+    ("wine", "ワインレッド"),
+]
+
+
+def translate_color_to_jp(en_color: str) -> str:
+    """英語の色名を BUYMA 色の系統ラベル（日本語）に変換する。
+
+    マッチしない場合は「マルチカラー」を返す（万能のデフォルト）。
+    """
+    if not en_color:
+        return "マルチカラー"
+    lower = en_color.lower()
+    for en, ja in COLOR_JA_MAP:
+        if en in lower:
+            return ja
+    return "マルチカラー"
+
 
 # ========== 簡易英日翻訳マップ ==========
 # よく出るファッション用語の簡易翻訳（完全な翻訳APIなしで対応）
@@ -475,6 +521,9 @@ def load_products(max_price=None, min_profit=None):
                 "profit_jpy": str(profit),
                 "sku": (row.get("sku") or "").strip(),
                 "product_type": (row.get("product_type") or "").strip(),
+                "color": (row.get("color") or "").strip(),
+                "sizes": (row.get("sizes") or "").strip(),
+                "available_sizes": (row.get("available_sizes") or "").strip(),
                 "description_en": (row.get("description_en") or "").strip(),
                 "image_url": (row.get("image_url") or "").strip(),
                 "sub_images": (row.get("sub_images") or "").strip(),
@@ -1155,20 +1204,27 @@ def _click_select_option(page, dropdown_locator, option_label, debug_name=""):
     return False
 
 
-def set_color(page, color_name="マルチカラー"):
-    """色タブを開いて 色の系統 + 色名 の両方を設定する。"""
+def set_color(page, color_name="マルチカラー", color_label=None):
+    """色タブを開いて 色の系統 + 色名 の両方を設定する。
+
+    color_name: 色の系統ドロップダウンのラベル（BUYMA内の分類。「ブラック」等の日本語）
+    color_label: 色名テキスト欄の自由記述（仕入先の表記 "Black" などをそのまま使うと便利）。
+                 未指定時は color_name と同じ値を使う。
+    """
+    if color_label is None:
+        color_label = color_name
+
     # 「色」タブを選択
     page.evaluate("""var tabs=document.querySelectorAll('[role="tab"]');
         var t=Array.from(tabs).find(function(t){return t.textContent.trim()==='色'});if(t)t.click();""")
     time.sleep(0.8)
 
-    # 1) 色の系統ドロップダウン → 「マルチカラー」 (Playwright click 方式)
+    # 1) 色の系統ドロップダウン
     panel = page.locator('#react-tabs-1')
-    # パネル内の最初の .Select = 色の系統
     color_dd = panel.locator('.Select').first
     _click_select_option(page, color_dd, color_name, debug_name="色の系統")
 
-    # 2) 色名テキスト入力に文字列を入れる（ブランド入力欄以外）
+    # 2) 色名テキスト入力
     result = page.evaluate(f"""(function(){{
         var p = document.querySelector('#react-tabs-1') || document.querySelector('[role="tabpanel"]');
         if (!p) return 'no_panel';
@@ -1177,12 +1233,12 @@ def set_color(page, color_name="マルチカラー"):
             var el = inputs[i];
             var ph = (el.getAttribute('placeholder') || '').toLowerCase();
             if (ph.indexOf('ブランド') !== -1) continue;
-            window.__si(el, {json.dumps(color_name)});
+            window.__si(el, {json.dumps(color_label)});
             return 'set idx=' + i;
         }}
         return 'no_input';
     }})()""")
-    print(f"    🎨 色: {color_name} (色名={result})")
+    print(f"    🎨 色: {color_name} (ラベル={color_label!r} {result})")
 
 
 def set_size_and_stock(page, stock_qty=1, jp_size="FREE"):
@@ -1600,11 +1656,20 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     # 8. 関税チェック
     set_customs_checkbox(page); human_delay(0.3, 0.6)
 
-    # 9. 色
-    set_color(page); human_delay(0.3, 0.6)
+    # 9. 色: baseblu から抽出した英語 color を日本語にマップ（色の系統ドロップダウン用）
+    #    色名テキストフィールドには原文（"Black" 等）をそのまま入れる
+    raw_color = (product.get("color") or "").strip()
+    first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
+    color_jp = translate_color_to_jp(first_color_en)
+    color_label = first_color_en or color_jp  # テキスト欄用（英語優先、無ければ日本語）
+    set_color(page, color_name=color_jp, color_label=color_label); human_delay(0.3, 0.6)
 
     # 10. サイズ・在庫（買付可）
-    set_size_and_stock(page); human_delay(0.5, 1.0)
+    # 仕入先（baseblu）から取得した sizes があれば単一サイズ選択を試みる。
+    # 複数サイズの場合はとりあえず先頭 1 つを採用（将来バリエーション対応で拡張）
+    raw_sizes = (product.get("sizes") or "").strip()
+    first_size = raw_sizes.split(",")[0].strip() if raw_sizes else ""
+    set_size_and_stock(page, jp_size=first_size or "FREE"); human_delay(0.5, 1.0)
 
     # 11. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)
@@ -1634,12 +1699,17 @@ def main():
     draft_mode  = "--draft"  in args
     hold_mode   = "--hold"   in args
     start_from  = 1
+    limit_count = None
     max_price = None
     min_profit = None
     if "--from" in args:
         idx = args.index("--from")
         try: start_from = int(args[idx + 1])
         except: print("❌ --from の後に数字を指定"); sys.exit(1)
+    if "--limit" in args:
+        idx = args.index("--limit")
+        try: limit_count = int(args[idx + 1])
+        except: print("❌ --limit の後に数字を指定"); sys.exit(1)
     if "--max-price" in args:
         idx = args.index("--max-price")
         try: max_price = int(args[idx + 1])
@@ -1667,6 +1737,8 @@ def main():
     target = products[start_from - 1:]
     if test_mode:
         target = target[:1]
+    elif limit_count is not None:
+        target = target[:limit_count]
     print(f"📦 対象: {len(target)}件（{start_from}番〜）")
 
     progress = load_progress()

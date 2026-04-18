@@ -89,6 +89,9 @@ def main():
                 "vendor": row.get("vendor", ""),
                 "product_type": product_type,
                 "sku": row.get("sku", ""),
+                "color": row.get("color", ""),
+                "sizes": row.get("sizes", ""),
+                "available_sizes": row.get("available_sizes", ""),
                 "sale_price_eur": sale_price_eur,
                 "original_price_eur": row.get("original_price", ""),
                 "discount_rate": row.get("discount_rate", ""),
@@ -121,6 +124,7 @@ def main():
 
     fieldnames = [
         "title", "vendor", "product_type", "sku",
+        "color", "sizes", "available_sizes",
         "sale_price_eur", "original_price_eur", "discount_rate",
         "exchange_rate", "source_price_jpy", "vat_refund_jpy",
         "shipping_jpy", "customs_jpy", "duty_rate",

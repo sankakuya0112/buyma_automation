@@ -1899,27 +1899,16 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     set_shipping(page, price); human_delay(0.3, 0.6)
     set_region(page); human_delay(0.3, 0.6)
 
-    # 7a. 品番 (SKU) + 識別メモ (非公開: 色/サイズ/素材の簡易メモ)
-    raw_color = (product.get("color") or "").strip()
-    first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
-    raw_sizes_tmp = (product.get("sizes") or "").strip()
-    first_size_tmp = raw_sizes_tmp.split(",")[0].strip() if raw_sizes_tmp else ""
-    identify_parts = []
-    if first_color_en: identify_parts.append(f"色:{first_color_en}")
-    if first_size_tmp: identify_parts.append(f"サイズ:{first_size_tmp}")
-    identify_memo = "/".join(identify_parts)
-    set_sku(page, sku, identify_memo=identify_memo); human_delay(0.3, 0.6)
-
-    # 7b. シーズン（baseblu の "AW25" 等）
+    # 7. シーズン（baseblu の "AW25" 等）
     set_season(page, product.get("season", "")); human_delay(0.3, 0.6)
 
-    # 7c. 購入期限（90日）
+    # 8. 購入期限（90日）
     set_purchase_deadline(page); human_delay(0.3, 0.6)
 
-    # 8. 関税チェック
+    # 9. 関税チェック
     set_customs_checkbox(page); human_delay(0.3, 0.6)
 
-    # 9. 色: baseblu から抽出した英語 color を日本語にマップ（色の系統ドロップダウン用）
+    # 10. 色: baseblu から抽出した英語 color を日本語にマップ（色の系統ドロップダウン用）
     #    色名テキストフィールドには原文（"Black" 等）をそのまま入れる
     raw_color = (product.get("color") or "").strip()
     first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
@@ -1927,25 +1916,33 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     color_label = first_color_en or color_jp  # テキスト欄用（英語優先、無ければ日本語）
     set_color(page, color_name=color_jp, color_label=color_label); human_delay(0.3, 0.6)
 
-    # 10. サイズ・在庫（買付可）
+    # 11. サイズ・在庫（買付可）
     # 仕入先（baseblu）から取得した sizes があれば単一サイズ選択を試みる。
-    # 複数サイズの場合はとりあえず先頭 1 つを採用（将来バリエーション対応で拡張）
     raw_sizes = (product.get("sizes") or "").strip()
     first_size = raw_sizes.split(",")[0].strip() if raw_sizes else ""
-    # サイズ名欄には仕入先の表記をそのまま。参考日本サイズ dropdown は jp_size と同じ値で検索
     set_size_and_stock(page,
                        jp_size=first_size or "FREE",
                        size_name=first_size or "FREE"); human_delay(0.5, 1.0)
 
-    # 11. 出品メモ・買付先メモ
+    # 12. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)
 
-    # 12. ブランド（最後に設定: 他フィールドの React 再レンダリングで
-    #     brand state がリセットされ「未登録」警告が残るのを防ぐ）
+    # 13. ブランド（他フィールドの React 再レンダリングで brand state がリセットされ
+    #     「未登録」警告が残るのを防ぐため、また 品番セクションが
+    #     ブランド設定後に条件付きでDOMに出現するため、保存直前に配置）
     brand_ok = select_brand(page, safe_vendor, b_phonetic, b_id)
     if not brand_ok:
         return "brand_not_found", None
     human_delay(1.0, 1.5)
+
+    # 14. 品番 (SKU) + 識別メモ — ブランド入力後に出現するセクション
+    first_color_en2 = (product.get("color") or "").strip().split(",")[0].strip()
+    first_size_tmp = (product.get("sizes") or "").strip().split(",")[0].strip()
+    identify_parts = []
+    if first_color_en2: identify_parts.append(f"色:{first_color_en2}")
+    if first_size_tmp: identify_parts.append(f"サイズ:{first_size_tmp}")
+    identify_memo = "/".join(identify_parts)
+    set_sku(page, sku, identify_memo=identify_memo); human_delay(0.5, 1.0)
 
     # 保存 or 公開
     if draft_mode:

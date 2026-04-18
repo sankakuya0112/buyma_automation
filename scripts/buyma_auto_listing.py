@@ -727,10 +727,15 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
         return False
 
     # 3) 候補一覧から完全一致 → 部分一致の順で探して mousedown でクリック
+    #    onClick に渡す text は phonetic を含まない生のブランド名のみ。
+    #    候補の textContent（例: "BRUNELLO CUCINELLI(ブルネロクチネリ)"）を
+    #    そのまま渡すと BUYMA 側で phonetic が二重に付与される。
     result = page.evaluate(f"""(function(){{
         var opts = document.querySelectorAll('.bmm-c-suggest__option--selectable');
-        var nameUpper = {json.dumps(brand_name)}.toUpperCase();
+        var nameRaw = {json.dumps(brand_name)};
+        var nameUpper = nameRaw.toUpperCase();
         var phoneticStr = {json.dumps(brand_phonetic or '')};
+        var brandId = {brand_id};
         function fire(el){{
             // React 版 onClick を優先、無ければネイティブ click
             var f = window.__gf(el), c = f;
@@ -739,9 +744,9 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
                 if (c.memoizedProps && typeof c.memoizedProps.onClick === 'function') {{
                     try {{
                         c.memoizedProps.onClick({{
-                            text: el.textContent.trim(),
+                            text: nameRaw,
                             phonetic: phoneticStr,
-                            brand_id: {brand_id}
+                            brand_id: brandId
                         }});
                         return 'react';
                     }} catch (e) {{}}
@@ -752,10 +757,10 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
             el.click();
             return 'native';
         }}
-        // 完全一致
+        // 完全一致（候補 textContent が "NAME(phonetic)" 形式である想定）
         for (var i = 0; i < opts.length; i++) {{
             var t = opts[i].textContent.toUpperCase();
-            if (t === nameUpper || t.startsWith(nameUpper + '(') || t.startsWith(nameUpper + ' ')) {{
+            if (t === nameUpper || t.startsWith(nameUpper + '(') || t.startsWith(nameUpper + '（') || t.startsWith(nameUpper + ' ')) {{
                 return 'exact:' + fire(opts[i]);
             }}
         }}
@@ -838,46 +843,59 @@ def set_shipping(page, price_jpy):
     print(f"    🚚 配送: {result}")
 
 
-def _select_by_label(page, dropdown_selector_js, label):
+def _select_by_label(page, dropdown_selector_js, label, debug_name=""):
     """任意のドロップダウン要素を開いて label のオプションを mousedown で選択する。
 
     dropdown_selector_js: JavaScript 式で .Select 要素を返すもの（例: 'sels[3]'）。
-    成功時 True, 失敗時 False。
+    debug_name: 失敗時ログ用の識別子。
+    成功時 True, 失敗時 False。失敗時は option 候補を print する。
     """
+    OPT = ".Select-menu-outer .Select-option, .Select-menu .Select-option, [role=\"listbox\"] [role=\"option\"], .bmm-c-select__option, .bmm-c-select-menu__option"
     opened = page.evaluate(f"""(function(){{
         var s = {dropdown_selector_js};
-        if (!s) return false;
-        var ctrl = s.querySelector('.Select-control');
-        if (!ctrl) return false;
+        if (!s) return 'no_select';
+        var ctrl = s.querySelector('.Select-control, .bmm-c-select__control') || s;
+        ctrl.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
         ctrl.click();
-        return true;
+        return 'opened';
     }})()""")
-    if not opened:
+    if opened != "opened":
+        print(f"       [_select_by_label:{debug_name}] ドロップダウン未オープン: {opened}")
         return False
-    for _ in range(20):
-        time.sleep(0.1)
-        ready = page.evaluate("document.querySelectorAll('.Select-menu-outer .Select-option').length > 0")
+    for _ in range(25):
+        time.sleep(0.12)
+        ready = page.evaluate(f"document.querySelectorAll({json.dumps(OPT)}).length > 0")
         if ready:
             break
     clicked = page.evaluate(f"""(function(){{
-        var opts = document.querySelectorAll('.Select-menu-outer .Select-option');
+        var opts = document.querySelectorAll({json.dumps(OPT)});
         var target = {json.dumps(label)};
         for (var i = 0; i < opts.length; i++) {{
             if (opts[i].textContent.trim() === target) {{
                 opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                return true;
+                return 'exact';
             }}
         }}
         for (var i = 0; i < opts.length; i++) {{
             if (opts[i].textContent.trim().indexOf(target) !== -1) {{
                 opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                return true;
+                return 'partial';
             }}
         }}
-        return false;
+        return 'no_match';
     }})()""")
+    if clicked == "no_match":
+        dump = page.evaluate(f"""
+            Array.from(document.querySelectorAll({json.dumps(OPT)}))
+                .slice(0, 20)
+                .map(function(o){{ return o.textContent.trim().slice(0, 40); }})
+        """)
+        print(f"       [_select_by_label:{debug_name}] '{label}' 候補なし。option dump: {dump}")
+        # ドロップダウンを閉じる（次の操作のため）
+        page.evaluate("document.body.click()")
+        return False
     time.sleep(0.6)
-    return bool(clicked)
+    return True
 
 
 def _find_section_selects(page, section_title_keyword):
@@ -948,17 +966,17 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     else:
         sel_indices = info.get("selects", []) if isinstance(info, dict) else []
         if len(sel_indices) >= 2:
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", "ヨーロッパ"):
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", "ヨーロッパ", debug_name="買付地_大陸"):
                 results.append("買付地_大陸=ヨーロッパ")
             else:
                 results.append("買付地_大陸 失敗")
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[1]}]", purchase_country):
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[1]}]", purchase_country, debug_name="買付地_国"):
                 results.append(f"買付地_国={purchase_country}")
             else:
                 results.append(f"買付地_国 '{purchase_country}' 失敗")
         elif len(sel_indices) == 1:
             # ドロップダウンが 1 つしかない場合（BUYMA の仕様変更等）は 1 段だけ選択を試す
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", purchase_country):
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", purchase_country, debug_name="買付地_1段"):
                 results.append(f"買付地={purchase_country} (1段)")
             else:
                 results.append("買付地 1段選択 失敗")
@@ -1001,7 +1019,7 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         info2b = _find_section_selects(page, "発送地")
         sel2 = info2b.get("selects", []) if isinstance(info2b, dict) else []
         if sel2:
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel2[0]}]", ship_prefecture):
+            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel2[0]}]", ship_prefecture, debug_name="発送地_都道府県"):
                 results.append(f"発送地={ship_prefecture}")
             else:
                 results.append(f"発送地 '{ship_prefecture}' 失敗")
@@ -1212,6 +1230,19 @@ def set_purchase_memo(page, product):
     results["買付先URL"]   = _fill_by_label("買付先URL", product_url,  is_textarea=False,
                                               placeholder_keywords=["URL", "http"])
     results["買付先メモ"]  = _fill_by_label("買付先メモ", buyer_memo,  is_textarea=True)
+
+    # 買付先URLが見つからないときは input 候補を dump
+    if results.get("買付先URL") == "not_found":
+        dump = page.evaluate("""
+            Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).slice(0, 25).map(function(el){
+                return {
+                    placeholder: (el.getAttribute('placeholder') || '').slice(0, 40),
+                    name: (el.getAttribute('name') || '').slice(0, 40),
+                    value_len: (el.value || '').length
+                };
+            })
+        """)
+        print(f"       [買付先URL dump] input候補: {dump}")
 
     print(f"    📝 メモ: {results}")
 

@@ -40,7 +40,7 @@ BUYMAへの自動出品スクリプト（統合版）
   playwright install chromium
 """
 
-import csv, glob, json, os, sys, time, random, tempfile, unicodedata
+import csv, glob, json, os, re, sys, time, random, tempfile, unicodedata
 import requests as req_lib
 from datetime import datetime, timedelta
 from pathlib import Path

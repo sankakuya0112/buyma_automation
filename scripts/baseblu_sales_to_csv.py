@@ -36,6 +36,18 @@ HEADERS = {
     "Referer": "https://www.baseblu.com/",
 }
 
+# HTML ページ取得用ヘッダー。baseblu は Accept に従って content-type を切り替える
+# ため、JSON 用の HEADERS をそのまま使うと HTML URL でも JSON が返ってしまう。
+HTML_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": HEADERS["Accept-Language"],
+    "Referer": HEADERS["Referer"],
+}
+
 
 def strip_html(html_text):
     """HTMLタグを除去してプレーンテキストにする"""
@@ -93,12 +105,16 @@ def fetch_product_detail(handle):
 
 def fetch_product_html(handle):
     """個別商品の HTML ページを取得する。JSON API に含まれない色ラベル等を
-    抽出するために使う。失敗時は空文字列。"""
+    抽出するために使う。失敗時は空文字列。
+
+    HEADERS は Accept=application/json なので流用すると HTML URL でも JSON が
+    返る。HTML_HEADERS (Accept=text/html) を使って明示的に HTML を要求する。
+    """
     if not handle:
         return ""
     url = PRODUCT_BASE_URL + handle
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = requests.get(url, headers=HTML_HEADERS, timeout=15)
         resp.raise_for_status()
         return resp.text or ""
     except Exception:

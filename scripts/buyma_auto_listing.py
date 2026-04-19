@@ -1768,13 +1768,15 @@ def _fill_variation_row(page, panel_sel, row_idx, size_name, jp_size):
     という別の Select があるが、それらは <table> の外なので自動的に除外される。
     """
     # 1) サイズ名: data row (input を持つ tr) の row_idx 番目
+    # panel 内に複数 <table> がある可能性があるので全テーブル横断で tr を集める
     name_result = page.evaluate(f"""(function(){{
         var p = document.querySelector({json.dumps(panel_sel)});
         if (!p) return 'no_panel';
-        var table = p.querySelector('table');
-        if (!table) return 'no_table';
-        var rows = Array.from(table.querySelectorAll('tr')).filter(function(r){{
-            return r.querySelector('input[type="text"], input:not([type])');
+        var rows = [];
+        p.querySelectorAll('table tr').forEach(function(r){{
+            if (r.querySelector('input[type="text"], input:not([type])')) {{
+                rows.push(r);
+            }}
         }});
         if ({row_idx} >= rows.length) return 'no_data_row idx={row_idx}/' + rows.length;
         var inp = rows[{row_idx}].querySelector('input[type="text"], input:not([type])');

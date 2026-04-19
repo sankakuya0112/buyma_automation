@@ -127,6 +127,91 @@ def normalize_size_for_buyma(raw_size: str) -> str:
     return raw_size.strip()
 
 
+# ========== バリエーション出品用: IT → JP サイズマッピング ==========
+# baseblu は Italian サイズ (32, 34, 36, 38, 40, 42, ...) を使う女性アパレル中心。
+# BUYMA 「参考日本サイズ」ラベル (XS以下 / S / M / L / XL / XXL) に変換するための対応表。
+# (numeric_lower_inclusive, numeric_upper_exclusive, jp_label)
+_IT_SIZE_RANGES = [
+    (0, 37, "XS以下"),    # IT32, 34, 36
+    (37, 39, "S"),         # IT38
+    (39, 43, "M"),         # IT40, 42
+    (43, 47, "L"),         # IT44, 46
+    (47, 51, "XL"),        # IT48, 50
+    (51, 999, "XXL"),      # IT52+
+]
+
+# アルファベットサイズ (XS/S/M/L...) からの直接マッピング
+_ALPHA_SIZE_TO_JP = {
+    "XXS": "XS以下",
+    "XS": "XS以下",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "XXL": "XXL",
+    "XXXL": "XXL",
+    "FREE": "FREE",
+    "UNI": "FREE",
+    "ONE SIZE": "FREE",
+    "TU": "FREE",
+}
+
+
+def map_size_to_jp_reference(raw_size: str) -> str:
+    """仕入先サイズ文字列を BUYMA の「参考日本サイズ」ラベルに変換する。
+
+    例:
+      '40' → 'M'           (Italian 数値)
+      '36' → 'XS以下'
+      'XS' → 'XS以下'
+      'M'  → 'M'
+      'UNI' → 'FREE'
+      '' → '指定なし'
+    """
+    s = (raw_size or "").strip().upper()
+    if not s:
+        return "指定なし"
+    if s in _ALPHA_SIZE_TO_JP:
+        return _ALPHA_SIZE_TO_JP[s]
+    # 先頭の数値を抽出（"IT40" や "40.5" 等にも耐える）
+    m = re.match(r"(\d+)", s)
+    if m:
+        n = int(m.group(1))
+        for lo, hi, label in _IT_SIZE_RANGES:
+            if lo <= n < hi:
+                return label
+    return "指定なし"
+
+
+def classify_size_category(product_type: str) -> str:
+    """product_type からサイズセクションの扱いを決める。
+
+    - 'variation': バリエーションあり（CLOTHING, FOOTWEAR）
+    - 'single': バリエーションなし（BAGS, ACCESSORIES, その他）
+    """
+    pt = (product_type or "").strip().upper()
+    if pt in ("CLOTHING", "FOOTWEAR"):
+        return "variation"
+    return "single"
+
+
+def format_size_name_for_listing(raw_size: str, product_type: str) -> str:
+    """BUYMA 出品フォームの「サイズ名」欄に入れる表記を作る。
+
+    - CLOTHING: 数値のみなら 'IT<n>' プレフィックス (例 '40' → 'IT40')
+    - FOOTWEAR: 同上 ('IT' プレフィックス)
+    - BAGS/ACCESSORIES: そのまま（バッグに付けても意味ないので）
+    - アルファベットサイズはそのまま（'XS', 'M' 等）
+    """
+    s = (raw_size or "").strip()
+    if not s:
+        return ""
+    pt = (product_type or "").strip().upper()
+    if pt in ("CLOTHING", "FOOTWEAR") and re.fullmatch(r"\d+(?:\.\d+)?", s):
+        return f"IT{s}"
+    return s.upper() if re.fullmatch(r"[a-zA-Z]+", s) else s
+
+
 def translate_color_to_jp(en_color: str) -> str:
     """英語の色名を BUYMA 色の系統ラベル（日本語）に変換する。
 
@@ -1537,16 +1622,25 @@ def set_color(page, color_name="マルチカラー", color_label=None):
     print(f"    🎨 色: {color_name} (ラベル={color_label!r} {result} panel={panel_sel})")
 
 
-def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
-    """サイズタブを開いて バリエーション=なし、サイズ名、参考日本サイズ=jp_size、
-    在庫=買付可、数量= stock_qty を設定。
+def set_size_and_stock(
+    page,
+    product_type="",
+    available_sizes_csv="",
+    fallback_sizes_csv="",
+    stock_qty_per_size=1,
+):
+    """サイズタブを開いて サイズ・在庫を設定する。
 
-    size_name: サイズ名テキスト欄 (placeholder "FREE SIZE") の値。
-               仕入先サイズ（"40" や "M" 等）をそのまま表示する。
-               未指定時は jp_size を流用。
+    product_type を見て:
+      - CLOTHING / FOOTWEAR → 'バリエーションあり' で複数サイズを登録
+      - BAGS / ACCESSORIES / その他 → 'バリエーションなし' で単一サイズ登録
+
+    available_sizes_csv: 在庫ありサイズ（カンマ区切り、優先）
+    fallback_sizes_csv:  取れなかった場合の全サイズ
     """
-    if size_name is None:
-        size_name = jp_size
+    category = classify_size_category(product_type)
+    sizes_str = (available_sizes_csv or "").strip() or (fallback_sizes_csv or "").strip()
+    sizes_list = [s.strip() for s in sizes_str.split(",") if s.strip()]
 
     # サイズ セクションを lazy render から起こす
     _scroll_through_page(page, chunks=8)
@@ -1561,19 +1655,31 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
     })()""")
     time.sleep(0.5)
 
-    # サイズタブをクリックして active panel を取得
     panel_sel = _click_tab_by_name(page, "サイズ")
     if not panel_sel:
         print(f"    📦 サイズタブが見つからない")
         return
+
+    if category == "variation" and sizes_list:
+        _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_per_size)
+    else:
+        # 単一サイズ (バッグ・アクセ・サイズ情報なし)
+        first_size = sizes_list[0] if sizes_list else ""
+        jp_size = map_size_to_jp_reference(first_size) if first_size else "指定なし"
+        size_name = format_size_name_for_listing(first_size, product_type) or (first_size or "FREE")
+        _set_size_single(page, panel_sel, jp_size, size_name, stock_qty_per_size)
+
+
+def _set_size_single(page, panel_sel, jp_size, size_name, stock_qty):
+    """バリエーションなし：単一サイズ + 在庫数量。"""
     panel = page.locator(panel_sel)
 
-    # 1) バリエーション: なし（パネル直下の最初の .Select）
+    # 1) バリエーション: なし
     variation_dd = panel.locator('.Select').first
     _click_select_option(page, variation_dd, "バリエーションなし", debug_name="バリエーション")
 
-    # 1b) サイズ名テキスト欄（placeholder が "FREE SIZE" など）
-    name_result = page.evaluate(f"""(function(){{
+    # 1b) サイズ名テキスト欄
+    page.evaluate(f"""(function(){{
         var p = document.querySelector({json.dumps(panel_sel)});
         if (!p) return 'no_panel';
         var inputs = p.querySelectorAll('input[type="text"], input:not([type])');
@@ -1582,12 +1688,12 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
             var ph = (el.getAttribute('placeholder') || '');
             if (ph.indexOf('ブランド') !== -1) continue;
             window.__si(el, {json.dumps(size_name)});
-            return 'set idx=' + i + ' ph=' + ph;
+            return 'set idx=' + i;
         }}
         return 'no_input';
     }})()""")
 
-    # 2) 参考日本サイズ: 全ページから「指定なし」を表示している .Select を探す
+    # 2) 参考日本サイズ: 「指定なし」を表示している .Select を探す
     target_dd_js = """(function(){
         var all = document.querySelectorAll('.Select, .bmm-c-custom-select');
         for (var i = 0; i < all.length; i++) {
@@ -1606,8 +1712,103 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
     else:
         print(f"       [参考日本サイズ] '指定なし' dropdown が見つからない")
 
-    # 3) 在庫設定: 「買付可」(販売可否/在庫セクション table 行内)
-    #    現在値が「手元に在庫あり」or「買付不可」になってる可能性に対応
+    _set_stock_status_and_qty(page, total_qty=stock_qty)
+    print(f"    📦 サイズ/在庫(単一): size={size_name} jp={jp_size} qty={stock_qty}")
+
+
+def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_per_size):
+    """バリエーションあり：複数サイズ行を追加して埋める。
+
+    BUYMA の出品フォームは React 製で、動的に行が追加される。
+    選択後、初期状態で 1行目が存在する前提で、2行目以降は
+    「+ 新しいサイズを追加」ボタンを押す。
+    """
+    panel = page.locator(panel_sel)
+
+    # 1) バリエーション: あり
+    variation_dd = panel.locator('.Select').first
+    _click_select_option(page, variation_dd, "バリエーションあり", debug_name="バリエーション")
+    time.sleep(0.6)
+
+    rows_to_fill = len(sizes_list)
+    print(f"    📦 バリエーションあり: {rows_to_fill}サイズ {sizes_list}")
+
+    # 2) 行数を揃える: 2行目以降は「+ 新しいサイズを追加」ボタンを押す
+    add_btn_sel = (
+        'button:has-text("新しいサイズを追加"), '
+        'a:has-text("新しいサイズを追加"), '
+        '[role="button"]:has-text("新しいサイズを追加")'
+    )
+    for i in range(1, rows_to_fill):
+        try:
+            page.locator(add_btn_sel).first.scroll_into_view_if_needed(timeout=1500)
+            page.locator(add_btn_sel).first.click(timeout=2500)
+            time.sleep(0.4)
+        except Exception as e:
+            print(f"    📦 行追加ボタン失敗 (row={i+1}): {e}")
+            break
+
+    # 3) 各行を埋める
+    for idx, raw_size in enumerate(sizes_list):
+        size_name = format_size_name_for_listing(raw_size, product_type) or raw_size
+        jp_size = map_size_to_jp_reference(raw_size)
+        filled = _fill_variation_row(page, panel_sel, idx, size_name, jp_size)
+        print(f"    📦 row[{idx}]: size_name={size_name!r} jp={jp_size!r} → {filled}")
+
+    # 4) 在庫ステータスと合計数量
+    _set_stock_status_and_qty(page, total_qty=rows_to_fill * stock_qty_per_size)
+
+
+def _fill_variation_row(page, panel_sel, row_idx, size_name, jp_size):
+    """バリエーションあり の N 番目行に サイズ名 と 参考日本サイズ をセットする。
+
+    BUYMA のバリエーション行の DOM は「サイズ名 input が各行に 1つずつ」
+    「参考日本サイズ dropdown が各行に 1つずつ」並ぶ想定で、
+    行インデックスで対応付ける。実際の DOM とズレる可能性があるため、
+    ログで動作を確認しつつ調整する必要がある。
+    """
+    # サイズ名入力 (行ごとの 1つ目 input)
+    name_result = page.evaluate(f"""(function(){{
+        var p = document.querySelector({json.dumps(panel_sel)});
+        if (!p) return 'no_panel';
+        // バリエーション行っぽいものを探す: input[type=text] をパネル直下から順に取り
+        // 先頭のブランド input を除いて index 順で行とみなす
+        var inputs = Array.from(p.querySelectorAll('input[type="text"], input:not([type])'))
+            .filter(function(el){{
+                var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+                return ph.indexOf('ブランド') === -1;
+            }});
+        var row = {row_idx};
+        if (row >= inputs.length) return 'no_input_row=' + row + ' total=' + inputs.length;
+        window.__si(inputs[row], {json.dumps(size_name)});
+        return 'set row=' + row + ' total_inputs=' + inputs.length;
+    }})()""")
+
+    # 参考日本サイズ dropdown (行ごとの .Select の row_idx + 1 番目: 先頭はバリエーション本体)
+    jp_result = page.evaluate(f"""(function(){{
+        var p = document.querySelector({json.dumps(panel_sel)});
+        if (!p) return 'no_panel';
+        // 先頭の .Select はバリエーション本体なので row+1 番目以降
+        var selects = p.querySelectorAll('.Select, .bmm-c-custom-select');
+        var target = selects[1 + {row_idx}];
+        if (!target) return 'no_select idx=' + (1 + {row_idx}) + ' total=' + selects.length;
+        var ctrl = target.querySelector('.Select-control');
+        if (ctrl) ctrl.scrollIntoView({{block: 'center'}});
+        return 'ok target_idx=' + (1 + {row_idx});
+    }})()""")
+    # 実際のクリックは Playwright native で行う
+    try:
+        selects = page.locator(panel_sel + ' .Select, ' + panel_sel + ' .bmm-c-custom-select')
+        target = selects.nth(1 + row_idx)
+        _click_select_option(page, target, jp_size, debug_name=f"参考日本サイズ[row={row_idx}]")
+    except Exception as e:
+        print(f"       [参考日本サイズ row={row_idx}] クリック失敗: {e}")
+
+    return f"name={name_result} / jp_dd={jp_result}"
+
+
+def _set_stock_status_and_qty(page, total_qty=1):
+    """在庫ステータス=買付可 + 合計数量入力。"""
     stock_dd_js = """(function(){
         var all = document.querySelectorAll('.Select');
         for (var i = 0; i < all.length; i++) {
@@ -1624,9 +1825,8 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
         stock_dd = page.locator('.Select').nth(stock_idx)
         _click_select_option(page, stock_dd, "買付可", debug_name="在庫ステータス")
 
-    # 4) 買付できる合計数量
     stock_result = page.evaluate(f"""(function(){{
-        var qty = {stock_qty};
+        var qty = {total_qty};
         var results = [];
         document.querySelectorAll('input[placeholder="数量"]').forEach(function(el){{
             window.__si(el, String(qty));
@@ -1650,7 +1850,7 @@ def set_size_and_stock(page, stock_qty=1, jp_size="FREE", size_name=None):
         }}
         return results;
     }})()""")
-    print(f"    📦 サイズ/在庫: 数量={stock_qty} ({stock_result})")
+    print(f"       [在庫合計] qty={total_qty} {stock_result}")
 
 
 def set_purchase_memo(page, product):
@@ -1960,14 +2160,15 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
     set_color(page, color_name=color_jp, color_label=color_label); human_delay(0.3, 0.6)
 
     # 11. サイズ・在庫（買付可）
-    # 仕入先（baseblu）から取得した sizes があれば単一サイズ選択を試みる。
-    raw_sizes = (product.get("sizes") or "").strip()
-    first_size = raw_sizes.split(",")[0].strip() if raw_sizes else ""
-    # 仕入先表記 (UNI / 40 / XS 等) を BUYMA 側で受け入れやすい形に正規化
-    jp_size = normalize_size_for_buyma(first_size)
-    set_size_and_stock(page,
-                       jp_size=jp_size,
-                       size_name=first_size or jp_size); human_delay(0.5, 1.0)
+    # CLOTHING / FOOTWEAR は「バリエーションあり」で在庫ありサイズを全登録。
+    # BAGS / ACCESSORIES は「バリエーションなし」で単一サイズ。
+    set_size_and_stock(
+        page,
+        product_type=product_type,
+        available_sizes_csv=(product.get("available_sizes") or "").strip(),
+        fallback_sizes_csv=(product.get("sizes") or "").strip(),
+        stock_qty_per_size=1,
+    ); human_delay(0.5, 1.0)
 
     # 12. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)

@@ -1760,49 +1760,44 @@ def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_pe
 
 
 def _fill_variation_row(page, panel_sel, row_idx, size_name, jp_size):
-    """バリエーションあり の N 番目行に サイズ名 と 参考日本サイズ をセットする。
+    """バリエーションあり の row_idx 番目行に サイズ名 と 参考日本サイズ をセットする。
 
-    BUYMA のバリエーション行の DOM は「サイズ名 input が各行に 1つずつ」
-    「参考日本サイズ dropdown が各行に 1つずつ」並ぶ想定で、
-    行インデックスで対応付ける。実際の DOM とズレる可能性があるため、
-    ログで動作を確認しつつ調整する必要がある。
+    BUYMA の バリエーション セクションは <table> で、data row (input を持つ <tr>) ごとに
+      [サイズ名 input] [参考日本サイズ .Select] [サイズ詳細]
+    が並ぶ構造。上部には「バリエーション」「(全体テンプレート)参考日本サイズ」
+    という別の Select があるが、それらは <table> の外なので自動的に除外される。
     """
-    # サイズ名入力 (行ごとの 1つ目 input)
+    # 1) サイズ名: data row (input を持つ tr) の row_idx 番目
     name_result = page.evaluate(f"""(function(){{
         var p = document.querySelector({json.dumps(panel_sel)});
         if (!p) return 'no_panel';
-        // バリエーション行っぽいものを探す: input[type=text] をパネル直下から順に取り
-        // 先頭のブランド input を除いて index 順で行とみなす
-        var inputs = Array.from(p.querySelectorAll('input[type="text"], input:not([type])'))
-            .filter(function(el){{
-                var ph = (el.getAttribute('placeholder') || '').toLowerCase();
-                return ph.indexOf('ブランド') === -1;
-            }});
-        var row = {row_idx};
-        if (row >= inputs.length) return 'no_input_row=' + row + ' total=' + inputs.length;
-        window.__si(inputs[row], {json.dumps(size_name)});
-        return 'set row=' + row + ' total_inputs=' + inputs.length;
+        var table = p.querySelector('table');
+        if (!table) return 'no_table';
+        var rows = Array.from(table.querySelectorAll('tr')).filter(function(r){{
+            return r.querySelector('input[type="text"], input:not([type])');
+        }});
+        if ({row_idx} >= rows.length) return 'no_data_row idx={row_idx}/' + rows.length;
+        var inp = rows[{row_idx}].querySelector('input[type="text"], input:not([type])');
+        if (!inp) return 'no_input_in_row';
+        window.__si(inp, {json.dumps(size_name)});
+        return 'ok data_rows=' + rows.length;
     }})()""")
 
-    # 参考日本サイズ dropdown (行ごとの .Select の row_idx + 1 番目: 先頭はバリエーション本体)
-    jp_result = page.evaluate(f"""(function(){{
-        var p = document.querySelector({json.dumps(panel_sel)});
-        if (!p) return 'no_panel';
-        // 先頭の .Select はバリエーション本体なので row+1 番目以降
-        var selects = p.querySelectorAll('.Select, .bmm-c-custom-select');
-        var target = selects[1 + {row_idx}];
-        if (!target) return 'no_select idx=' + (1 + {row_idx}) + ' total=' + selects.length;
-        var ctrl = target.querySelector('.Select-control');
-        if (ctrl) ctrl.scrollIntoView({{block: 'center'}});
-        return 'ok target_idx=' + (1 + {row_idx});
-    }})()""")
-    # 実際のクリックは Playwright native で行う
+    # 2) 参考日本サイズ: 同じ data row 内の .Select を Playwright native クリック
+    jp_result = "skipped"
     try:
-        selects = page.locator(panel_sel + ' .Select, ' + panel_sel + ' .bmm-c-custom-select')
-        target = selects.nth(1 + row_idx)
-        _click_select_option(page, target, jp_size, debug_name=f"参考日本サイズ[row={row_idx}]")
+        row_locator = page.locator(
+            f'{panel_sel} table tr:has(input[type="text"]), '
+            f'{panel_sel} table tr:has(input:not([type]))'
+        ).nth(row_idx)
+        row_select = row_locator.locator('.Select, .bmm-c-custom-select').first
+        ok = _click_select_option(
+            page, row_select, jp_size,
+            debug_name=f"参考日本サイズ[row={row_idx}]",
+        )
+        jp_result = "ok" if ok else "click_failed"
     except Exception as e:
-        print(f"       [参考日本サイズ row={row_idx}] クリック失敗: {e}")
+        jp_result = f"exception:{e}"
 
     return f"name={name_result} / jp_dd={jp_result}"
 

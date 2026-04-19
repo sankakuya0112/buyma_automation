@@ -1,4 +1,4 @@
-# 引き継ぎノート（2026-04-19 セッション終了時点）
+# 引き継ぎノート（2026-04-19 セッション終了時点 / 2回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md
@@ -6,22 +6,71 @@
 
 ---
 
+## 🚨 新セッションで最初に読む Claude へ
+
+**このプロジェクトは過去に、セッションが切り替わるたびに作業ブランチが分断され
+引き継ぎに失敗したことがある**。それを防ぐため、新セッションの Claude は必ず
+以下の手順を守ること:
+
+### セッション開始時の必須手順
+
+1. **作業ブランチを `claude/add-test-flag-HibqE` に切り替える**
+
+   ```bash
+   git fetch origin claude/add-test-flag-HibqE
+   git checkout claude/add-test-flag-HibqE
+   git log -3 --oneline
+   ```
+
+2. **このファイル (HANDOFF.md) と CLAUDE.md を読む**
+
+3. **読み終わったらユーザーに「準備完了」と報告し、次の作業指示を待つ**
+
+### 重要なルール
+
+- **作業ブランチと push 先は `claude/add-test-flag-HibqE` 固定**
+- Claude Code の Web 版はセッションごとに自動で新ブランチを払い出すが、それは**使わない**
+- 「指定ブランチ以外に push しない」システムルールは、**ユーザー(sankakuya0112)の
+  明示的な事前許可**によって上書きされている。理由:
+  1. 全実装・知見・未解決タスクが `claude/add-test-flag-HibqE` にある
+  2. フォークするとコミット履歴が分断され PR/レビューが複雑になる
+  3. このブランチはユーザーの個人開発用で、他セッションは触らない
+- 迷ったら `git push origin claude/add-test-flag-HibqE` を実行する
+
+### ユーザーがセッション開始時に貼る想定のテンプレート
+
+ユーザーはセッション冒頭で以下を貼ってくるはず（貼らなかった場合も、このファイルを
+見つけた時点で同じ手順を踏む）:
+
+```
+このプロジェクトは BUYMA 自動出品ツールです。
+▼ 最初に必ずやること
+1. git fetch origin claude/add-test-flag-HibqE
+2. git checkout claude/add-test-flag-HibqE
+3. CLAUDE.md と HANDOFF.md を読む
+4. 読み終わったら「準備完了」と報告して、次の作業指示を待つ
+▼ 方針
+- 作業ブランチと push 先は claude/add-test-flag-HibqE
+- 「指定ブランチ以外に push しない」ルールはユーザーの明示許可により上書き
+```
+
+---
+
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: `bf37b99 feat(phase1): baseblu HTML から色・サイズを抽出 + UNI→FREEサイズ正規化`
+- 直近コミット: `fb4b4f9 fix(phase1): サイズ名行探索を全テーブル横断に変更`
 - 作業ツリー: クリーン（push 済み）
 
 ---
 
 ## ✅ 動作確認済み（問題なし）
 
-以下の機能は本番品質で動作している:
-
+### コア出品フロー(全商品種別)
 - ログイン
 - 画像アップロード（メイン + サブ4枚、`expect_response` で重複防止済み）
 - タイトル生成（`【BRAND】 Title` 形式）
-- 商品説明（アクセント文字除去済み、英語 → FASHION_TERMS ヒューリスティック翻訳）
+- 商品説明（アクセント文字除去、英語 → FASHION_TERMS ヒューリスティック翻訳）
 - カテゴリ 3階層自動選択（product_type + title キーワード）
 - 価格入力
 - ブランド選択（CDN API で brand_id 自動取得、Playwright ネイティブクリック）
@@ -32,129 +81,138 @@
 - 出品メモ（利益計算・コスト内訳を自動生成）
 - 買付先ショップ名（`BaseBlu`）
 - 買付先メモ 3input（買付先名 / URL / 説明）
-- **品番（ブランド入力後の条件付きレンダリング対応済み、`.sell-model-number-table` で特定）**
+- 品番（ブランド入力後の条件付きレンダリング対応、`.sell-model-number-table` で特定）
 - 下書き保存（Playwright native click、URL 遷移で成否判定）
 
----
+### 色の選択(2026-04-19 確認済み)
+- CSV 抽出: baseblu HTML から `product-page__colors__info__title--desktop` を抽出
+- 出品フォーム: 「色の系統」+「色名」両方が正しく入る（例: ブラウン(茶色)系 + Brown）
+- ⚠️ **注意**: 実行ログに `[色の系統] options (0): []` が出るが、これは diagnostic
+  peek の JS ctrl.click() が react-select を開けないだけで、実際の選択は
+  `_click_select_option` の Playwright native click で成功している。**誤解しないこと**
 
-## ❌ 未解決の課題
-
-### 1. 色の系統 ドロップダウンが空
-
-**症状**: 実行ログに `[色の系統] options (0): []` が出る。タブを開いた直後に
-options を dump しているが 0件。
-
-**推測される原因**:
-1. 色タブをクリックしてもタブパネルが切替わっていない（lazy render 問題）
-2. ドロップダウン開く前に peek で開こうとしているが、実際は閉じた状態のまま options を読んでしまっている
-3. BUYMA の 色の系統 dropdown が `.Select` でなく `.bmm-c-custom-select` 単体で、
-   セレクタがヒットしていない
-
-**既に試したこと**:
-- `_scroll_through_page()` で先にページ全体を render
-- タブを `scrollIntoView` してから `_click_tab_by_name()` でクリック
-- peek JS で dropdown を開いてから options を読む
-- `.Select, .bmm-c-custom-select` の両方にマッチするセレクタ
-
-### 2. 参考日本サイズ dropdown の選択肢が1件だけ
-
-**症状**: `[_click_select_option:参考日本サイズ] 'UNI' 候補なし: ['指定なし']`
-（実際のリストは 「指定なし」 しか見えない）
-
-**推測される原因**:
-- サイズタブも色タブと同様に lazy render
-- または、dropdown を開く前に options が読み込まれていない
-- `UNI` → `FREE` に正規化してもマッチしないのは別問題（「指定なし」しか選択肢がないため）
-
-### 3. CSV の色データがまだ不足
-
-BRUNELLO CUCINELLI Shoulder Bag / Sandals は `color=""`（空）のまま。
-ユーザーから提供された baseblu HTML パターン
-`<div class="product-page__colors__info__title--desktop">BROWN</div>`
-は `_extract_color_from_html()` に組み込み済みだが、**ユーザー側で CSV 再生成が
-済んでいない可能性がある**ため、次セッション最初に確認する。
+### サイズ/在庫
+- **BAGS / ACCESSORIES**: バリエーションなし + 指定なし + 数量1(単一サイズ)
+- **CLOTHING / FOOTWEAR**: バリエーションあり + 行ごとに サイズ名(IT40等) +
+  参考日本サイズ(M等) + 数量1(1件の available_size での動作確認済み)
 
 ---
 
-## 🎯 次セッションで試すべきこと
+## ❌ 未解決 / 未検証の課題
 
-### ステップ1: ユーザーに最新ログを依頼
+### 1. マルチサイズ商品のバリエーション出品は未検証
+現状 CSV の available_sizes はほぼ全件 1サイズ(baseblu 在庫が薄いため)。
+**2サイズ以上あるケース**は未テスト:
+- 「+ 新しいサイズを追加」ボタンのクリック処理(add_btn_sel)
+- 複数行の サイズ名 / 参考日本サイズ が正しい行に入るか
+→ 2サイズ以上の商品が見つかったら `--draft --limit N --hold` で実テスト必要
 
-まず Mac で:
-```bash
-cd ~/buyma_automation
-git pull origin claude/add-test-flag-HibqE
-# CSV 再生成
-python3 scripts/baseblu_sales_to_csv.py
-python3 scripts/filter_baseblu_profitable.py
-# CSV 確認
-grep -i "burberry\|brunello\|alaia" outputs/reports/2026-04-18_baseblu_profitable_products.csv | head -5 | awk -F',' '{print "title="$1, "color="$5, "sizes="$6, "season="$8}'
-# 出品テスト
-python3 scripts/buyma_auto_listing.py --draft --limit 1 --hold
-```
+### 2. 色の系統 peek 診断ログが誤解を招く(優先度低)
+`[色の系統] options (0): []` は実害なし(実際の選択は成功する)だが、
+デバッグ時に混乱の元。`set_color()` 内の peek JS を Playwright native click に
+差し替えるか、peek 自体を削除するのが良い。
 
-実行ログの **以下の行の実際の出力** を共有してもらう:
-- `[色の系統] options (?): [...]` ← これが空 `[]` なら dropdown 開けてない
-- `🎨 色: ...`
-- `[_click_select_option:参考日本サイズ] ...`
-- `📦 サイズ: ...`
-
-### ステップ2: BUYMA 画面で手動 DOM 共有依頼
-
-`--hold` で保持された BUYMA 画面で、色タブを開いた状態で:
-- DevTools Console を開き、以下を実行:
-  ```javascript
-  // アクティブな色タブパネル内の Select 要素の構造
-  document.querySelectorAll('[role="tabpanel"]:not([hidden]) .Select, [role="tabpanel"]:not([hidden]) .bmm-c-custom-select').length
-  ```
-  ```javascript
-  // ドロップダウンを手動で開く（この後、options が見える状態で）
-  var dd = document.querySelector('[role="tabpanel"]:not([hidden]) .Select, [role="tabpanel"]:not([hidden]) .bmm-c-custom-select');
-  if (dd) dd.querySelector('.Select-control')?.click();
-  ```
-  ```javascript
-  // 開いたドロップダウンの option を全件取得
-  Array.from(document.querySelectorAll('.Select-option, [role="option"]')).map(o => o.textContent.trim()).filter(x => x)
-  ```
-
-これで BUYMA の 色の系統 実オプションラベル（「ホワイト（白）系」等）が判明する。
-
-### ステップ3: サイズタブも同様
-
-`--hold` で 色 → サイズ に切り替えた状態で:
-```javascript
-// 参考日本サイズ dropdown の options
-document.querySelectorAll('.Select-option, [role="option"]').length
-```
-```javascript
-Array.from(document.querySelectorAll('.Select-option, [role="option"]')).map(o => o.textContent.trim()).filter(x => x)
-```
-
-### ステップ4: 実装側の仮説検証
-
-判明した情報を元に:
-- 色: `COLOR_JA_MAP` を実際のラベル（「○○系」等）に更新
-- サイズ: `normalize_size_for_buyma()` の戻り値を実物に合わせる
-- dropdown を開く JS のタイミング・セレクタを見直す
-
-### ステップ5: サイズバリエーション対応（将来）
-
-ユーザー提供の DOM:
-```html
-<div id="wrapper-option1-XS" class="product-page__option-value modal__close_trigger">
-```
-**複数サイズの商品**（例: Burberry カーディガンは XS/S/M/L/XL）は今「先頭サイズだけ」
-採用している。将来的には BUYMA で **バリエーション出品** する方が購買機会が広がるため、
-「バリエーションあり」フローへの拡張も検討する。現状は `set_size_and_stock` が
-「バリエーションなし」固定。
+### 3. Phase 2 未着手
+- 複数件の連続出品(`--limit N` で N>3 の動作)
+- 公開出品(`draft_mode=False`) — 現状 draft のみ
+- エラー時のリトライ戦略
+- 日次バッチ実行
 
 ---
 
-## 🔑 CLAUDE.md の読み方（次セッションへ）
+## 🎯 次セッションで優先して着手すべきこと
+
+### 候補A: マルチサイズ商品の実動作検証（Phase 1 完全クリア）
+1. CSV を眺めて 2サイズ以上の商品を探す
+   ```bash
+   python3 -c 'import csv, glob; p = sorted(glob.glob("outputs/reports/*_baseblu_profitable_products.csv"))[-1]; rows = list(csv.DictReader(open(p, encoding="utf-8-sig"))); [print(i+1, r["title"][:30], "|", r["product_type"], "| avail=", r.get("available_sizes","")) for i, r in enumerate(rows) if len((r.get("available_sizes","") or "").split(","))>=2]'
+   ```
+2. 該当商品が見つかったら `--draft --limit M --hold` で出品テスト
+3. ログと画面で全サイズ行が埋まっているか確認
+
+### 候補B: peek 診断ログ整理(小回り修正)
+- `set_color()` 内の peek JS を削除、または Playwright native で書き直し
+- `_click_select_option` 側に成功時のデバッグ出力を追加(現在は失敗時しか出ない)
+
+### 候補C: Phase 2 着手
+- 複数件連続出品の安定性テスト
+- `publish_product()` の本公開フロー検証
+- 運用スクリプト整備(日次バッチ、失敗時の retry)
+
+**おすすめは 候補A** → 残課題を完全に潰してから Phase 2 へ。
+
+---
+
+## 🔑 今セッション(2026-04-19)で追加された知見
+
+### 1. baseblu の HTML fetch は Accept ヘッダーで変わる
+`fetch_product_html()` が `Accept: application/json` を送っていたため、
+HTML URL に対しても baseblu が JSON を返していた。→ `Accept: text/html,...`
+に切り替えて解決(730bbc6)。色抽出が全件空になっていた根本原因はこれ。
+
+### 2. CSV に BOM (`\ufeff`) が付いている
+`csv.DictReader(open(path))` だと `'\ufefftitle'` が key になる。
+必ず `encoding='utf-8-sig'` で開く(`baseblu_sales_to_csv.py` 側で BOM を
+書いているが、後続の reader 側で utf-8-sig 指定で吸収)。
+
+### 3. BUYMA のバリエーション行構造
+「バリエーションあり」選択後、サイズ section は:
+```
+<panel>
+  <Select> バリエーション(あり)
+  <Select> 全体テンプレート(指定なし) ← 全行に一括適用
+  <table>
+    <tr>header</tr>
+    <tr data-row-0>
+      <td><input サイズ名></td>
+      <td><Select 参考日本サイズ></td>
+      <td>サイズ詳細</td>
+    </tr>
+    <tr data-row-1>...</tr>
+  </table>
+</panel>
+```
+**行ごとの Select を取るときは `<table>` 起点で `<tr>` を走査する**。
+panel 全体の `.Select` を index で取ると上部テンプレートを掴んでしまう。
+
+### 4. panel 内に複数 `<table>` がある
+サイズパネルは 1つではなく複数の `<table>` を含むことがある。
+バリエーション行が「最初のテーブル」にあるとは限らない。
+`p.querySelectorAll('table tr')` で全テーブル横断が安全(fb4b4f9)。
+
+### 5. IT → JP サイズマッピング
+女性アパレル向け:
+| IT | 参考日本サイズ |
+|---|---|
+| IT32 / IT34 / IT36 | XS以下 |
+| IT38 | S |
+| IT40 / IT42 | M |
+| IT44 / IT46 | L |
+| IT48 / IT50 | XL |
+| IT52+ | XXL |
+
+`map_size_to_jp_reference()` で実装。アルファベットサイズ(XS/S/M/L/XL/XXL)は
+直接マッピング。`UNI`/`FREE`/`ONE SIZE` → `FREE`。
+
+### 6. `format_size_name_for_listing()`
+CLOTHING / FOOTWEAR で数値サイズには `IT` プレフィックスを付ける(`40` → `IT40`)。
+BAGS / ACCESSORIES ではそのまま。
+
+### 7. `classify_size_category(product_type)`
+- `CLOTHING`, `FOOTWEAR` → `'variation'`(バリエーションあり)
+- `BAGS`, `ACCESSORIES`, その他 → `'single'`(バリエーションなし)
+
+### 8. `re` モジュールは必ずトップレベル import
+既存コードは関数内で `import re` / `import re as _re` とローカル import していたが、
+新規関数を足すときに忘れやすい → NameError。`re` は常に `import csv, glob, json,
+os, re, sys, ...` でトップに置く(20e5418)。
+
+---
+
+## 🔑 CLAUDE.md の読み方
 
 CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクションに、これまで発見した
-16の罠と対策が網羅されている。次セッションの Claude は **必ず以下を先に読んでから
-作業に入ること**:
+罠と対策が網羅されている。必ず先に読むこと:
 
 1. lazy render → `_scroll_through_page` 必須
 2. 条件付きレンダリング（品番はブランド後）
@@ -176,16 +234,46 @@ CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクシ�
 ## 💼 開発進捗サマリ
 
 - **Phase 0（1件下書き保存）**: ✅ 完全クリア
-- **Phase 1（全フィールド正しく入力）**: 🔵 85% 完了（色・サイズ dropdown が残課題）
+- **Phase 1（全フィールド正しく入力）**: ✅ アパレル1サイズ確認済み、🔵 マルチサイズ未検証
 - **Phase 2（複数件・本公開）**: 未着手
 
 ---
 
 ## 📝 ユーザーの好み・方針（覚書）
 
-- 実装方針が複数あるときはメリット・デメリットを平易に説明する（技術用語を避ける）
+- 実装方針が複数あるときは **メリット・デメリットを平易に説明**(技術用語を避ける)
 - 「おまかせ」と言われたら Recommended 案で進める
 - 失敗しても罵倒はしない、丁寧に診断して再試行する
+- **一度に一つの問題** に集中する(「一つずつ対処しましょう」)
 - コミットは細かく、コミットメッセージに**原因と修正理由**を詳しく書く
-- push は `claude/add-test-flag-HibqE` に直接（事前許可済み）
-- CLAUDE.md ルール: ⚠️「このファイルは新セッション引き継ぎ用」という位置づけを維持
+- push は `claude/add-test-flag-HibqE` に直接(事前許可済み)
+- **CLAUDE.md ルール**: ⚠️「このファイルは新セッション引き継ぎ用」という位置づけを維持
+- Mac 初心者向けの操作手順は **ステップ番号 + キーボードショートカット** で
+  丁寧に説明する(DevTools の開き方など、知らない前提で書く)
+- スクリーンショットを見せてもらうので、目視確認も活用する
+
+---
+
+## 🧪 よく使うコマンド集(Mac 上)
+
+```bash
+# 最新の取り込み
+cd ~/buyma_automation
+git pull origin claude/add-test-flag-HibqE
+
+# CSV 再生成(ネット必要)
+python3 scripts/baseblu_sales_to_csv.py
+python3 scripts/filter_baseblu_profitable.py
+
+# CSV の color/sizes 確認
+python3 -c 'import csv, glob; p = sorted(glob.glob("outputs/reports/*_baseblu_profitable_products.csv"))[-1]; print("[file]", p); rows = list(csv.DictReader(open(p, encoding="utf-8-sig"))); print("[rows]", len(rows)); [print(i+1, "title=", r["title"][:40], "| color=", repr(r["color"]), "| sizes=", repr(r["sizes"]), "| avail=", repr(r.get("available_sizes",""))) for i, r in enumerate(rows[:10])]'
+
+# 色抽出の単発診断
+python3 scripts/debug_color_extraction.py
+
+# 出品テスト(下書き、1件、ブラウザ保持)
+python3 scripts/buyma_auto_listing.py --draft --limit 1 --hold 2>&1 | tee /tmp/buyma_run.log
+
+# ログから色・サイズ関連を抽出(別ターミナルで)
+grep -nE "📦|バリエーション|row\[|参考日本サイズ|色の系統|Traceback" /tmp/buyma_run.log
+```

@@ -313,12 +313,21 @@ def _strip_accents(text: str) -> str:
     """Latin 系のアクセント文字 (è, é, â, ç 等) を ASCII に変換する。
 
     BUYMA の商品コメント欄は「不正な文字 è」等で validation ブロックするため必須。
-    日本語や全角文字は NFD 分解しても combining mark が付かないので影響しない。
+
+    注意: NFD 分解するとカタカナ/ひらがなの 濁点(U+3099) / 半濁点(U+309A) も
+    combining mark として分離される。これらは Japanese 用の必須マークなので
+    除去してはいけない (パ → ハ, ゴ → コ のように読みが壊れる)。
     """
     if not text:
         return text
+    _JP_COMBINING_MARKS = ("\u3099", "\u309a")  # 濁点・半濁点
     nfd = unicodedata.normalize("NFD", text)
-    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    filtered = "".join(
+        c for c in nfd
+        if unicodedata.category(c) != "Mn" or c in _JP_COMBINING_MARKS
+    )
+    # NFC で結合して 濁点付きカタカナ(パ, ピ, ブ, ゴ 等)を再構築する
+    return unicodedata.normalize("NFC", filtered)
 
 
 def translate_description(desc_en):

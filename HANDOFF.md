@@ -1,4 +1,4 @@
-# 引き継ぎノート（2026-04-19 セッション終了時点 / 2回目更新）
+# 引き継ぎノート（2026-04-20 セッション終了時点 / 3回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md
@@ -59,7 +59,7 @@
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: `fb4b4f9 fix(phase1): サイズ名行探索を全テーブル横断に変更`
+- 直近コミット: `7fcf1dc fix(phase1): マルチサイズ出品の数量バグと行指定のずれを修正`
 - 作業ツリー: クリーン（push 済み）
 
 ---
@@ -94,56 +94,94 @@
 ### サイズ/在庫
 - **BAGS / ACCESSORIES**: バリエーションなし + 指定なし + 数量1(単一サイズ)
 - **CLOTHING / FOOTWEAR**: バリエーションあり + 行ごとに サイズ名(IT40等) +
-  参考日本サイズ(M等) + 数量1(1件の available_size での動作確認済み)
+  参考日本サイズ(M等) + 各行数量1 / 合計数量=行数
+- **マルチサイズ(2サイズ以上)**: 2026-04-20 に実機検証完了(7fcf1dc)
+  - 行追加ボタンクリック後の行数検証 + リトライ
+  - `data-bma-row-idx` 属性で JS セットと Playwright locator の行を一致
+  - per_row_qty と total_qty を分離
+  - AFTERCOAT Double-Breasted Blazer(IT42/44) で
+    row[0]=IT42/M, row[1]=IT44/L, 合計数量=2 まで画面目視で確認済み
+    (brand_not_found で中断したため 下書き保存までは未到達だが、
+    サイズ部分のロジックは完成)
 
 ---
 
 ## ❌ 未解決 / 未検証の課題
 
-### 1. マルチサイズ商品のバリエーション出品は未検証
-現状 CSV の available_sizes はほぼ全件 1サイズ(baseblu 在庫が薄いため)。
-**2サイズ以上あるケース**は未テスト:
-- 「+ 新しいサイズを追加」ボタンのクリック処理(add_btn_sel)
-- 複数行の サイズ名 / 参考日本サイズ が正しい行に入るか
-→ 2サイズ以上の商品が見つかったら `--draft --limit N --hold` で実テスト必要
+### 1. ブティック系ブランドの BUYMA 未登録問題
+2026-04-20 の CSV ではマルチサイズ候補 4件全てが brands.json 未登録:
+AFTERCOAT / FRANCESCO RUSSO / SA SU PHI / THE LATEST。
+これらは BUYMA 本体にも無い可能性が高い(brand_id=0 で CDN API lookup 失敗)。
+baseblu 掲載品はハイブランドに混じってブティック系も多く、未登録品を弾く
+フィルタ or 手動登録フローが必要。
+→ Phase 2 で「brands.json 登録済みのみ出品」フィルタを追加検討。
 
-### 2. 色の系統 peek 診断ログが誤解を招く(優先度低)
+### 2. マルチサイズ + 下書き保存までの通し確認
+7fcf1dc でサイズ行の埋め込みは画面目視確認済み。ただし ブランド未登録で
+save_draft 前に中断したため、「2行サイズ + 下書き保存成功」の end-to-end
+は未達成。登録済みブランドのマルチサイズ商品が CSV に現れた時に要再確認。
+想定リスクは低い(サイズ以外のフィールドは過去に通っている)。
+
+### 3. 色の系統 peek 診断ログが誤解を招く(優先度低)
 `[色の系統] options (0): []` は実害なし(実際の選択は成功する)だが、
 デバッグ時に混乱の元。`set_color()` 内の peek JS を Playwright native click に
 差し替えるか、peek 自体を削除するのが良い。
 
-### 3. Phase 2 未着手
+### 4. Phase 2 未着手
 - 複数件の連続出品(`--limit N` で N>3 の動作)
 - 公開出品(`draft_mode=False`) — 現状 draft のみ
 - エラー時のリトライ戦略
 - 日次バッチ実行
+- brands.json 未登録品のスキップフィルタ
 
 ---
 
 ## 🎯 次セッションで優先して着手すべきこと
 
-### 候補A: マルチサイズ商品の実動作検証（Phase 1 完全クリア）
-1. CSV を眺めて 2サイズ以上の商品を探す
-   ```bash
-   python3 -c 'import csv, glob; p = sorted(glob.glob("outputs/reports/*_baseblu_profitable_products.csv"))[-1]; rows = list(csv.DictReader(open(p, encoding="utf-8-sig"))); [print(i+1, r["title"][:30], "|", r["product_type"], "| avail=", r.get("available_sizes","")) for i, r in enumerate(rows) if len((r.get("available_sizes","") or "").split(","))>=2]'
-   ```
-2. 該当商品が見つかったら `--draft --limit M --hold` で出品テスト
-3. ログと画面で全サイズ行が埋まっているか確認
+### 候補A: 複数件連続出品の安定性テスト (Phase 2 入口)
+- `--limit N` で N=3〜5 の連続出品
+- 途中で失敗した場合に次商品へ進めるか
+- progress.json (succeeded / failed) の整合性
 
-### 候補B: peek 診断ログ整理(小回り修正)
+### 候補B: ブランドフィルタで出品対象を絞る
+- `brands.json` 未登録 or `brand_id=null` の商品は出品対象から除外する
+  フィルタを `filter_baseblu_profitable.py` か `load_products()` に追加
+- これでブティック系で失敗する件数を大幅削減できる
+- 代替案: unregistered に追加する自動登録フロー
+
+### 候補C: peek 診断ログ整理(小回り修正)
 - `set_color()` 内の peek JS を削除、または Playwright native で書き直し
 - `_click_select_option` 側に成功時のデバッグ出力を追加(現在は失敗時しか出ない)
 
-### 候補C: Phase 2 着手
-- 複数件連続出品の安定性テスト
-- `publish_product()` の本公開フロー検証
-- 運用スクリプト整備(日次バッチ、失敗時の retry)
+### 候補D: 本公開フロー検証
+- `publish_product()` の通し検証
+- `--draft` なしで 1件出品 → 即削除の動作確認
 
-**おすすめは 候補A** → 残課題を完全に潰してから Phase 2 へ。
+**おすすめは 候補B → 候補A の順**。ブランドフィルタを入れてから連続出品した方が
+失敗率が下がり実テストが安定する。
 
 ---
 
-## 🔑 今セッション(2026-04-19)で追加された知見
+## 🔑 今セッション(2026-04-20)で追加された知見
+
+### 1. マルチサイズ出品(2サイズ以上)のロジックは完成
+- 行追加ボタン: 期待行数に達するまで最大2回リトライ + 実行数検証
+- 行指定: `_tag_variation_rows()` で `data-bma-row-idx` 属性を振り、
+  JS セット と Playwright locator を同一セレクタで引いて行ずれを排除
+- 数量: `_set_stock_status_and_qty(per_row_qty, total_qty)` に分離。
+  各行には 1、合計には 行数 を書く。単一サイズは同値で呼ぶため挙動不変
+- AFTERCOAT(IT42/44) で row[0]=IT42/M, row[1]=IT44/L, 合計=2 を画面目視確認
+
+### 2. ブティック系ブランドは BUYMA 本体にもない
+baseblu は Gucci/Prada 等のハイブランドだけでなく AFTERCOAT / FRANCESCO RUSSO
+/ SA SU PHI / THE LATEST のようなブティックブランドも多く扱う。これらは
+BUYMA の CDN brand suggest API でも ヒットしないため、`brand_id=0` で
+`brand_not_found` で中断する。
+→ Phase 2 で `brands.json` 登録済みのみに絞るフィルタが必要。
+
+---
+
+## 🔑 前セッション(2026-04-19)の知見
 
 ### 1. baseblu の HTML fetch は Accept ヘッダーで変わる
 `fetch_product_html()` が `Accept: application/json` を送っていたため、
@@ -234,7 +272,9 @@ CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクシ�
 ## 💼 開発進捗サマリ
 
 - **Phase 0（1件下書き保存）**: ✅ 完全クリア
-- **Phase 1（全フィールド正しく入力）**: ✅ アパレル1サイズ確認済み、🔵 マルチサイズ未検証
+- **Phase 1（全フィールド正しく入力）**: ✅ 完全クリア (2026-04-20)
+  - 単一サイズ・マルチサイズ両対応、画面目視確認済み
+  - 残: 登録済みブランドのマルチサイズ商品で 下書き保存まで通す end-to-end 確認
 - **Phase 2（複数件・本公開）**: 未着手
 
 ---

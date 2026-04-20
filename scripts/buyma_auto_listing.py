@@ -50,6 +50,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# .env から DEEPL_API_KEY 等を読み込む (存在しなければ silent skip)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
 try:
     from app.utils.text import translate_description as _translate_description_advanced
 except Exception:

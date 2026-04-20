@@ -108,13 +108,25 @@
 
 ## ❌ 未解決 / 未検証の課題
 
-### 1. ブティック系ブランドの BUYMA 未登録問題
+### 1. ブティック系ブランドの BUYMA 未登録問題（要調査）
 2026-04-20 の CSV ではマルチサイズ候補 4件全てが brands.json 未登録:
 AFTERCOAT / FRANCESCO RUSSO / SA SU PHI / THE LATEST。
-これらは BUYMA 本体にも無い可能性が高い(brand_id=0 で CDN API lookup 失敗)。
-baseblu 掲載品はハイブランドに混じってブティック系も多く、未登録品を弾く
-フィルタ or 手動登録フローが必要。
-→ Phase 2 で「brands.json 登録済みのみ出品」フィルタを追加検討。
+現状 `resolve_brand()` は CDN API (`cdn-suggest.buyma.com/brand_suggest`)
+で lookup 失敗すると `unregistered` に自動追加し brand_id=0 を返す。
+
+**重要**: 一律排除は早計。これらは baseblu が扱うハイブランド〜ブティック系で、
+BUYMA に実際には存在している可能性が高い(FRANCESCO RUSSO は有名靴ブランド、
+SA SU PHI はイタリアのコンテンポラリー等)。競合が少ない分むしろ利益率が
+高い可能性もあり、安易に排除すると baseblu の大半を落とすことになる。
+
+→ 真の問題は CDN API の recall 不足(false negative)の可能性。
+   対応候補:
+   - (a) 手動確認: BUYMA サイトで該当ブランドを検索し、実在するなら brands.json
+         に brand_id 付きで手動登録
+   - (b) DOM サジェストでのフォールバック実装: CDN API が空を返しても、実際に
+         出品フォームのブランド input にタイプして suggest 候補が出るか確認し、
+         あれば採用する(resolve_brand の brand_id=-1 パスを実装)
+   - (c) unregistered をキューとして蓄積し、週1でまとめて手動検証
 
 ### 2. マルチサイズ + 下書き保存までの通し確認
 7fcf1dc でサイズ行の埋め込みは画面目視確認済み。ただし ブランド未登録で
@@ -132,22 +144,26 @@ save_draft 前に中断したため、「2行サイズ + 下書き保存成功�
 - 公開出品(`draft_mode=False`) — 現状 draft のみ
 - エラー時のリトライ戦略
 - 日次バッチ実行
-- brands.json 未登録品のスキップフィルタ
 
 ---
 
 ## 🎯 次セッションで優先して着手すべきこと
 
-### 候補A: 複数件連続出品の安定性テスト (Phase 2 入口)
+### 候補A: ブティック系ブランドの実在確認と登録範囲拡張
+2026-04-20 セッションでユーザから「ブティック系も需要があるなら出品したい」
+という方針が示された。一律排除せず、取扱可能範囲を広げる方向で進める。
+
+1. まず AFTERCOAT / FRANCESCO RUSSO / SA SU PHI / THE LATEST が BUYMA に
+   実在するか Mac から手動検索して確認（5分）
+2. 実在するなら `brands.json` に brand_id / phonetic 付きで追加
+3. 実在しないもののみ unregistered として扱う
+4. 継続的な運用のため、`resolve_brand()` に DOM サジェストフォールバック
+   (brand_id=-1 → フォーム上でタイプして suggest 候補採用) を実装
+
+### 候補B: 複数件連続出品の安定性テスト (Phase 2 入口)
 - `--limit N` で N=3〜5 の連続出品
 - 途中で失敗した場合に次商品へ進めるか
 - progress.json (succeeded / failed) の整合性
-
-### 候補B: ブランドフィルタで出品対象を絞る
-- `brands.json` 未登録 or `brand_id=null` の商品は出品対象から除外する
-  フィルタを `filter_baseblu_profitable.py` か `load_products()` に追加
-- これでブティック系で失敗する件数を大幅削減できる
-- 代替案: unregistered に追加する自動登録フロー
 
 ### 候補C: peek 診断ログ整理(小回り修正)
 - `set_color()` 内の peek JS を削除、または Playwright native で書き直し
@@ -157,8 +173,8 @@ save_draft 前に中断したため、「2行サイズ + 下書き保存成功�
 - `publish_product()` の通し検証
 - `--draft` なしで 1件出品 → 即削除の動作確認
 
-**おすすめは 候補B → 候補A の順**。ブランドフィルタを入れてから連続出品した方が
-失敗率が下がり実テストが安定する。
+**おすすめは 候補A → 候補B の順**。取扱ブランド範囲を広げる方が仕入れ母数が
+増えて利益機会が大きく、かつ連続出品テストの成功率も上がる。
 
 ---
 

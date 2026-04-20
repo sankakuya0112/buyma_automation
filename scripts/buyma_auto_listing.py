@@ -157,17 +157,69 @@ _ALPHA_SIZE_TO_JP = {
 }
 
 
-def map_size_to_jp_reference(raw_size: str) -> str:
+# ========== FOOTWEAR: EU/IT → JP cm マッピング ==========
+# baseblu は女性靴 EU/IT サイズ(34〜42)中心。BUYMA の靴カテゴリは
+# 「参考日本サイズ」が cm 単位 (21cm以下 / 21.5cm / ... / 27cm以上)。
+# 一般的な変換表(EU → JP cm):
+_EU_SHOE_TO_JP_CM = {
+    34.0: "21cm以下",
+    34.5: "21.5cm",
+    35.0: "22cm",
+    35.5: "22.5cm",
+    36.0: "23cm",
+    36.5: "23cm",
+    37.0: "23.5cm",
+    37.5: "24cm",
+    38.0: "24.5cm",
+    38.5: "25cm",
+    39.0: "25cm",
+    39.5: "25.5cm",
+    40.0: "26cm",
+    40.5: "26cm",
+    41.0: "26.5cm",
+    41.5: "26.5cm",
+}
+
+
+def _map_footwear_to_jp_cm(raw_size: str) -> str:
+    """靴サイズ(EU/IT 数値)を BUYMA 参考日本サイズの cm ラベルに変換する。"""
+    s = (raw_size or "").strip().upper()
+    if not s:
+        return "指定なし"
+    # 'IT40.5' 等の接頭辞を剥がして数値抽出
+    m = re.match(r"(?:IT|EU|FR)?\s*(\d+(?:\.\d+)?)", s)
+    if not m:
+        return "指定なし"
+    try:
+        n = float(m.group(1))
+    except ValueError:
+        return "指定なし"
+    if n <= 33.5:
+        return "21cm以下"
+    if n >= 42.0:
+        return "27cm以上"
+    # 0.5刻み丸め
+    key = round(n * 2) / 2
+    return _EU_SHOE_TO_JP_CM.get(key, "指定なし")
+
+
+def map_size_to_jp_reference(raw_size: str, product_type: str = "") -> str:
     """仕入先サイズ文字列を BUYMA の「参考日本サイズ」ラベルに変換する。
 
+    product_type:
+      - FOOTWEAR: EU/IT 数値 → cm ラベル (例 '37.5' → '24cm')
+      - その他: 数値は XS/S/M/L/XL、アルファベットはそのまま
+
     例:
-      '40' → 'M'           (Italian 数値)
-      '36' → 'XS以下'
-      'XS' → 'XS以下'
-      'M'  → 'M'
-      'UNI' → 'FREE'
-      '' → '指定なし'
+      map('40', 'CLOTHING') → 'M'
+      map('37.5', 'FOOTWEAR') → '24cm'
+      map('39.5', 'FOOTWEAR') → '25.5cm'
+      map('XS', '') → 'XS以下'
+      map('', '') → '指定なし'
     """
+    pt = (product_type or "").strip().upper()
+    if pt == "FOOTWEAR":
+        return _map_footwear_to_jp_cm(raw_size)
     s = (raw_size or "").strip().upper()
     if not s:
         return "指定なし"
@@ -1680,7 +1732,7 @@ def set_size_and_stock(
     else:
         # 単一サイズ (バッグ・アクセ・サイズ情報なし)
         first_size = sizes_list[0] if sizes_list else ""
-        jp_size = map_size_to_jp_reference(first_size) if first_size else "指定なし"
+        jp_size = map_size_to_jp_reference(first_size, product_type) if first_size else "指定なし"
         size_name = format_size_name_for_listing(first_size, product_type) or (first_size or "FREE")
         _set_size_single(page, panel_sel, jp_size, size_name, stock_qty_per_size)
 
@@ -1811,7 +1863,7 @@ def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_pe
     # 3) 各行を埋める
     for idx, raw_size in enumerate(sizes_list):
         size_name = format_size_name_for_listing(raw_size, product_type) or raw_size
-        jp_size = map_size_to_jp_reference(raw_size)
+        jp_size = map_size_to_jp_reference(raw_size, product_type)
         filled = _fill_variation_row(page, panel_sel, idx, size_name, jp_size)
         print(f"    📦 row[{idx}]: size_name={size_name!r} jp={jp_size!r} → {filled}")
 

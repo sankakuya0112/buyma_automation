@@ -1451,8 +1451,27 @@ def set_season(page, season):
     else:
         half, year_raw = m.group(1), m.group(2)
     year = "20" + year_raw[-2:] if len(year_raw) <= 2 else year_raw
-    # 候補ラベルは複数パターンを試す
-    candidates = [f"{year} {half}", f"{year}{half}", f"{half} {year}", f"{half}{year}", f"{year}年{half}"]
+    # FW は BUYMA 側では AW と同義。AW 表記に統一する
+    if half == "FW":
+        half = "AW"
+    # 候補ラベルは複数パターンを試す(BUYMA は AW 年跨ぎ "2025-2026 AW" を使う)
+    candidates = []
+    if half == "AW":
+        try:
+            next_year = str(int(year) + 1)
+            candidates.extend([
+                f"{year}-{next_year} AW",
+                f"{year}-{next_year}AW",
+                f"{year}/{next_year} AW",
+                f"{year}/{next_year}AW",
+            ])
+        except ValueError:
+            pass
+    candidates.extend([
+        f"{year} {half}", f"{year}{half}",
+        f"{half} {year}", f"{half}{year}",
+        f"{year}年{half}",
+    ])
 
     # シーズン見出しの近傍で .Select を特定
     idx = page.evaluate("""(function(){

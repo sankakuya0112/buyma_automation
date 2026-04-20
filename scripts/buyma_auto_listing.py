@@ -481,10 +481,11 @@ def resolve_brand(vendor: str, brands_data: dict) -> tuple:
             known[key_lc] = {"brand_id": bid, "phonetic": phonetic}
             save_brands(brands_data)
             return bid, phonetic
-        else:
-            unreg.append(safe)
-            save_brands(brands_data)
-            return 0, ""
+        # CDN API で見つからなくても BUYMA 本体の DOM サジェストには出ることが
+        # ある(CDN は recall 不完全)。ここで unregistered に自動登録すると
+        # 取り返しがつかないので、-1 を返して select_brand() の DOM フォール
+        # バックに委ねる。確定的に除外したいブランドはユーザが brands.json
+        # の unregistered に手動追加する。
 
     return -1, safe
 
@@ -893,10 +894,21 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
       ② サジェスト候補を Playwright の native click で選択
     の流れで行う。React prop (onClickBrand) を直接呼び出す方式は内部 state が
     完全に更新されず「未登録」警告が残り、保存が validation で弾かれる。
+
+    brand_id:
+      > 0: 既知ブランド。完全一致 → 部分一致 の順でサジェスト候補を選ぶ
+      == 0: ユーザが brands.json.unregistered に明示追加した除外ブランド。
+            即座に False を返しスキップ
+      == -1: CDN API では見つからなかった未検証ブランド。DOM サジェストで
+             試行するが、誤登録防止のため完全一致のみ許可
     """
     if brand_id == 0:
-        print(f"    ⚠️ ブランド未登録（既知）: {brand_name}")
+        print(f"    ⚠️ ブランド手動除外: {brand_name} (unregistered リスト)")
         return False
+
+    strict_match_only = (brand_id is not None and brand_id < 0)
+    if strict_match_only:
+        print(f"    🔎 CDN 未ヒット → DOM サジェストで試行(完全一致のみ): {brand_name}")
 
     # 1) 入力欄にブランド名を入れてサジェストを開く
     typed = page.evaluate(f"""(function(){{
@@ -934,7 +946,10 @@ def select_brand(page, brand_name, brand_phonetic, brand_id):
                     or t.startswith(name_upper + "(")
                     or t.startswith(name_upper + " ")):
                 return i, "exact"
-        # 部分一致フォールバック
+        if strict_match_only:
+            # 未検証ブランドは誤登録防止のため完全一致以外は受け付けない
+            return -1, "no_exact_match_strict"
+        # 部分一致フォールバック（既知ブランドのみ）
         for i in range(count):
             try:
                 t = (options.nth(i).text_content() or "").strip().upper()

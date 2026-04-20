@@ -1712,8 +1712,37 @@ def _set_size_single(page, panel_sel, jp_size, size_name, stock_qty):
     else:
         print(f"       [参考日本サイズ] '指定なし' dropdown が見つからない")
 
-    _set_stock_status_and_qty(page, total_qty=stock_qty)
+    _set_stock_status_and_qty(page, per_row_qty=stock_qty, total_qty=stock_qty)
     print(f"    📦 サイズ/在庫(単一): size={size_name} jp={jp_size} qty={stock_qty}")
+
+
+def _count_variation_rows(page, panel_sel):
+    """panel 内の「input を持つ <tr>」（= データ行）の件数を数える。"""
+    return page.evaluate(f"""(function(){{
+        var p = document.querySelector({json.dumps(panel_sel)});
+        if (!p) return 0;
+        var n = 0;
+        p.querySelectorAll('table tr').forEach(function(r){{
+            if (r.querySelector('input[type="text"], input:not([type])')) n++;
+        }});
+        return n;
+    }})()""") or 0
+
+
+def _tag_variation_rows(page, panel_sel):
+    """input を持つ <tr> に data-bma-row-idx="N" を振って、行 N の locator を安定化する。"""
+    return page.evaluate(f"""(function(){{
+        var p = document.querySelector({json.dumps(panel_sel)});
+        if (!p) return 0;
+        var idx = 0;
+        p.querySelectorAll('table tr').forEach(function(r){{
+            if (r.querySelector('input[type="text"], input:not([type])')) {{
+                r.setAttribute('data-bma-row-idx', String(idx));
+                idx++;
+            }}
+        }});
+        return idx;
+    }})()""") or 0
 
 
 def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_per_size):
@@ -1731,22 +1760,38 @@ def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_pe
     time.sleep(0.6)
 
     rows_to_fill = len(sizes_list)
-    print(f"    📦 バリエーションあり: {rows_to_fill}サイズ {sizes_list}")
+    initial_rows = _count_variation_rows(page, panel_sel)
+    print(f"    📦 バリエーションあり: {rows_to_fill}サイズ {sizes_list} (初期行数={initial_rows})")
 
-    # 2) 行数を揃える: 2行目以降は「+ 新しいサイズを追加」ボタンを押す
+    # 2) 行数を揃える: 「+ 新しいサイズを追加」を押して期待行数に到達させる
     add_btn_sel = (
         'button:has-text("新しいサイズを追加"), '
         'a:has-text("新しいサイズを追加"), '
         '[role="button"]:has-text("新しいサイズを追加")'
     )
     for i in range(1, rows_to_fill):
-        try:
-            page.locator(add_btn_sel).first.scroll_into_view_if_needed(timeout=1500)
-            page.locator(add_btn_sel).first.click(timeout=2500)
-            time.sleep(0.4)
-        except Exception as e:
-            print(f"    📦 行追加ボタン失敗 (row={i+1}): {e}")
+        expected = i + 1
+        clicked = False
+        for attempt in range(2):
+            try:
+                page.locator(add_btn_sel).first.scroll_into_view_if_needed(timeout=1500)
+                page.locator(add_btn_sel).first.click(timeout=2500)
+                clicked = True
+            except Exception as e:
+                print(f"    📦 行追加ボタン click 失敗 (row={expected}, attempt={attempt+1}): {e}")
+            time.sleep(0.5)
+            if _count_variation_rows(page, panel_sel) >= expected:
+                break
+        actual = _count_variation_rows(page, panel_sel)
+        if actual < expected:
+            print(f"    📦 ⚠️ 行追加が反映されず (期待={expected}, 実際={actual}, click={clicked}) → 以降スキップ")
+            rows_to_fill = actual
+            sizes_list = sizes_list[:actual]
             break
+
+    final_rows = _count_variation_rows(page, panel_sel)
+    tagged = _tag_variation_rows(page, panel_sel)
+    print(f"    📦 サイズ行: 最終行数={final_rows} tagged={tagged} fill予定={rows_to_fill}")
 
     # 3) 各行を埋める
     for idx, raw_size in enumerate(sizes_list):
@@ -1756,42 +1801,35 @@ def _set_size_variations(page, panel_sel, sizes_list, product_type, stock_qty_pe
         print(f"    📦 row[{idx}]: size_name={size_name!r} jp={jp_size!r} → {filled}")
 
     # 4) 在庫ステータスと合計数量
-    _set_stock_status_and_qty(page, total_qty=rows_to_fill * stock_qty_per_size)
+    _set_stock_status_and_qty(
+        page,
+        per_row_qty=stock_qty_per_size,
+        total_qty=rows_to_fill * stock_qty_per_size,
+    )
 
 
 def _fill_variation_row(page, panel_sel, row_idx, size_name, jp_size):
     """バリエーションあり の row_idx 番目行に サイズ名 と 参考日本サイズ をセットする。
 
-    BUYMA の バリエーション セクションは <table> で、data row (input を持つ <tr>) ごとに
-      [サイズ名 input] [参考日本サイズ .Select] [サイズ詳細]
-    が並ぶ構造。上部には「バリエーション」「(全体テンプレート)参考日本サイズ」
-    という別の Select があるが、それらは <table> の外なので自動的に除外される。
+    _tag_variation_rows() で data-bma-row-idx 属性が振られている前提。
+    JS セット と Playwright locator を同じ属性で引くため行ずれが起きない。
     """
-    # 1) サイズ名: data row (input を持つ tr) の row_idx 番目
-    # panel 内に複数 <table> がある可能性があるので全テーブル横断で tr を集める
+    row_sel = f'{panel_sel} tr[data-bma-row-idx="{row_idx}"]'
+
+    # 1) サイズ名 input
     name_result = page.evaluate(f"""(function(){{
-        var p = document.querySelector({json.dumps(panel_sel)});
-        if (!p) return 'no_panel';
-        var rows = [];
-        p.querySelectorAll('table tr').forEach(function(r){{
-            if (r.querySelector('input[type="text"], input:not([type])')) {{
-                rows.push(r);
-            }}
-        }});
-        if ({row_idx} >= rows.length) return 'no_data_row idx={row_idx}/' + rows.length;
-        var inp = rows[{row_idx}].querySelector('input[type="text"], input:not([type])');
-        if (!inp) return 'no_input_in_row';
+        var r = document.querySelector({json.dumps(row_sel)});
+        if (!r) return 'no_row';
+        var inp = r.querySelector('input[type="text"], input:not([type])');
+        if (!inp) return 'no_input';
         window.__si(inp, {json.dumps(size_name)});
-        return 'ok data_rows=' + rows.length;
+        return 'ok';
     }})()""")
 
-    # 2) 参考日本サイズ: 同じ data row 内の .Select を Playwright native クリック
+    # 2) 参考日本サイズ Select を同じ行内で Playwright native クリック
     jp_result = "skipped"
     try:
-        row_locator = page.locator(
-            f'{panel_sel} table tr:has(input[type="text"]), '
-            f'{panel_sel} table tr:has(input:not([type]))'
-        ).nth(row_idx)
+        row_locator = page.locator(row_sel)
         row_select = row_locator.locator('.Select, .bmm-c-custom-select').first
         ok = _click_select_option(
             page, row_select, jp_size,
@@ -1804,8 +1842,13 @@ def _fill_variation_row(page, panel_sel, row_idx, size_name, jp_size):
     return f"name={name_result} / jp_dd={jp_result}"
 
 
-def _set_stock_status_and_qty(page, total_qty=1):
-    """在庫ステータス=買付可 + 合計数量入力。"""
+def _set_stock_status_and_qty(page, per_row_qty=1, total_qty=1):
+    """在庫ステータス=買付可 + 行ごとの数量 + 合計数量。
+
+    - 各行 input[placeholder="数量"] → per_row_qty
+    - 「買付できる合計数量」input → total_qty
+    バリエーションなしの場合は per_row_qty == total_qty で呼ばれる想定。
+    """
     stock_dd_js = """(function(){
         var all = document.querySelectorAll('.Select');
         for (var i = 0; i < all.length; i++) {
@@ -1823,11 +1866,12 @@ def _set_stock_status_and_qty(page, total_qty=1):
         _click_select_option(page, stock_dd, "買付可", debug_name="在庫ステータス")
 
     stock_result = page.evaluate(f"""(function(){{
-        var qty = {total_qty};
+        var perRow = {per_row_qty};
+        var total = {total_qty};
         var results = [];
         document.querySelectorAll('input[placeholder="数量"]').forEach(function(el){{
-            window.__si(el, String(qty));
-            results.push('placeholder=数量');
+            window.__si(el, String(perRow));
+            results.push('row=' + perRow);
         }});
         var titles = document.querySelectorAll('*');
         for (var i = 0; i < titles.length; i++) {{
@@ -1837,9 +1881,9 @@ def _set_stock_status_and_qty(page, total_qty=1):
             var parent = titles[i];
             for (var d = 0; d < 6 && parent; d++) {{
                 var inp = parent.querySelector('input[type="number"], input[type="text"], input:not([type])');
-                if (inp && (inp.value === '' || inp.value === '0')) {{
-                    window.__si(inp, String(qty));
-                    results.push('買付合計=ok');
+                if (inp && (inp.value === '' || inp.value === '0' || inp.value === String(perRow))) {{
+                    window.__si(inp, String(total));
+                    results.push('買付合計=' + total);
                     return results;
                 }}
                 parent = parent.parentElement;
@@ -1847,7 +1891,7 @@ def _set_stock_status_and_qty(page, total_qty=1):
         }}
         return results;
     }})()""")
-    print(f"       [在庫合計] qty={total_qty} {stock_result}")
+    print(f"       [在庫合計] per_row={per_row_qty} total={total_qty} {stock_result}")
 
 
 def set_purchase_memo(page, product):

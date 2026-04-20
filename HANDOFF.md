@@ -1,4 +1,4 @@
-# 引き継ぎノート（2026-04-20 セッション終了時点 / 3回目更新）
+# 引き継ぎノート（2026-04-20 セッション終了時点 / 4回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md
@@ -59,7 +59,7 @@
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: `7fcf1dc fix(phase1): マルチサイズ出品の数量バグと行指定のずれを修正`
+- 直近コミット: `1d3bfa2 fix(size): FOOTWEAR の「参考日本サイズ」を cm 単位に変換するマッピングを追加`
 - 作業ツリー: クリーン（push 済み）
 
 ---
@@ -94,50 +94,36 @@
 ### サイズ/在庫
 - **BAGS / ACCESSORIES**: バリエーションなし + 指定なし + 数量1(単一サイズ)
 - **CLOTHING / FOOTWEAR**: バリエーションあり + 行ごとに サイズ名(IT40等) +
-  参考日本サイズ(M等) + 各行数量1 / 合計数量=行数
-- **マルチサイズ(2サイズ以上)**: 2026-04-20 に実機検証完了(7fcf1dc)
-  - 行追加ボタンクリック後の行数検証 + リトライ
-  - `data-bma-row-idx` 属性で JS セットと Playwright locator の行を一致
-  - per_row_qty と total_qty を分離
-  - AFTERCOAT Double-Breasted Blazer(IT42/44) で
-    row[0]=IT42/M, row[1]=IT44/L, 合計数量=2 まで画面目視で確認済み
-    (brand_not_found で中断したため 下書き保存までは未到達だが、
-    サイズ部分のロジックは完成)
+  参考日本サイズ + 各行数量1 / 合計数量=行数
+- **参考日本サイズのマッピング**:
+  - CLOTHING: IT38 → S、IT40/42 → M、IT44/46 → L などアルファベットサイズ
+  - FOOTWEAR: IT37.5 → 24cm、IT39.5 → 25.5cm など cm 単位
+    (BUYMA 靴カテゴリは cm 単位の dropdown しか受け付けない)
+- **マルチサイズ(2サイズ以上)**: 2026-04-20 に実機検証完了
+  - 7fcf1dc: 行追加リトライ / data-bma-row-idx / per_row_qty vs total_qty 分離
+  - 1d3bfa2: FOOTWEAR の cm 単位マッピング追加
+  - FRANCESCO RUSSO Two-tone Pumps(IT37.5/39.5) で下書き保存成功
+    (ID=131003231、画面目視で IT39.5→25.5cm, IT37.5→24cm 確認)
 
 ---
 
 ## ❌ 未解決 / 未検証の課題
 
-### 1. ブティック系ブランドの BUYMA 未登録問題（要調査）
-2026-04-20 の CSV ではマルチサイズ候補 4件全てが brands.json 未登録:
-AFTERCOAT / FRANCESCO RUSSO / SA SU PHI / THE LATEST。
-現状 `resolve_brand()` は CDN API (`cdn-suggest.buyma.com/brand_suggest`)
-で lookup 失敗すると `unregistered` に自動追加し brand_id=0 を返す。
-
-**重要**: 一律排除は早計。これらは baseblu が扱うハイブランド〜ブティック系で、
-BUYMA に実際には存在している可能性が高い(FRANCESCO RUSSO は有名靴ブランド、
-SA SU PHI はイタリアのコンテンポラリー等)。競合が少ない分むしろ利益率が
-高い可能性もあり、安易に排除すると baseblu の大半を落とすことになる。
-
-→ 真の問題は CDN API の recall 不足(false negative)の可能性。
-   対応候補:
-   - (a) 手動確認: BUYMA サイトで該当ブランドを検索し、実在するなら brands.json
-         に brand_id 付きで手動登録
-   - (b) DOM サジェストでのフォールバック実装: CDN API が空を返しても、実際に
-         出品フォームのブランド input にタイプして suggest 候補が出るか確認し、
-         あれば採用する(resolve_brand の brand_id=-1 パスを実装)
-   - (c) unregistered をキューとして蓄積し、週1でまとめて手動検証
-
-### 2. マルチサイズ + 下書き保存までの通し確認
-7fcf1dc でサイズ行の埋め込みは画面目視確認済み。ただし ブランド未登録で
-save_draft 前に中断したため、「2行サイズ + 下書き保存成功」の end-to-end
-は未達成。登録済みブランドのマルチサイズ商品が CSV に現れた時に要再確認。
-想定リスクは低い(サイズ以外のフィールドは過去に通っている)。
-
-### 3. 色の系統 peek 診断ログが誤解を招く(優先度低)
+### 1. 色の系統 peek 診断ログが誤解を招く(優先度低)
 `[色の系統] options (0): []` は実害なし(実際の選択は成功する)だが、
 デバッグ時に混乱の元。`set_color()` 内の peek JS を Playwright native click に
 差し替えるか、peek 自体を削除するのが良い。
+
+### 2. SA SU PHI は DOM では出るが未プログラム検証
+2026-04-20 のマルチサイズ候補 #20 Sleevless Top (SA SU PHI, IT40/42) は
+手動 DOM サジェストでは `SA SU PHI(サスファイ)` が表示されることを確認済み。
+ただし実スクリプトで通したかは未確認(CDN で見つかる可能性が高いが、万一
+見つからなければ DOM フォールバックが動作するはず)。必要になったら試す。
+
+### 3. メンズ靴サイズマッピングが未検証
+`_EU_SHOE_TO_JP_CM` は女性靴(EU 34〜41.5)の一般的なマッピング。男性靴
+(EU 40〜46)や子供靴で出品する場合は `_map_footwear_to_jp_cm` の上限
+再考と追加テストが必要(現状 >=42 は一律「27cm以上」)。
 
 ### 4. Phase 2 未着手
 - 複数件の連続出品(`--limit N` で N>3 の動作)
@@ -149,32 +135,29 @@ save_draft 前に中断したため、「2行サイズ + 下書き保存成功�
 
 ## 🎯 次セッションで優先して着手すべきこと
 
-### 候補A: ブティック系ブランドの実在確認と登録範囲拡張
-2026-04-20 セッションでユーザから「ブティック系も需要があるなら出品したい」
-という方針が示された。一律排除せず、取扱可能範囲を広げる方向で進める。
-
-1. まず AFTERCOAT / FRANCESCO RUSSO / SA SU PHI / THE LATEST が BUYMA に
-   実在するか Mac から手動検索して確認（5分）
-2. 実在するなら `brands.json` に brand_id / phonetic 付きで追加
-3. 実在しないもののみ unregistered として扱う
-4. 継続的な運用のため、`resolve_brand()` に DOM サジェストフォールバック
-   (brand_id=-1 → フォーム上でタイプして suggest 候補採用) を実装
-
-### 候補B: 複数件連続出品の安定性テスト (Phase 2 入口)
-- `--limit N` で N=3〜5 の連続出品
-- 途中で失敗した場合に次商品へ進めるか
+### 候補A: 複数件連続出品の安定性テスト (Phase 2 入口)
+- `--limit 3〜5` で連続出品
+- 途中失敗時に次商品へ進めるか (現状 brand_not_found などは PERMANENT_SKIP
+  扱いで進む想定だが、連続実行での実機未検証)
 - progress.json (succeeded / failed) の整合性
+- 画像アップロード 403 や タイムアウト時の挙動
+- 下書き連投時に BUYMA の rate limit が出ないか
+
+### 候補B: 本公開フロー検証
+- `publish_product()` の通し検証
+- `--draft` なしで 1件出品 → すぐ削除の動作確認
+- 公開時の必須フィールド validation を全部通すか
 
 ### 候補C: peek 診断ログ整理(小回り修正)
 - `set_color()` 内の peek JS を削除、または Playwright native で書き直し
 - `_click_select_option` 側に成功時のデバッグ出力を追加(現在は失敗時しか出ない)
 
-### 候補D: 本公開フロー検証
-- `publish_product()` の通し検証
-- `--draft` なしで 1件出品 → 即削除の動作確認
+### 候補D: 運用スクリプト整備
+- 日次バッチ実行スクリプト(スクレイピング→フィルタ→出品)
+- 失敗時の retry / ロギング
+- 公開済み出品の価格更新・在庫追従
 
-**おすすめは 候補A → 候補B の順**。取扱ブランド範囲を広げる方が仕入れ母数が
-増えて利益機会が大きく、かつ連続出品テストの成功率も上がる。
+**おすすめは 候補A → 候補B の順**。まず下書き連続で安定性を見てから公開に進む。
 
 ---
 
@@ -186,14 +169,29 @@ save_draft 前に中断したため、「2行サイズ + 下書き保存成功�
   JS セット と Playwright locator を同一セレクタで引いて行ずれを排除
 - 数量: `_set_stock_status_and_qty(per_row_qty, total_qty)` に分離。
   各行には 1、合計には 行数 を書く。単一サイズは同値で呼ぶため挙動不変
-- AFTERCOAT(IT42/44) で row[0]=IT42/M, row[1]=IT44/L, 合計=2 を画面目視確認
+- FRANCESCO RUSSO Two-tone Pumps(IT37.5/39.5) で下書き保存(ID=131003231)成功
 
-### 2. ブティック系ブランドは BUYMA 本体にもない
-baseblu は Gucci/Prada 等のハイブランドだけでなく AFTERCOAT / FRANCESCO RUSSO
-/ SA SU PHI / THE LATEST のようなブティックブランドも多く扱う。これらは
-BUYMA の CDN brand suggest API でも ヒットしないため、`brand_id=0` で
-`brand_not_found` で中断する。
-→ Phase 2 で `brands.json` 登録済みのみに絞るフィルタが必要。
+### 2. FOOTWEAR の参考日本サイズは cm 単位
+BUYMA の靴カテゴリの「参考日本サイズ」dropdown は `21cm以下 / 21.5cm /
+22cm / ... / 27cm以上` の cm 刻み。アパレル用の XS/S/M/L/XL を送ると
+`候補なし` で click_failed する。
+→ `_EU_SHOE_TO_JP_CM` + `_map_footwear_to_jp_cm()` で EU/IT 数値を cm に変換。
+   `map_size_to_jp_reference(raw_size, product_type)` で product_type を
+   見てディスパッチ。
+
+### 3. CDN API の recall は不完全 → DOM サジェストフォールバック必須
+baseblu のブティック系ブランドは CDN `cdn-suggest.buyma.com/brand_suggest`
+で見つからないことがある。しかし BUYMA 本体の出品フォーム上の DOM サジェスト
+には出るブランドもある(今回は AFTERCOAT/THE LATEST は両方×、FRANCESCO
+RUSSO/SA SU PHI は DOM だけ出る)。
+→ `resolve_brand()` は CDN 未ヒット時に unregistered に自動追加せず -1 を返し、
+   `select_brand()` は brand_id <= 0 でも DOM サジェストを試す(完全一致のみ)。
+   確定的な除外は `brands.json.unregistered` に手動追加する運用。
+
+### 4. 2026-04-20 時点の brands.json 実績
+- `brands` に 72 エントリ(FRANCESCO RUSSO など CDN 自動登録分含む)
+- `unregistered`: `["AFTERCOAT", "THE LATEST"]` (BUYMA に存在しないことを
+  手動 DOM 検索で確認済み)
 
 ---
 
@@ -289,8 +287,10 @@ CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクシ�
 
 - **Phase 0（1件下書き保存）**: ✅ 完全クリア
 - **Phase 1（全フィールド正しく入力）**: ✅ 完全クリア (2026-04-20)
-  - 単一サイズ・マルチサイズ両対応、画面目視確認済み
-  - 残: 登録済みブランドのマルチサイズ商品で 下書き保存まで通す end-to-end 確認
+  - 単一サイズ・マルチサイズ両対応
+  - CLOTHING は XS/S/M/L/XL、FOOTWEAR は cm 単位で埋まる
+  - マルチサイズ商品で下書き保存まで end-to-end 成功
+  - CDN 未ヒットブランドの DOM サジェストフォールバック実装済み
 - **Phase 2（複数件・本公開）**: 未着手
 
 ---

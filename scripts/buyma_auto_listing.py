@@ -777,7 +777,12 @@ def login(page, email, password):
     page.fill('input[name="txtLoginPass"]', password)
     human_delay(0.5, 1.0)
     page.click('input[id="login_do"]')
-    page.wait_for_load_state("networkidle", timeout=30000)
+    # BUYMA はログイン後 WebSocket/polling で常時通信があり networkidle に到達
+    # しないことがある。load 到達で十分とみなし、タイムアウトしても先に進む。
+    try:
+        page.wait_for_load_state("load", timeout=15000)
+    except Exception:
+        pass
     human_delay(1.5, 2.5)
     if "signin" in page.url or "login" in page.url:
         print("  ❌ ログイン失敗"); return False

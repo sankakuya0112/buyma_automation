@@ -235,13 +235,19 @@ def _extract_details_from_html(html: str) -> str:
     """
     if not html:
         return ""
+    # baseblu のページは <script> タグに商品 JSON を埋め込んでおり、そこに
+    # "Sku:" や "Season:" が文字列として含まれる。visible HTML の DETAILS
+    # セクションを正しく拾うため、script/style ブロックを先に剥がす。
+    html_clean = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+    html_clean = re.sub(r"<style\b[^>]*>.*?</style>", " ", html_clean, flags=re.DOTALL | re.IGNORECASE)
+
     # コロンで区切られる主要ラベル。"MADE IN ITALY" のようなコロン無し表記は
     # タグ判定に不要なので対象外。重複抽出を避けるため 1 ラベル 1 回のみ取る。
     labels = ["Sku", "Season", "Composition"]
     results = []
     for label in labels:
         pat = rf"{re.escape(label)}\s*[:：]\s*((?:<[^>]+>\s*)*[^<\n]{{1,300}})"
-        m = re.search(pat, html, re.IGNORECASE)
+        m = re.search(pat, html_clean, re.IGNORECASE)
         if not m:
             continue
         value = re.sub(r"<[^>]+>", " ", m.group(1))

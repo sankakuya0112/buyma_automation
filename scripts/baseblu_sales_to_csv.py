@@ -219,6 +219,38 @@ def _extract_season(description: str) -> str:
     return ""
 
 
+def _extract_details_from_html(html: str) -> str:
+    """baseblu 商品ページ HTML から DETAILS タブ相当の構造化情報を抽出する。
+
+    DETAILS タブ(または同等セクション)には
+      Sku: R1P953_337
+      Season: AW25
+      Composition: GENERAL 100% Calf Leather Bos Taurus
+      MADE IN ITALY
+    のような情報が入っている。body_html (DESCRIPTION タブ) には含まれない
+    ため別途抽出する必要がある。タグ自動判定(素材系)や season 抽出で使う。
+
+    ラベル名(Sku/Season/Composition/MADE IN/Made in)の直後のテキスト値を
+    HTML タグを跨いでも拾う。見つからなかったラベルは飛ばす。
+    """
+    if not html:
+        return ""
+    # コロンで区切られる主要ラベル。"MADE IN ITALY" のようなコロン無し表記は
+    # タグ判定に不要なので対象外。重複抽出を避けるため 1 ラベル 1 回のみ取る。
+    labels = ["Sku", "Season", "Composition"]
+    results = []
+    for label in labels:
+        pat = rf"{re.escape(label)}\s*[:：]\s*((?:<[^>]+>\s*)*[^<\n]{{1,300}})"
+        m = re.search(pat, html, re.IGNORECASE)
+        if not m:
+            continue
+        value = re.sub(r"<[^>]+>", " ", m.group(1))
+        value = re.sub(r"\s+", " ", value).strip(" :,;")
+        if value:
+            results.append(f"{label}: {value}")
+    return "\n".join(results)
+
+
 def _extract_sku_from_variant(variant_sku: str, option1_value: str) -> str:
     """variant の SKU からサイズ suffix (_40, _XL 等) を剥がして製品レベルの SKU を返す。
 
@@ -412,15 +444,23 @@ def parse_product(product, fetch_details=True):
     available_sizes = _extract_sizes(variants, only_available=True)
     season = _extract_season(description_en)
 
-    # JSON API で色またはサイズが取れなかった場合、商品ページ HTML から追加取得
-    if fetch_details and handle and (not color or not sizes):
+    # body_html (DESCRIPTION) に含まれないことがある DETAILS (Composition,
+    # Season, MADE IN 等) を HTML から抽出する。タグ自動判定(素材系)や
+    # season 抽出で使うため、常に HTML も取得する。
+    if fetch_details and handle:
         html = fetch_product_html(handle)
-        if not color:
-            color = _extract_color_from_html(html)
-        if not sizes:
-            sizes = _extract_sizes_from_html(html)
-            if sizes and not available_sizes:
-                available_sizes = sizes  # HTML 由来の在庫は不明のため同一扱い
+        if html:
+            details_text = _extract_details_from_html(html)
+            if details_text:
+                description_en = (description_en + "\n\n" + details_text).strip()
+                if not season:
+                    season = _extract_season(details_text)
+            if not color:
+                color = _extract_color_from_html(html)
+            if not sizes:
+                sizes = _extract_sizes_from_html(html)
+                if sizes and not available_sizes:
+                    available_sizes = sizes
         time.sleep(0.3)  # レート制限対策
 
     # description_en に "Sku: XXX" が明記されていれば、それを優先（variant SKU より正確）

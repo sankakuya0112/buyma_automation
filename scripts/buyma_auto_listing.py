@@ -777,15 +777,18 @@ def login(page, email, password):
     page.fill('input[name="txtLoginPass"]', password)
     human_delay(0.5, 1.0)
     page.click('input[id="login_do"]')
-    # BUYMA はログイン後 WebSocket/polling で常時通信があり networkidle に到達
-    # しないことがある。load 到達で十分とみなし、タイムアウトしても先に進む。
+    # BUYMA はログイン後 WebSocket/polling で常時通信があり networkidle に
+    # 到達しないことがある。signin URL から離れることをもって成功とみなす。
     try:
-        page.wait_for_load_state("load", timeout=15000)
+        page.wait_for_url(
+            lambda url: ("signin" not in url) and ("login" not in url),
+            timeout=30000,
+        )
     except Exception:
         pass
-    human_delay(1.5, 2.5)
+    human_delay(1.0, 2.0)
     if "signin" in page.url or "login" in page.url:
-        print("  ❌ ログイン失敗"); return False
+        print(f"  ❌ ログイン失敗 (URL={page.url})"); return False
     print("  ✅ ログイン成功"); return True
 
 

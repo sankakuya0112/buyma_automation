@@ -385,6 +385,54 @@ def load_brands():
     return {"brands": {}, "unregistered": [], "auto_lookup_enabled": True}
 
 
+def load_tags():
+    """data/tags.json からタグ付与ルールを読み込む。無ければ空ルール。"""
+    path = os.path.join(DATA_DIR, "tags.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data.setdefault("rules", [])
+        return data
+    return {"rules": []}
+
+
+def determine_tags(product, tag_rules):
+    """商品情報から付与すべき BUYMA タグのリストを返す。
+
+    ルール形式: `tag_rules["rules"]` の各要素が
+      - product_types (任意): 対象カテゴリ (大文字、空なら全カテゴリ)
+      - match_any: これらのキーワードのいずれかが含まれること (必須)
+      - exclude_any (任意): これらのキーワードが含まれていたら除外
+    を持ち、条件を満たせば tag を付ける。
+
+    誤タグで出品取り下げのリスクがあるため、保守的に「明確な根拠がある」
+    ケースのみ付与する Phase A 設計。
+    """
+    pt_upper = (product.get("product_type") or "").strip().upper()
+    haystack = " ".join([
+        product.get("title") or "",
+        product.get("description_en") or "",
+    ]).lower()
+
+    selected = []
+    for rule in tag_rules.get("rules", []):
+        allowed = [t.upper() for t in rule.get("product_types", [])]
+        if allowed and pt_upper not in allowed:
+            continue
+        incl = [kw.lower() for kw in rule.get("match_any", [])]
+        if not incl:
+            continue  # 保険: include 指定が無ければ付けない
+        if not any(kw in haystack for kw in incl):
+            continue
+        excl = [kw.lower() for kw in rule.get("exclude_any", [])]
+        if any(kw in haystack for kw in excl):
+            continue
+        tag = rule.get("tag")
+        if tag and tag not in selected:
+            selected.append(tag)
+    return selected
+
+
 def save_brands(data):
     path = os.path.join(DATA_DIR, "brands.json")
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -1498,6 +1546,75 @@ def set_season(page, season):
     print(f"    🗓️ シーズン: 候補該当なし ({season})")
 
 
+def set_tags(page, tags):
+    """BUYMA 出品フォームのタグモーダルを開いて指定タグをチェック → 保存する。
+
+    tags: 付与したいタグ文字列のリスト(例 ["レザー(本革)", "スエード"])。
+          空リストなら何もしない。
+    タグ UI は「一覧からタグを選択」リンクを押すとダイアログが開き、
+    <label class="bmm-c-checkbox--tag"> に <span class="bmm-c-checkbox__body">
+    でタグ名が表示されている。チェック後「選択したタグを設定」ボタンで確定。
+    """
+    if not tags:
+        print(f"    🏷️ タグ: 付与対象なし")
+        return
+
+    _scroll_through_page(page, chunks=8)
+
+    # 1) モーダルを開く
+    open_sel = 'a:has-text("一覧からタグを選択"), button:has-text("一覧からタグを選択")'
+    try:
+        opener = page.locator(open_sel).first
+        opener.scroll_into_view_if_needed(timeout=2000)
+        opener.click(timeout=3000)
+    except Exception as e:
+        print(f"    🏷️ タグモーダル open 失敗: {e}")
+        return
+
+    # モーダル(チェックボックス群)の出現を待つ
+    try:
+        page.wait_for_selector(
+            'label.bmm-c-checkbox--tag, .sell-tag-group__body',
+            timeout=5000, state="visible",
+        )
+        time.sleep(0.3)
+    except Exception as e:
+        print(f"    🏷️ タグモーダルが開かない: {e}")
+        return
+
+    # 2) 各タグのチェックボックスを click
+    results = []
+    for tag_text in tags:
+        outcome = page.evaluate(f"""(function(){{
+            var target = {json.dumps(tag_text)};
+            var labels = document.querySelectorAll('label.bmm-c-checkbox--tag');
+            for (var i = 0; i < labels.length; i++) {{
+                var body = labels[i].querySelector('.bmm-c-checkbox__body');
+                if (!body) continue;
+                if ((body.textContent || '').trim() !== target) continue;
+                var inp = labels[i].querySelector('input[type="checkbox"]');
+                if (!inp) return 'no_input';
+                if (inp.checked) return 'already';
+                labels[i].click();
+                return 'clicked';
+            }}
+            return 'not_found';
+        }})()""")
+        results.append(f"{tag_text}={outcome}")
+        time.sleep(0.15)
+
+    # 3) 「選択したタグを設定」で確定
+    save_sel = 'button:has-text("選択したタグを設定")'
+    try:
+        page.locator(save_sel).first.click(timeout=3000)
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"    🏷️ タグ保存ボタン失敗: {e}")
+        return
+
+    print(f"    🏷️ タグ: {results}")
+
+
 def set_purchase_deadline(page):
     """購入期限を90日後に設定"""
     deadline = (datetime.now() + timedelta(days=90)).strftime("%Y/%m/%d")
@@ -2231,7 +2348,7 @@ def save_draft(page):
 
 # ========== 1商品の処理 ==========
 
-def process_product(page, product, draft_mode, brands_data, cat_data):
+def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=None):
     title   = product["title"]
     vendor  = product["vendor"]
     price   = int(product["recommended_price"])
@@ -2313,6 +2430,14 @@ def process_product(page, product, draft_mode, brands_data, cat_data):
         stock_qty_per_size=1,
     ); human_delay(0.5, 1.0)
 
+    # 11b. タグ (data/tags.json のルールで自動判定 → チェックして保存)
+    if tag_rules is not None:
+        tags_to_apply = determine_tags(product, tag_rules)
+        if tags_to_apply:
+            set_tags(page, tags_to_apply); human_delay(0.3, 0.6)
+        else:
+            print(f"    🏷️ タグ: 付与対象なし")
+
     # 12. 出品メモ・買付先メモ
     set_purchase_memo(page, product); human_delay(0.3, 0.6)
 
@@ -2382,6 +2507,7 @@ def main():
     config = load_config()
     cat_data = load_categories()
     brands_data = load_brands()
+    tag_rules = load_tags()
     products = load_products(max_price=max_price, min_profit=min_profit)
     if not products:
         print("❌ 商品なし"); sys.exit(1)
@@ -2423,7 +2549,7 @@ def main():
         for i, product in enumerate(target, 1):
             print(f"\n{'─'*40} [{i}/{total}] {'─'*5}")
             try:
-                status, item_id = process_product(page, product, draft_mode, brands_data, cat_data)
+                status, item_id = process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=tag_rules)
             except Exception as e:
                 import traceback; traceback.print_exc()
                 status, item_id = "error", None

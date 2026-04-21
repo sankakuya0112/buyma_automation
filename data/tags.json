@@ -1,0 +1,52 @@
+{
+  "_comment": "BUYMA タグ自動付与ルール (Phase A: 高信頼度の素材系のみ)。match_any のキーワードが title/description_en/body_html のいずれかに含まれ、かつ exclude_any のいずれも含まれない場合にタグを付与する。大文字小文字は問わない。product_types を指定した場合はそのカテゴリの商品にのみ適用。",
+  "rules": [
+    {
+      "tag": "レザー(本革)",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": [
+        "leather",
+        "calf leather",
+        "calfskin",
+        "lambskin",
+        "goatskin",
+        "cowhide",
+        "napa leather",
+        "nappa leather"
+      ],
+      "exclude_any": [
+        "faux leather",
+        "fake leather",
+        "eco leather",
+        "vegan leather",
+        "pu leather",
+        "synthetic leather",
+        "bonded leather"
+      ]
+    },
+    {
+      "tag": "スエード",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["suede"],
+      "exclude_any": ["faux suede", "fake suede"]
+    },
+    {
+      "tag": "エナメル",
+      "product_types": ["FOOTWEAR", "BAGS", "ACCESSORIES"],
+      "match_any": ["patent leather", "patent-leather"],
+      "exclude_any": []
+    },
+    {
+      "tag": "フェイクレザー",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": [
+        "faux leather",
+        "vegan leather",
+        "eco leather",
+        "pu leather",
+        "synthetic leather"
+      ],
+      "exclude_any": []
+    }
+  ]
+}

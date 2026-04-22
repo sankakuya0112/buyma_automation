@@ -74,22 +74,55 @@ def print_item(idx, n_total, row, min_margin=None):
     ship = _fmt_yen(row.get("shipping_jpy"))
     ctax = _fmt_yen(row.get("consumption_tax_jpy"))
     cost = _fmt_yen(row.get("total_cost_jpy"))
-    sell = _fmt_yen(row.get("selling_price_jpy"))
-    profit = _fmt_yen(row.get("profit_jpy"))
-    margin = float(row.get("margin_pct") or 0)
+    sell_target = _fmt_yen(row.get("selling_price_jpy"))
+    profit_target = _fmt_yen(row.get("profit_jpy"))
+    margin_target = float(row.get("margin_pct") or 0)
     comm = _fmt_yen(row.get("buyma_commission_jpy"))
     pay = _fmt_yen(row.get("payment_commission_jpy"))
 
+    # Phase 2a 追加: 市場データ + 最終決定
+    action = row.get("action") or "list"
+    reason = row.get("decision_reason") or row.get("skip_reason") or ""
+    market_median = row.get("market_median_jpy") or ""
+    market_n = row.get("market_sample_count") or "0"
+    breakeven = row.get("breakeven_price_jpy") or ""
+    floor = row.get("floor_profit_jpy") or ""
+    final_price = row.get("final_price_jpy") or ""
+    exp_profit = row.get("expected_profit_jpy") or ""
+    exp_margin = float(row.get("expected_margin_pct") or 0)
+
+    # effective 利益率判定
+    effective_margin = exp_margin if exp_profit else margin_target
     highlight = ""
-    if min_margin is not None and margin < min_margin:
+    if min_margin is not None and effective_margin < min_margin:
         highlight = "  ⚠️ 低利益率"
 
     print("=" * 60)
-    print(f"[{idx}/{n_total}] {vendor} - {title} ({pt}){highlight}")
+    action_label = f"[{action.upper()}]" if action != "list" else ""
+    print(f"[{idx}/{n_total}] {vendor} - {title} ({pt}) {action_label}{highlight}")
     print(f"  仕入: {eur} → {src_jpy} (rate={rate})")
     print(f"     VAT還付 -{vat}  関税({duty_rate}) +{customs}  送料 +{ship}  消費税 +{ctax}")
     print(f"     ──── 原価 {cost} ────")
-    print(f"  売価 {sell}  |  手数料 {comm} + {pay}  |  利益 {profit}  |  利益率 {_fmt_pct(margin)}")
+    print(f"  目標売価 (25%): {sell_target}  |  利益 {profit_target} ({_fmt_pct(margin_target)})")
+
+    if market_median:
+        try:
+            mm = int(float(market_median))
+            n = int(float(market_n))
+            print(f"  市場相場: 中央値 {_fmt_yen(mm)} (n={n})")
+        except (ValueError, TypeError):
+            pass
+
+    if breakeven:
+        print(f"  原価下限 (breakeven): {_fmt_yen(breakeven)}  |  最低利益 floor {_fmt_yen(floor)}")
+
+    if action == "skip":
+        print(f"  ⏭ SKIP: {reason}")
+    elif final_price and str(final_price) != str(row.get("selling_price_jpy") or ""):
+        print(f"  ✅ 最終売価: {_fmt_yen(final_price)} ({reason})")
+        print(f"      期待利益 {_fmt_yen(exp_profit)} ({_fmt_pct(exp_margin)})  |  手数料 {comm} + {pay}")
+    else:
+        print(f"  ✅ 最終売価: {_fmt_yen(final_price or row.get('selling_price_jpy'))} ({reason or 'target'})  |  手数料 {comm} + {pay}")
 
 
 def print_summary(rows):
@@ -97,15 +130,50 @@ def print_summary(rows):
         print("⚠️ データなし")
         return
 
-    profits = [float(r.get("profit_jpy") or 0) for r in rows]
-    margins = [float(r.get("margin_pct") or 0) for r in rows]
-    sells = [float(r.get("selling_price_jpy") or 0) for r in rows]
-    costs = [float(r.get("total_cost_jpy") or 0) for r in rows]
+    # list と skip を分類
+    listable = [r for r in rows if (r.get("action") or "list") == "list"]
+    skipped = [r for r in rows if (r.get("action") or "list") == "skip"]
+
+    # 出品対象での集計 (expected_* を優先し、無ければ target の値)
+    def _profit(r):
+        ep = r.get("expected_profit_jpy")
+        if ep not in (None, "", "0"):
+            try:
+                return float(ep)
+            except ValueError:
+                pass
+        return float(r.get("profit_jpy") or 0)
+
+    def _margin(r):
+        em = r.get("expected_margin_pct")
+        if em not in (None, "", "0"):
+            try:
+                return float(em)
+            except ValueError:
+                pass
+        return float(r.get("margin_pct") or 0)
+
+    def _price(r):
+        fp = r.get("final_price_jpy")
+        if fp not in (None, "", "0"):
+            try:
+                return float(fp)
+            except ValueError:
+                pass
+        return float(r.get("selling_price_jpy") or 0)
+
+    profits = [_profit(r) for r in listable] or [0]
+    margins = [_margin(r) for r in listable] or [0]
+    sells = [_price(r) for r in listable] or [0]
+    costs = [float(r.get("total_cost_jpy") or 0) for r in listable] or [0]
+
+    market_n = sum(1 for r in rows if (r.get("market_median_jpy") or "").strip())
 
     print("=" * 60)
     print("📊 サマリ")
     print("=" * 60)
-    print(f"  件数            : {len(rows)}")
+    print(f"  件数            : 合計 {len(rows)}  (出品可 {len(listable)} / スキップ {len(skipped)})")
+    print(f"  市場データあり  : {market_n} / {len(rows)}")
     print(f"  利益額 中央値   : {_fmt_yen(statistics.median(profits))}")
     print(f"  利益額 平均値   : {_fmt_yen(statistics.mean(profits))}")
     print(f"  利益額 最小/最大: {_fmt_yen(min(profits))} / {_fmt_yen(max(profits))}")
@@ -115,21 +183,32 @@ def print_summary(rows):
     print(f"  売価 最小/最大  : {_fmt_yen(min(sells))} / {_fmt_yen(max(sells))}")
     print(f"  原価 中央値     : {_fmt_yen(statistics.median(costs))}")
 
+    # スキップ理由内訳
+    if skipped:
+        reasons = {}
+        for r in skipped:
+            reason = r.get("skip_reason") or r.get("decision_reason") or "unknown"
+            reasons[reason] = reasons.get(reason, 0) + 1
+        print("\n  ⏭ スキップ理由:")
+        for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
+            print(f"    {reason}: {count} 件")
+
     # カテゴリ別
     by_type = {}
-    for r in rows:
+    for r in listable:
         pt = r.get("product_type") or "?"
         by_type.setdefault(pt, []).append(r)
-    print("\n  カテゴリ別:")
-    for pt in sorted(by_type):
-        items = by_type[pt]
-        p = [float(r.get("profit_jpy") or 0) for r in items]
-        m = [float(r.get("margin_pct") or 0) for r in items]
-        print(
-            f"    {pt:15s} n={len(items):3d}  "
-            f"利益中央値 {_fmt_yen(statistics.median(p)):>10s}  "
-            f"利益率中央値 {_fmt_pct(statistics.median(m)):>7s}"
-        )
+    if by_type:
+        print("\n  カテゴリ別 (出品可のみ):")
+        for pt in sorted(by_type):
+            items = by_type[pt]
+            p = [_profit(r) for r in items]
+            m = [_margin(r) for r in items]
+            print(
+                f"    {pt:15s} n={len(items):3d}  "
+                f"利益中央値 {_fmt_yen(statistics.median(p)):>10s}  "
+                f"利益率中央値 {_fmt_pct(statistics.median(m)):>7s}"
+            )
 
 
 def save_audit_csv(rows, out_path):

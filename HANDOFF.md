@@ -1,4 +1,4 @@
-# 引き継ぎノート（2026-04-20 セッション終了時点 / 4回目更新）
+# 引き継ぎノート（2026-04-21 セッション終了時点 / 5回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md
@@ -59,7 +59,7 @@
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: `1d3bfa2 fix(size): FOOTWEAR の「参考日本サイズ」を cm 単位に変換するマッピングを追加`
+- 直近コミット: `f9a0c84 feat(tags): Phase B 拡張 (~30 ルール) + カテゴリ別タグマスター追加`
 - 作業ツリー: クリーン（push 済み）
 
 ---
@@ -161,7 +161,55 @@
 
 ---
 
-## 🔑 今セッション(2026-04-20)で追加された知見
+## 🔑 今セッション(2026-04-21)で追加された知見
+
+### 1. DeepL 翻訳統合 (.env から自動ロード)
+- buyma_auto_listing.py 起動時に load_dotenv() を呼び DEEPL_API_KEY を読込
+- DeepL Free プラン (50万字/月) でも品質十分。商品コメントが自然な日本語に
+- _strip_accents() が NFD 分解で 濁点/半濁点 (U+3099/U+309A) まで剥がす
+  バグを修正 (パンプス → ハンフス, ロゴ → ロコ になっていた)
+  → JP combining marks をホワイトリストで保持 + NFC 再結合 (8159b84)
+
+### 2. シーズン dropdown locator のリライト
+- BUYMA は「シーズン」見出しを <p class="bmm-c-summary__ttl"> に置き、
+  dropdown は兄弟の .bmm-l-col-9 カラム。従来は近い親しか見ていなかった
+  ため見つからず → 厳密 textContent 一致 + 親を 8 階層登って .Select を
+  含む祖先で抽出する方式に変更 (ac6d9d3)
+- 候補ラベルは AW のみ年跨ぎ "2025-2026 AW" を最優先候補に追加 (4dd4fa4)
+
+### 3. タグ自動付与 (Phase A → Phase B)
+- a:has-text("一覧からタグを選択") でモーダル open、label.bmm-c-checkbox--tag
+  内 .bmm-c-checkbox__body のテキストを正規化比較してチェック
+- 全角/半角カッコ・角カッコ・空白を JS 側 norm() で揃えて誤判定を回避
+  ("レザー(本革)" vs "レザー（本革）" 問題を解決) (ac6d9d3)
+- Phase B: data/tag_reference.json にカテゴリ別タグマスターを保存
+  (FOOTWEAR/BAGS/CLOTHING)。tags.json に約 30 ルール追加: 素材 (コットン
+  /ウール/カシミヤ/シルク/リネン/デニム/ナイロン/キャンバス/サフィアーノ
+  /クロコダイル/ラムスキン等)、柄 (レオパード/ゼブラ/ストライプ/ドット
+  /花柄/カモフラージュ)、CLOTHING の袖 (ノースリーブ/半袖/長袖)、襟
+  (Vネック/タートル/クルー) (ce7661c, f9a0c84)
+- カテゴリ別 product_types で BUYMA 側に存在するタグだけ付与する仕組み
+- 適切でないタグは出品取り下げリスクがあるため曖昧判定 (無地/ヒール高さ/
+  トゥタイプ/スタイル) は意図的にスキップ
+
+### 4. baseblu スクレイパー DETAILS タブ抽出
+- body_html (DESCRIPTION タブ) にはマーケ文しか入っておらず、Sku/Season/
+  Composition は別タブの DETAILS セクションに存在 → 出品時に season=空、
+  description に "leather" 等のキーワードが無くタグ判定が動作しないバグ
+- _extract_details_from_html() で Sku/Season/Composition をラベル正規表現
+  で抽出し description_en に追記 (b932cbd)
+- 商品ページに埋込 JSON (<script>) があり regex 先頭マッチで Sku が誤抽出
+  される問題 → script/style ブロックを事前に剥がす方式に修正 (5a45f2f)
+
+### 5. ログイン timeout 対策
+- BUYMA はログイン後 WebSocket/polling で常時通信があり networkidle に
+  到達しない → load 待機にしたが今度は URL 遷移が遅く誤検知
+- 最終: page.wait_for_url(lambda url: signin/login 非含有, timeout=30s)
+  で URL 変化を待つ方式に統一 (74622a0, 742615a)
+
+---
+
+## 🔑 前セッション(2026-04-20)の知見
 
 ### 1. マルチサイズ出品(2サイズ以上)のロジックは完成
 - 行追加ボタン: 期待行数に達するまで最大2回リトライ + 実行数検証
@@ -286,11 +334,12 @@ CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクシ�
 ## 💼 開発進捗サマリ
 
 - **Phase 0（1件下書き保存）**: ✅ 完全クリア
-- **Phase 1（全フィールド正しく入力）**: ✅ 完全クリア (2026-04-20)
-  - 単一サイズ・マルチサイズ両対応
-  - CLOTHING は XS/S/M/L/XL、FOOTWEAR は cm 単位で埋まる
-  - マルチサイズ商品で下書き保存まで end-to-end 成功
-  - CDN 未ヒットブランドの DOM サジェストフォールバック実装済み
+- **Phase 1（全フィールド正しく入力）**: ✅ 完全クリア
+  - 単一サイズ・マルチサイズ両対応 / CLOTHING XS-XXL / FOOTWEAR cm
+  - DeepL 翻訳で商品コメントが自然な日本語
+  - シーズン (年跨ぎ AW 表記対応) 自動設定
+  - タグ Phase B (素材/柄/袖/襟 ~30 ルール) で閲覧率 UP 対策
+  - CDN 未ヒットブランドの DOM サジェストフォールバック
 - **Phase 2（複数件・本公開）**: 未着手
 
 ---

@@ -1,4 +1,4 @@
-# 引き継ぎノート（2026-04-21 セッション終了時点 / 5回目更新）
+# 引き継ぎノート（2026-04-22 セッション終了時点 / 6回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md
@@ -59,7 +59,7 @@
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: `f9a0c84 feat(tags): Phase B 拡張 (~30 ルール) + カテゴリ別タグマスター追加`
+- 直近コミット: Phase 2-3 フレームワーク一括実装
 - 作業ツリー: クリーン（push 済み）
 
 ---
@@ -135,33 +135,105 @@
 
 ## 🎯 次セッションで優先して着手すべきこと
 
-### 候補A: 複数件連続出品の安定性テスト (Phase 2 入口)
-- `--limit 3〜5` で連続出品
-- 途中失敗時に次商品へ進めるか (現状 brand_not_found などは PERMANENT_SKIP
-  扱いで進む想定だが、連続実行での実機未検証)
-- progress.json (succeeded / failed) の整合性
-- 画像アップロード 403 や タイムアウト時の挙動
-- 下書き連投時に BUYMA の rate limit が出ないか
+Phase 2-3 のフレームワークは完成しているので、**Mac での順次検証 → 修正
+ループ** がメイン。
 
-### 候補B: 本公開フロー検証
-- `publish_product()` の通し検証
-- `--draft` なしで 1件出品 → すぐ削除の動作確認
-- 公開時の必須フィールド validation を全部通すか
+### 候補A: 価格内訳レビュー (最優先)
+1. `python3 scripts/audit_pricing.py --summary` で現状の利益分布を確認
+2. 必要なら `app/core/pricing.py` のパラメータ調整 (為替/関税/送料/floor)
 
-### 候補C: peek 診断ログ整理(小回り修正)
-- `set_color()` 内の peek JS を削除、または Playwright native で書き直し
-- `_click_select_option` 側に成功時のデバッグ出力を追加(現在は失敗時しか出ない)
+### 候補B: 市場価格スクレイパー試走
+1. `python3 scripts/fetch_buyma_market_prices.py --brand "Gucci" --keyword "marmont"`
+   で単発取得が動くか確認
+2. 動かなければ HTML 抽出 regex の調整
+3. 動けば CSV 全件で `--csv outputs/reports/...profitable...csv` 実行
 
-### 候補D: 運用スクリプト整備
-- 日次バッチ実行スクリプト(スクレイピング→フィルタ→出品)
-- 失敗時の retry / ロギング
-- 公開済み出品の価格更新・在庫追従
+### 候補C: 連続出品テスト (3-5 件)
+1. `python3 scripts/buyma_auto_listing.py --draft --from 1 --limit 3`
+2. 連続出品の安定性 / retry 挙動 / progress.json の記録 を観察
 
-**おすすめは 候補A → 候補B の順**。まず下書き連続で安定性を見てから公開に進む。
+### 候補D: 在庫チェック試走
+1. `python3 scripts/check_inventory.py --dry-run --limit 5` で動作確認
+2. sold_out 検出ができるかを実 baseblu API で確認
+
+### 候補E: 本公開 1 件テスト
+- Mac で `--publish --from N --limit 1 --hold` → YES 入力 → 1 件公開 → すぐ削除
+- 公開フロー全体の通しを確認
+
+### 候補F: 在庫停止 / 価格更新 UI 実装
+- `check_inventory.py` の `stop_buyma_listing()` を実装
+- `update_listed_prices.py` の `update_listing_price()` を実装
+- BUYMA 管理画面の UI セレクタを確認しながら
+
+### 候補G: 画像加工 (要競合調査)
+- ユーザが上位ショッパーを観察してロゴ/フレームの実態を判断
+- 必要なら Pillow ベースで自動ロゴ合成を実装
+
+### 候補H: 対応サイト追加
+- mytheresa / farfetch / cettire / italist
+- baseblu スクレイパーをテンプレートに各サイトの Shopify or 独自 API を解析
+- 1 サイト 1 セッション規模
+
+**おすすめは A → B → C → D → E** の順。本公開に進む前に価格と相場を確実に。
 
 ---
 
-## 🔑 今セッション(2026-04-21)で追加された知見
+## 🔑 今セッション(2026-04-22)で追加された Phase 2-3 フレームワーク
+
+一括実装した 10+ 機能の概要。いずれも Mac 上でのパラメータ調整/実機検証が
+必要な「仕組みだけ先行完成」状態。
+
+### Phase 2a: 市場連動価格 + 赤字回避スキップ
+- `app/core/pricing.py` に `decide_final_price()` / `MarketStats` /
+  `FinalPriceDecision` 追加。最低利益 floor は `max(¥5,000, 売価×5%)`、
+  相場中央値 -5% を基本売価、相場が breakeven を割れば skip。
+- `scripts/fetch_buyma_market_prices.py` 新規: BUYMA 検索結果を Playwright
+  でスクレイプし同ブランド相場の median/min/max を JSON に保存。
+  `data/market_cache/` に 24h TTL キャッシュ。
+- `scripts/filter_baseblu_profitable.py`: 市場データを読み込み `action` /
+  `skip_reason` / `final_price_jpy` / `breakeven_price_jpy` /
+  `market_median_jpy` / `expected_profit_jpy` 等を CSV に追加出力。
+- `scripts/buyma_auto_listing.py`: CSV から `final_price_jpy` を優先参照、
+  `action=skip` は対象外にする。連続出品時 `timeout/error` で最大 2 回
+  retry する処理を追加。
+- `scripts/audit_pricing.py`: 市場情報と最終決定を内訳に併記する
+  レビューモードに強化。
+
+### Phase 2-1B: 本公開フロー安全ガード
+- `--publish` を明示しない限り自動で `--draft` 扱い。
+- `--publish` 指定時は `YES` タイプ確認必須 (バイパスは `--yes`)。
+
+### Phase 2-2: 在庫自動チェック
+- `scripts/check_inventory.py` 新規: 過去の `*_auto_listing_results.csv`
+  から item_id + handle を取り出し、baseblu の /products/{handle}.json で
+  在庫確認。売切 item は `data/inventory_status.json` に sold_out 記録。
+  BUYMA 側の出品停止 UI 操作は **スケルトン**、初期運用では `--dry-run`
+  で検出 → 手動停止 推奨。
+
+### Phase 2-3: 価格追従
+- `scripts/update_listed_prices.py` 新規: 出品中商品を baseblu 最新価格で
+  再評価し、売価差分 ±¥3,000 以上を候補として表示。BUYMA 側の価格更新
+  UI 操作はスケルトン。history は `data/price_history.json` に保存。
+
+### Phase 3-2: 画像加工 (リサーチのみ)
+- `docs/research/competitor_image_practices.md` 新規: 競合ショッパーの
+  ロゴ/フレーム/透かし実態を Claude 知見 + ユーザ目視で検証する枠組みを
+  ノート化。ユーザが上位ショッパーを観察して判断決定する前提。
+  実装はユーザ確認後に改めて着手。
+
+### Phase 3-3: 売上分析
+- `scripts/sales_report.py` 新規: ステータス別/ブランド別/売価帯別/
+  カテゴリ別の出品集計 + 在庫/価格追従の状況を CLI 出力。`--csv` で
+  レポート CSV 出力可。実販売データ (BUYMA 管理画面) は未取得、
+  「出品できた」ベースの集計。
+
+### Phase 3-1: 対応サイト追加 (未着手・別タスク)
+- mytheresa / farfetch / cettire / italist は各 1 セッション規模。
+  本セッションでは着手せず。
+
+---
+
+## 🔑 前セッション(2026-04-21)の知見
 
 ### 1. DeepL 翻訳統合 (.env から自動ロード)
 - buyma_auto_listing.py 起動時に load_dotenv() を呼び DEEPL_API_KEY を読込
@@ -340,7 +412,17 @@ CLAUDE.md のヘッダー「🔑 BUYMA 出品フォームの仕様」セクシ�
   - シーズン (年跨ぎ AW 表記対応) 自動設定
   - タグ Phase B (素材/柄/袖/襟 ~30 ルール) で閲覧率 UP 対策
   - CDN 未ヒットブランドの DOM サジェストフォールバック
-- **Phase 2（複数件・本公開）**: 未着手
+- **Phase 2（複数件・本公開）**: 🟡 フレームワーク完成、Mac 検証待ち
+  - 2a 市場連動価格 + 赤字回避: 実装済 (要 Mac で `fetch_buyma_market_prices` 試走)
+  - 2-1A 連続出品 retry: 実装済 (実機での挙動観察待ち)
+  - 2-1B 本公開ガード: 実装済 (--publish + YES 確認)
+  - 2-2 在庫自動チェック: 検出ロジック実装、停止 UI スケルトン
+  - 2-3 価格追従: 検出ロジック実装、更新 UI スケルトン
+  - 2-4 エラー通知: 未着手
+- **Phase 3（スケール拡大）**: 🟡 部分着手
+  - 3-1 対応サイト追加: 未着手 (各サイト 1 セッション規模)
+  - 3-2 画像加工: 競合調査ノートのみ、実装はユーザ確認後
+  - 3-3 売上分析: 簡易レポート実装済
 
 ---
 

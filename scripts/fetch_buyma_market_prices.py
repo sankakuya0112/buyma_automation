@@ -112,35 +112,54 @@ def build_search_url(brand: str, keyword: str) -> str:
 def extract_prices_from_html(html: str) -> list[int]:
     """検索結果 HTML から price (int 円) を抽出する。
 
-    BUYMA の商品カードは変更されがちなので複数 selector を試す。
-    ただし単純な `¥1,234` regex では送料・ポイント・クーポン等の数値まで
-    拾ってしまうため、優先順位:
-      1. class 名 Product_price / item_price / Item_price 等を含む要素の中身
-      2. data 属性 data-price
-      3. 最終フォールバック: ¥表記 全部 (外れ値除去付き)
+    BUYMA の確認済み class 名 (2026-04 時点):
+      - product_price / product_price_detail  ← 今の実売価 (採用)
+      - Price_Txt                             ← 上と同じものを囲む子要素 (採用)
+      - price_reference                       ← 取消線の旧価格 (除外)
+      - coupon-price                          ← クーポン適用後の参考価格 (除外)
+      - Price_Percent_detail                  ← 割引率 % (除外)
+
+    アプローチ:
+      1. 旧価格系 class (price_reference / coupon-price 等) の要素を HTML から削除
+      2. product_price class を優先、次に Price_Txt の順で price を抽出
+      3. 1 商品あたり 1 価格になるよう「最初に見つかった数値」のみ採用
+      4. ブランド品の現実レンジ (¥15,000-5,000 万) で sanity check
     """
+    # --- Step 1: 除外 class の要素を削除 ---
+    exclude_pat = (
+        r'<(?P<tag>[a-zA-Z0-9]+)[^>]*class="[^"]*'
+        r'(?:price_reference|coupon-price|coupon_price|price_original|Price_Percent)'
+        r'[^"]*"[^>]*>.{0,500}?</(?P=tag)>'
+    )
+    html_clean = re.sub(exclude_pat, ' ', html, flags=re.IGNORECASE | re.DOTALL)
+
     candidates: list[int] = []
 
-    # 1. class 名に price を含む要素のテキストを狙い撃ち
-    class_patterns = [
-        r'<[^>]*class="[^"]*(?:Product_price|item-price|item_price|Item_price|Price_price|ProductItem__price)[^"]*"[^>]*>([^<]{1,60})</',
-        r'<[^>]*class="[^"]*(?:price)[^"]*"[^>]*>([^<]{1,40})</',
+    # --- Step 2: product_price を優先狙い撃ち ---
+    # nested タグに対応するため lazy match で 500 文字まで許容
+    primary_patterns = [
+        r'<[^>]*class="[^"]*product_price[^"]*"[^>]*>(.{0,500}?)</',
+        r'<[^>]*class="[^"]*Price_Txt[^"]*"[^>]*>(.{0,500}?)</',
     ]
-    for pat in class_patterns:
-        for m in re.findall(pat, html, flags=re.IGNORECASE):
-            # 中身から ¥数値 を抽出
-            for pm in re.findall(r"([0-9][0-9,]+)", m):
+    for pat in primary_patterns:
+        matches = re.findall(pat, html_clean, flags=re.IGNORECASE | re.DOTALL)
+        if not matches:
+            continue
+        for block in matches:
+            # 1 要素あたり最初にヒットした妥当な値だけ採用
+            for pm in re.findall(r"([0-9][0-9,]{3,})", block):
                 try:
                     v = int(pm.replace(",", ""))
                 except ValueError:
                     continue
-                if 15000 <= v <= 50_000_000:  # ブランド品の現実的な範囲
+                if 15000 <= v <= 50_000_000:
                     candidates.append(v)
+                    break
         if candidates:
             return candidates
 
-    # 2. data-price
-    for m in re.findall(r'data-price="([0-9]+)"', html):
+    # --- Step 3: data-price attribute ---
+    for m in re.findall(r'data-price="([0-9]+)"', html_clean):
         try:
             v = int(m)
         except ValueError:
@@ -150,9 +169,9 @@ def extract_prices_from_html(html: str) -> list[int]:
     if candidates:
         return candidates
 
-    # 3. フォールバック: ¥XXX 全部拾って外れ値除去
+    # --- Step 4: フォールバック ¥表記全捕捉 ---
     raw: list[int] = []
-    for m in re.findall(r"¥\s*([0-9][0-9,]+)", html):
+    for m in re.findall(r"¥\s*([0-9][0-9,]+)", html_clean):
         try:
             v = int(m.replace(",", ""))
         except ValueError:

@@ -712,6 +712,7 @@ def load_products(max_price=None, min_profit=None):
     skipped_price = 0
     skipped_profit = 0
 
+    skipped_action = 0
     with open(latest_csv, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             title = (row.get("title") or "").strip()
@@ -719,16 +720,27 @@ def load_products(max_price=None, min_profit=None):
             if not title or not vendor:
                 continue
 
-            # 新カラム: selling_price_jpy / profit_jpy / total_cost_jpy / sale_price_eur
+            # Phase 2a: action='skip' の商品は出品対象外
+            action = (row.get("action") or "list").strip().lower()
+            if action == "skip":
+                skipped_action += 1
+                continue
+
+            # 最終売価: final_price_jpy があれば優先、無ければ selling_price_jpy (従来 target)
             try:
-                selling_price = int(float(row.get("selling_price_jpy") or 0))
-                profit = int(float(row.get("profit_jpy") or 0))
+                final_price = row.get("final_price_jpy") or ""
+                final_price = int(float(final_price)) if final_price else 0
+                target_price = int(float(row.get("selling_price_jpy") or 0))
+                selling_price = final_price or target_price
+                expected_profit = row.get("expected_profit_jpy") or ""
+                expected_profit = int(float(expected_profit)) if expected_profit else 0
+                profit = expected_profit or int(float(row.get("profit_jpy") or 0))
                 total_cost = int(float(row.get("total_cost_jpy") or 0))
                 sale_price_eur = row.get("sale_price_eur") or row.get("sale_price") or "0"
             except (ValueError, TypeError):
                 continue
 
-            # フィルタ
+            # CLI フィルタ
             if max_price is not None and selling_price > max_price:
                 skipped_price += 1
                 continue
@@ -740,10 +752,16 @@ def load_products(max_price=None, min_profit=None):
                 "title": title,
                 "vendor": vendor,
                 "recommended_price": str(selling_price),
+                "target_price_jpy": str(target_price),
+                "final_price_jpy": str(final_price) if final_price else "",
                 "sale_price_eur": str(sale_price_eur),
                 "total_cost_jpy": str(total_cost),
-                "estimated_profit_jpy": str(profit),  # 後方互換用エイリアス
+                "estimated_profit_jpy": str(profit),
                 "profit_jpy": str(profit),
+                "expected_margin_pct": row.get("expected_margin_pct") or row.get("margin_pct") or "",
+                "market_median_jpy": row.get("market_median_jpy") or "",
+                "market_sample_count": row.get("market_sample_count") or "",
+                "decision_reason": row.get("decision_reason") or "no_market_data",
                 "sku": (row.get("sku") or "").strip(),
                 "product_type": (row.get("product_type") or "").strip(),
                 "color": (row.get("color") or "").strip(),
@@ -760,6 +778,8 @@ def load_products(max_price=None, min_profit=None):
     products.sort(key=lambda p: int(p.get("profit_jpy", 0) or 0), reverse=True)
 
     print(f"✅ 商品データ: {len(products)} 件")
+    if skipped_action:
+        print(f"   ⏭ 市場判定 skip: {skipped_action} 件 (赤字回避等)")
     if skipped_price or skipped_profit:
         print(f"   スキップ: 価格上限超過 {skipped_price} 件 / 利益不足 {skipped_profit} 件")
     return products
@@ -2503,7 +2523,12 @@ def main():
     test_mode   = "--test"   in args
     resume_mode = "--resume" in args
     draft_mode  = "--draft"  in args
+    publish_mode = "--publish" in args
+    # 安全策: 明示的に --publish を指定しない限り draft 扱い
+    if not draft_mode and not publish_mode:
+        draft_mode = True
     hold_mode   = "--hold"   in args
+    skip_confirm = "--yes" in args
     start_from  = 1
     limit_count = None
     max_price = None
@@ -2526,8 +2551,23 @@ def main():
         except: print("❌ --min-profit の後に数字を指定"); sys.exit(1)
 
     print("=" * 50)
-    print(f"🛒 BUYMA自動出品 v4.2 ({'下書き' if draft_mode else '公開'}{'・テスト' if test_mode else ''})")
+    mode_label = "下書き" if draft_mode else "🚨 本公開"
+    print(f"🛒 BUYMA自動出品 v4.2 ({mode_label}{'・テスト' if test_mode else ''})")
     print("=" * 50)
+
+    # 本公開モードの安全確認 (--yes でスキップ可)
+    if publish_mode and not skip_confirm:
+        n = limit_count or "全件"
+        print("⚠️ 本公開モードです。実際に BUYMA 上で公開されます。")
+        print(f"   対象: {start_from} 番目から {n} 件")
+        print("   この操作は取り消せません。続行するには 'YES' と入力してください。")
+        try:
+            answer = input("   > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer != "YES":
+            print("❌ 中止しました")
+            sys.exit(0)
     if max_price:
         print(f"   フィルタ: 販売価格 ≤ ¥{max_price:,}")
     if min_profit:
@@ -2577,11 +2617,18 @@ def main():
         total = len(target)
         for i, product in enumerate(target, 1):
             print(f"\n{'─'*40} [{i}/{total}] {'─'*5}")
-            try:
-                status, item_id = process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=tag_rules)
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                status, item_id = "error", None
+            # retry 戦略: RETRIABLE なエラー (timeout/error) は最大 2 回まで再試行
+            status, item_id = None, None
+            for attempt in range(1, 3):
+                try:
+                    status, item_id = process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=tag_rules)
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    status, item_id = "error", None
+                if status not in ("timeout", "error") or attempt >= 2:
+                    break
+                print(f"  🔁 retry {attempt}/2 (status={status})")
+                time.sleep(random.uniform(5, 10))
 
             results.append({
                 "status": status, "item_id": item_id or "",

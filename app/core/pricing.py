@@ -188,6 +188,186 @@ class PricingResult:
 
 
 # ---------------------------------------------------------------------------
+# 市場連動価格決定 (Phase 2a)
+# ---------------------------------------------------------------------------
+
+# 最低利益ライン: max(MIN_PROFIT_FLOOR_JPY, MIN_PROFIT_FLOOR_PCT × 売価)
+MIN_PROFIT_FLOOR_JPY = 5000           # 絶対額の下限 (¥5,000)
+MIN_PROFIT_FLOOR_PCT = 0.05           # 売価比の下限 (5%)
+MARKET_POSITION_DISCOUNT = 0.05       # 相場中央値から下げる割合 (5% 安く)
+MIN_MARKET_SAMPLES = 3                # 相場判定に必要な最低件数
+
+
+@dataclass
+class MarketStats:
+    """BUYMA 市場相場の統計値。`fetch_buyma_market_prices.py` の出力を流し込む。"""
+
+    sample_count: int = 0                            # 取得した出品件数
+    median_jpy: Optional[int] = None                 # 売価中央値
+    min_jpy: Optional[int] = None                    # 最安値
+    max_jpy: Optional[int] = None                    # 最高値
+
+    def is_reliable(self, min_samples: int = MIN_MARKET_SAMPLES) -> bool:
+        """中央値を信頼に足る件数が揃っているか。"""
+        return self.sample_count >= min_samples and self.median_jpy is not None
+
+
+@dataclass
+class FinalPriceDecision:
+    """最終価格決定の結果。"""
+
+    action: str                                       # 'list' | 'skip'
+    reason: str                                       # スキップ/採用理由 (例: 'below_breakeven', 'market_aware', 'no_market_data')
+    final_price_jpy: Optional[int]                    # 最終売価 (skip 時 None)
+    target_price_jpy: int                             # 25% 利益率での目標売価
+    breakeven_price_jpy: int                          # 原価 + 最低利益 floor を満たす最低売価
+    floor_profit_jpy: int                             # 適用された最低利益額
+    market_median_jpy: Optional[int] = None
+    market_sample_count: int = 0
+    expected_profit_jpy: int = 0                      # 最終売価で見込まれる純利益
+    expected_margin_pct: float = 0.0                  # 最終売価での利益率
+
+
+def _profit_at_price(
+    selling_price_jpy: int,
+    total_cost_jpy: float,
+    buyma_commission_rate: float,
+    payment_commission_rate: float,
+) -> float:
+    """指定売価での純利益を計算する (手数料控除後)。"""
+    fees = selling_price_jpy * (buyma_commission_rate + payment_commission_rate)
+    return selling_price_jpy - fees - total_cost_jpy
+
+
+def _floor_profit(selling_price_jpy: int) -> int:
+    """売価に応じた最低利益ライン: max(¥5000, 売価×5%)。"""
+    pct_floor = selling_price_jpy * MIN_PROFIT_FLOOR_PCT
+    return int(max(MIN_PROFIT_FLOOR_JPY, pct_floor))
+
+
+def _round_up_100(value: float) -> int:
+    """100 円単位切り上げ。"""
+    return int(math.ceil(value / 100) * 100)
+
+
+def _solve_breakeven_price(
+    total_cost_jpy: float,
+    buyma_commission_rate: float,
+    payment_commission_rate: float,
+) -> int:
+    """floor 利益 (max ¥5000, 5%) を確保する最低売価を求める。
+
+    数式: price - price × fees - cost ≥ max(5000, 0.05 × price)
+
+    ケース 1 (5% > ¥5000 つまり price ≥ 100,000):
+        price × (1 - fees - 0.05) ≥ cost
+        → price = cost / (1 - fees - 0.05)
+    ケース 2 (¥5000 > 5% つまり price < 100,000):
+        price × (1 - fees) ≥ cost + 5000
+        → price = (cost + 5000) / (1 - fees)
+    両方を計算し、辻褄が合う方 (= floor 制約を実際に満たす方) を採用。
+    """
+    fees = buyma_commission_rate + payment_commission_rate
+    # case 1
+    p1 = _round_up_100(total_cost_jpy / max(1 - fees - MIN_PROFIT_FLOOR_PCT, 0.01))
+    # case 2
+    p2 = _round_up_100((total_cost_jpy + MIN_PROFIT_FLOOR_JPY) / max(1 - fees, 0.01))
+    # case 1 が成立するのは p1 ≥ 100,000 のとき (5% 制約が支配)
+    if p1 >= int(MIN_PROFIT_FLOOR_JPY / MIN_PROFIT_FLOOR_PCT):
+        return p1
+    return p2
+
+
+def decide_final_price(
+    pricing_result: PricingResult,
+    market: Optional[MarketStats] = None,
+    buyma_commission_rate: float = BUYMA_COMMISSION_RATE,
+    payment_commission_rate: float = PAYMENT_COMMISSION_RATE,
+) -> FinalPriceDecision:
+    """市場相場と原価下限を踏まえて最終売価を決定する。
+
+    決定ロジック:
+      1. 原価下限 breakeven_price = 最低利益 floor を満たす最低売価
+      2. 目標売価 target_price = pricing_result.selling_price_jpy (25% 利益率)
+      3. 市場データ無し: target を採用 (= 従来挙動)
+      4. 市場データあり:
+         - 候補売価 = max(中央値 × (1 - 5%), breakeven)
+         - 候補売価が breakeven を満たすか確認 → 満たさない/中央値そのものが
+           breakeven 未満 → skip (below_breakeven)
+         - 満たす → final = min(候補売価, target × 1.5) ※ 上限ガード
+                                                          相場が高くても上値追いしすぎない
+    """
+    target_price = pricing_result.selling_price_jpy
+    cost = pricing_result.total_cost_jpy
+    breakeven_price = _solve_breakeven_price(
+        cost, buyma_commission_rate, payment_commission_rate
+    )
+    floor_at_target = _floor_profit(target_price)
+
+    # 市場データ無し → target を採用 (target が breakeven を満たすか確認)
+    if market is None or not market.is_reliable():
+        if target_price < breakeven_price:
+            # 25% 利益率でも floor を割る = 計算ロジック異常 (通常起こらない)
+            return FinalPriceDecision(
+                action="skip",
+                reason="target_below_breakeven",
+                final_price_jpy=None,
+                target_price_jpy=target_price,
+                breakeven_price_jpy=breakeven_price,
+                floor_profit_jpy=floor_at_target,
+                market_median_jpy=market.median_jpy if market else None,
+                market_sample_count=market.sample_count if market else 0,
+            )
+        profit = _profit_at_price(target_price, cost, buyma_commission_rate, payment_commission_rate)
+        margin = (profit / cost * 100) if cost > 0 else 0
+        return FinalPriceDecision(
+            action="list",
+            reason="no_market_data",
+            final_price_jpy=target_price,
+            target_price_jpy=target_price,
+            breakeven_price_jpy=breakeven_price,
+            floor_profit_jpy=floor_at_target,
+            market_median_jpy=market.median_jpy if market else None,
+            market_sample_count=market.sample_count if market else 0,
+            expected_profit_jpy=int(round(profit)),
+            expected_margin_pct=round(margin, 2),
+        )
+
+    # 市場データあり
+    market_aware_price = _round_up_100(market.median_jpy * (1 - MARKET_POSITION_DISCOUNT))
+    if market_aware_price < breakeven_price:
+        # 相場 -5% でも breakeven を割る → 出品しても赤字 → skip
+        return FinalPriceDecision(
+            action="skip",
+            reason="below_breakeven",
+            final_price_jpy=None,
+            target_price_jpy=target_price,
+            breakeven_price_jpy=breakeven_price,
+            floor_profit_jpy=_floor_profit(market_aware_price),
+            market_median_jpy=market.median_jpy,
+            market_sample_count=market.sample_count,
+        )
+
+    # 市場価格 -5% を採用するが、target × 1.5 を上限とする (相場が異常に高い場合の安全弁)
+    upper_cap = _round_up_100(target_price * 1.5)
+    final_price = min(market_aware_price, upper_cap)
+    profit = _profit_at_price(final_price, cost, buyma_commission_rate, payment_commission_rate)
+    margin = (profit / cost * 100) if cost > 0 else 0
+    return FinalPriceDecision(
+        action="list",
+        reason="market_aware",
+        final_price_jpy=final_price,
+        target_price_jpy=target_price,
+        breakeven_price_jpy=breakeven_price,
+        floor_profit_jpy=_floor_profit(final_price),
+        market_median_jpy=market.median_jpy,
+        market_sample_count=market.sample_count,
+        expected_profit_jpy=int(round(profit)),
+        expected_margin_pct=round(margin, 2),
+    )
+
+
+# ---------------------------------------------------------------------------
 # マスタ解決ヘルパー
 # ---------------------------------------------------------------------------
 

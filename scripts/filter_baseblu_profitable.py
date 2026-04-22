@@ -62,6 +62,13 @@ def keyword_from_title(title: str) -> str:
     return " ".join(words[:3])
 
 
+def keyword_from_sku(sku: str) -> str:
+    import re
+    if not sku:
+        return ""
+    return re.sub(r"[_\-/]+", " ", sku).strip()
+
+
 def load_market_data(path):
     """fetch_buyma_market_prices.py が出力した JSON を読込。"""
     if not path or not os.path.exists(path):
@@ -70,11 +77,21 @@ def load_market_data(path):
         return json.load(f)
 
 
-def get_market_stats(market_data, vendor, title) -> MarketStats:
+def get_market_stats(market_data, vendor, title, sku="") -> MarketStats:
+    """SKU キー優先、なければ title キーで fetch 結果を引く。"""
     if not market_data:
         return MarketStats()
-    key = f"{(vendor or '').strip()}|{keyword_from_title(title)}"
-    entry = market_data.get(key)
+    v = (vendor or "").strip()
+    sku_kw = keyword_from_sku(sku)
+    keys_to_try = []
+    if sku_kw:
+        keys_to_try.append(f"{v}|{sku_kw}")
+    keys_to_try.append(f"{v}|{keyword_from_title(title)}")
+    entry = None
+    for k in keys_to_try:
+        if k in market_data:
+            entry = market_data[k]
+            break
     if not entry:
         return MarketStats()
     return MarketStats(
@@ -142,7 +159,7 @@ def main():
                 skipped_count["total"] += 1
                 continue
 
-            market = get_market_stats(market_data, vendor, title)
+            market = get_market_stats(market_data, vendor, title, sku=row.get("sku", ""))
             decision = decide_final_price(result, market=market)
 
             if decision.action == "skip" and not args.include_skipped:

@@ -291,10 +291,61 @@ def keyword_from_title(title: str) -> str:
     return " ".join(words[:3])
 
 
+def keyword_from_sku(sku: str) -> str:
+    """SKU (型番) を検索キーワードに整形する。
+
+    baseblu の SKU は "R1P953_337" "MBGPD3611_C8279" のような形式。
+    BUYMA の検索では _ / - が邪魔になることがあるので空白に置換する。
+    """
+    if not sku:
+        return ""
+    return re.sub(r"[_\-/]+", " ", sku).strip()
+
+
+def fetch_market_with_fallback(
+    brand: str,
+    sku: str,
+    title_keyword: str,
+    page=None,
+    min_samples: int = 3,
+) -> dict:
+    """SKU 検索 → タイトル検索 の順でフォールバック付き取得する。
+
+    1. SKU があれば「ブランド + SKU」で検索
+    2. サンプル < min_samples なら「ブランド + タイトルキーワード」で再検索
+    3. どちらも失敗なら最後の結果を返す
+
+    結果 dict には "source": "sku" | "title" | "merged" | "none" を付与。
+    """
+    results = []
+    if sku:
+        sku_kw = keyword_from_sku(sku)
+        r = fetch_market_for(brand, sku_kw, page=page)
+        r["source"] = "sku"
+        r["search_sku"] = sku_kw
+        results.append(r)
+        if r.get("sample_count", 0) >= min_samples:
+            return r
+
+    if title_keyword:
+        r2 = fetch_market_for(brand, title_keyword, page=page)
+        r2["source"] = "title"
+        r2["search_title"] = title_keyword
+        results.append(r2)
+        # SKU も title もあるなら、より多い方を採用
+        if results and (r2.get("sample_count", 0) or 0) > (results[0].get("sample_count", 0) or 0):
+            return r2
+
+    if results:
+        return results[0]
+    return {"brand": brand, "source": "none", "sample_count": 0, "median_jpy": None}
+
+
 def main():
     parser = argparse.ArgumentParser(description="BUYMA 市場価格スクレイパー")
     parser.add_argument("--brand", help="単発: ブランド名")
     parser.add_argument("--keyword", help="単発: 商品キーワード")
+    parser.add_argument("--sku", help="単発: SKU (型番)。指定時は SKU 検索を優先、フォールバックで keyword")
     parser.add_argument("--csv", help="CSV 全件処理: profitable CSV のパス ('latest' で自動選択)")
     parser.add_argument("--no-fetch", action="store_true", help="ネット取得せずキャッシュのみ集計")
     parser.add_argument("--out", help="集計 JSON 出力先 (CSV モード時)")
@@ -303,9 +354,25 @@ def main():
                         help="取得した HTML を /tmp/buyma_market_debug.html に保存 (単発モード時)")
     args = parser.parse_args()
 
-    # 単発モード
-    if args.brand and args.keyword:
-        cached = load_cached(args.brand, args.keyword)
+    # 単発モード (--brand 必須、--keyword or --sku のどちらか以上)
+    if args.brand and (args.keyword or args.sku):
+        # SKU + keyword 両方ある時は fetch_market_with_fallback で 2 段構え
+        if args.sku and args.keyword and not args.debug_html:
+            if args.no_fetch:
+                print("⚠️ --no-fetch は単発 SKU+keyword モードでは未対応")
+                return
+            result = fetch_market_with_fallback(args.brand, args.sku, args.keyword)
+            # 成功したら該当キーでキャッシュ保存
+            if result.get("source") == "sku":
+                save_cache(args.brand, keyword_from_sku(args.sku), result)
+            elif result.get("source") == "title":
+                save_cache(args.brand, args.keyword, result)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
+        # 従来: keyword のみ (または SKU のみ)
+        lookup_kw = keyword_from_sku(args.sku) if args.sku else args.keyword
+        cached = load_cached(args.brand, lookup_kw)
         if cached and not args.debug_html:
             print(f"📦 キャッシュ使用 ({cached['fetched_at']})")
             print(json.dumps(cached, ensure_ascii=False, indent=2))
@@ -400,24 +467,41 @@ def main():
     try:
         for i, row in enumerate(rows, 1):
             brand = (row.get("vendor") or "").strip()
+            sku = (row.get("sku") or "").strip()
             keyword = keyword_from_title(row.get("title") or "")
-            key = f"{brand}|{keyword}"
+            # 2段階: まず SKU 検索用キャッシュを探し、なければ title 検索
+            sku_kw = keyword_from_sku(sku)
+            key = f"{brand}|{sku_kw or keyword}"
             if key in results:
                 continue
-            cached = load_cached(brand, keyword)
+            # 優先順位: SKU キャッシュ → title キャッシュ
+            cached = None
+            if sku_kw:
+                cached = load_cached(brand, sku_kw)
+            if not cached:
+                cached = load_cached(brand, keyword)
             if cached:
                 results[key] = cached
-                print(f"  [{i}/{len(rows)}] {brand[:25]} / {keyword[:30]} → cache (n={cached['sample_count']})")
+                used_kw = cached.get("search_sku") or cached.get("search_title") or cached.get("keyword", keyword)
+                print(f"  [{i}/{len(rows)}] {brand[:25]} / {used_kw[:30]} → cache (n={cached['sample_count']})")
                 continue
             if args.no_fetch:
                 results[key] = {"brand": brand, "keyword": keyword, "sample_count": 0, "median_jpy": None}
                 continue
-            result = fetch_market_for(brand, keyword, page=page)
-            save_cache(brand, keyword, result)
+            # 新規取得: SKU 検索 → title 検索 の順でフォールバック
+            result = fetch_market_with_fallback(
+                brand=brand, sku=sku, title_keyword=keyword, page=page,
+            )
+            source = result.get("source", "title")
+            if source == "sku":
+                save_cache(brand, sku_kw, result)
+            elif source == "title":
+                save_cache(brand, keyword, result)
             results[key] = result
+            used_kw = result.get("search_sku") or result.get("search_title") or keyword
             print(
-                f"  [{i}/{len(rows)}] {brand[:25]} / {keyword[:30]} → "
-                f"n={result['sample_count']} median=¥{result['median_jpy'] or 0:,}"
+                f"  [{i}/{len(rows)}] {brand[:25]} / {used_kw[:30]} [{source}] → "
+                f"n={result.get('sample_count', 0)} median=¥{result.get('median_jpy') or 0:,}"
             )
             time.sleep(random.uniform(*REQUEST_DELAY_RANGE))
     finally:

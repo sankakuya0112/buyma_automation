@@ -1530,15 +1530,25 @@ def set_season(page, season):
     ])
 
     # シーズン見出しの近傍で .Select を特定
+    # BUYMA は「シーズン」見出しを <p class="bmm-c-summary__ttl"> で表示し、
+    # dropdown は兄弟の .bmm-l-col-9 に入っている(bmm-l-col-3 と bmm-l-col-9
+    # が横並びの 2 カラムレイアウト)。近い親だけ見ると dropdown を見逃すため、
+    # 見出し text="シーズン" 厳密一致要素から上に登って最初に .Select を含む
+    # 祖先で探す。
     idx = page.evaluate("""(function(){
-        var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label');
+        var titles = document.querySelectorAll('p.bmm-c-summary__ttl, .bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label');
         for (var i = 0; i < titles.length; i++) {
-            if ((titles[i].textContent || '').indexOf('シーズン') === -1) continue;
-            var sec = titles[i].closest('.bmm-c-summary, section, fieldset, dl, div') || titles[i].parentElement;
-            var sels = sec ? sec.querySelectorAll('.Select, .bmm-c-select') : [];
-            if (sels.length === 0) continue;
-            var all = document.querySelectorAll('.Select, .bmm-c-select');
-            return Array.from(all).indexOf(sels[0]);
+            var t = (titles[i].textContent || '').trim();
+            if (t !== 'シーズン') continue;
+            var cur = titles[i].parentElement;
+            for (var hop = 0; hop < 8 && cur && cur !== document.body; hop++) {
+                var sels = cur.querySelectorAll('.Select, .bmm-c-select');
+                if (sels.length > 0) {
+                    var all = document.querySelectorAll('.Select, .bmm-c-select');
+                    return Array.from(all).indexOf(sels[0]);
+                }
+                cur = cur.parentElement;
+            }
         }
         return -1;
     })()""")
@@ -1593,13 +1603,24 @@ def set_tags(page, tags):
     # 2) 各タグのチェックボックスを click
     results = []
     for tag_text in tags:
+        # tags.json の半角カッコと画面の全角カッコの不一致を避けるため
+        # ()（）[]［］ 等と前後空白を除いた文字列で比較する
         outcome = page.evaluate(f"""(function(){{
             var target = {json.dumps(tag_text)};
+            function norm(s) {{
+                return (s || '').trim()
+                    .replace(/[（]/g, '(')
+                    .replace(/[）]/g, ')')
+                    .replace(/[［]/g, '[')
+                    .replace(/[］]/g, ']')
+                    .replace(/\\s+/g, '');
+            }}
+            var t = norm(target);
             var labels = document.querySelectorAll('label.bmm-c-checkbox--tag');
             for (var i = 0; i < labels.length; i++) {{
                 var body = labels[i].querySelector('.bmm-c-checkbox__body');
                 if (!body) continue;
-                if ((body.textContent || '').trim() !== target) continue;
+                if (norm(body.textContent) !== t) continue;
                 var inp = labels[i].querySelector('input[type="checkbox"]');
                 if (!inp) return 'no_input';
                 if (inp.checked) return 'already';

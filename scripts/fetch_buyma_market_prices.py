@@ -96,17 +96,14 @@ def save_cache(brand: str, keyword: str, data: dict) -> None:
 def build_search_url(brand: str, keyword: str) -> str:
     """BUYMA 商品検索 URL を構築する。
 
-    キーワード型: /r/?keyword=...&category=&order=...
-    詳細パスは BUYMA 側仕様変更で動かなくなる可能性あり、要メンテ。
+    確認済み実 URL 形式 (2026-04): `https://www.buyma.com/r/{キーワード}/`
+      - パス型 (クエリパラメータ無し)
+      - 空白は %20 でエンコード
+      - 末尾スラッシュ必須
     """
-    from urllib.parse import urlencode
+    from urllib.parse import quote
     query_text = f"{brand} {keyword}".strip()
-    params = {
-        "tab": "good",
-        "keyword": query_text,
-        "order": "n",  # n=新着, p=価格安, popular=人気
-    }
-    return SEARCH_URL_BASE + "?" + urlencode(params)
+    return SEARCH_URL_BASE + quote(query_text) + "/"
 
 
 def extract_prices_from_html(html: str) -> list[int]:

@@ -1,28 +1,11 @@
 {
-  "_comment": "BUYMA タグ自動付与ルール (Phase A: 高信頼度の素材系のみ)。match_any のキーワードが title/description_en/body_html のいずれかに含まれ、かつ exclude_any のいずれも含まれない場合にタグを付与する。大文字小文字は問わない。product_types を指定した場合はそのカテゴリの商品にのみ適用。",
+  "_comment": "BUYMA タグ自動付与ルール (Phase B / 2026-04-21)。match_any のキーワードが title/description_en のいずれかに含まれ、かつ exclude_any のいずれも含まれない場合にタグを付与する。大文字小文字は問わない。product_types を指定した場合はそのカテゴリの商品にのみ適用 (空なら全カテゴリ)。リスク回避のため曖昧な判定 (無地/ヒール高さ/トゥタイプ等) は意図的にスキップ。タグマスターは data/tag_reference.json 参照。",
   "rules": [
     {
-      "tag": "レザー(本革)",
+      "tag": "レザー（本革）",
       "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
-      "match_any": [
-        "leather",
-        "calf leather",
-        "calfskin",
-        "lambskin",
-        "goatskin",
-        "cowhide",
-        "napa leather",
-        "nappa leather"
-      ],
-      "exclude_any": [
-        "faux leather",
-        "fake leather",
-        "eco leather",
-        "vegan leather",
-        "pu leather",
-        "synthetic leather",
-        "bonded leather"
-      ]
+      "match_any": ["leather", "calf leather", "calfskin", "lambskin", "goatskin", "cowhide", "napa leather", "nappa leather"],
+      "exclude_any": ["faux leather", "fake leather", "eco leather", "vegan leather", "pu leather", "synthetic leather", "bonded leather"]
     },
     {
       "tag": "スエード",
@@ -32,20 +15,182 @@
     },
     {
       "tag": "エナメル",
-      "product_types": ["FOOTWEAR", "BAGS", "ACCESSORIES"],
+      "product_types": ["FOOTWEAR", "BAGS", "ACCESSORIES", "CLOTHING"],
       "match_any": ["patent leather", "patent-leather"],
       "exclude_any": []
     },
     {
       "tag": "フェイクレザー",
       "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
-      "match_any": [
-        "faux leather",
-        "vegan leather",
-        "eco leather",
-        "pu leather",
-        "synthetic leather"
-      ],
+      "match_any": ["faux leather", "vegan leather", "eco leather", "pu leather", "synthetic leather"],
+      "exclude_any": []
+    },
+    {
+      "tag": "コットン",
+      "product_types": ["CLOTHING", "BAGS"],
+      "match_any": ["cotton"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ウール",
+      "product_types": ["CLOTHING"],
+      "match_any": ["wool"],
+      "exclude_any": ["cashmere wool"]
+    },
+    {
+      "tag": "カシミヤ",
+      "product_types": ["CLOTHING"],
+      "match_any": ["cashmere"],
+      "exclude_any": []
+    },
+    {
+      "tag": "シルク",
+      "product_types": ["CLOTHING"],
+      "match_any": ["silk"],
+      "exclude_any": []
+    },
+    {
+      "tag": "リネン（麻）",
+      "product_types": ["CLOTHING"],
+      "match_any": ["linen"],
+      "exclude_any": []
+    },
+    {
+      "tag": "デニム",
+      "product_types": ["CLOTHING", "BAGS"],
+      "match_any": ["denim", "jeans"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ナイロン",
+      "product_types": ["CLOTHING", "BAGS"],
+      "match_any": ["nylon"],
+      "exclude_any": []
+    },
+    {
+      "tag": "キャンバス",
+      "product_types": ["BAGS", "FOOTWEAR"],
+      "match_any": ["canvas"],
+      "exclude_any": []
+    },
+    {
+      "tag": "サフィアーノ",
+      "product_types": ["BAGS"],
+      "match_any": ["saffiano"],
+      "exclude_any": []
+    },
+    {
+      "tag": "クロコダイル",
+      "product_types": ["BAGS"],
+      "match_any": ["crocodile", "croc-embossed", "croc embossed"],
+      "exclude_any": []
+    },
+    {
+      "tag": "カーフスキン",
+      "product_types": ["BAGS"],
+      "match_any": ["calfskin", "calf leather"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ラムスキン",
+      "product_types": ["BAGS"],
+      "match_any": ["lambskin"],
+      "exclude_any": []
+    },
+    {
+      "tag": "コーデュロイ",
+      "product_types": ["CLOTHING"],
+      "match_any": ["corduroy"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ツイード",
+      "product_types": ["CLOTHING", "FOOTWEAR"],
+      "match_any": ["tweed"],
+      "exclude_any": []
+    },
+    {
+      "tag": "シフォン",
+      "product_types": ["CLOTHING"],
+      "match_any": ["chiffon"],
+      "exclude_any": []
+    },
+    {
+      "tag": "レース",
+      "product_types": ["CLOTHING"],
+      "match_any": ["lace"],
+      "exclude_any": ["lace-up", "laceup", "lace up"]
+    },
+    {
+      "tag": "レオパード（ヒョウ柄）",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["leopard print", "leopard-print", "leopard pattern"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ゼブラ",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["zebra print", "zebra-print", "zebra pattern"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ストライプ",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["striped", "stripes", "pinstripe"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ドット（水玉）",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["polka dot", "polka-dot", "polka dots", "polka-dots"],
+      "exclude_any": []
+    },
+    {
+      "tag": "花柄",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["floral print", "floral-print", "flower print", "flower-print", "floral pattern"],
+      "exclude_any": []
+    },
+    {
+      "tag": "カモフラージュ（迷彩）",
+      "product_types": ["FOOTWEAR", "BAGS", "CLOTHING", "ACCESSORIES"],
+      "match_any": ["camouflage", "camo print", "camo-print"],
+      "exclude_any": []
+    },
+    {
+      "tag": "ノースリーブ",
+      "product_types": ["CLOTHING"],
+      "match_any": ["sleeveless"],
+      "exclude_any": []
+    },
+    {
+      "tag": "半袖",
+      "product_types": ["CLOTHING"],
+      "match_any": ["short sleeve", "short-sleeve", "short sleeves", "short-sleeved"],
+      "exclude_any": []
+    },
+    {
+      "tag": "長袖",
+      "product_types": ["CLOTHING"],
+      "match_any": ["long sleeve", "long-sleeve", "long sleeves", "long-sleeved"],
+      "exclude_any": []
+    },
+    {
+      "tag": "Vネック",
+      "product_types": ["CLOTHING"],
+      "match_any": ["v-neck", "v neck", "vneck"],
+      "exclude_any": []
+    },
+    {
+      "tag": "タートルネック",
+      "product_types": ["CLOTHING"],
+      "match_any": ["turtleneck", "turtle neck", "turtle-neck"],
+      "exclude_any": []
+    },
+    {
+      "tag": "クルーネック",
+      "product_types": ["CLOTHING"],
+      "match_any": ["crew neck", "crewneck", "crew-neck"],
       "exclude_any": []
     }
   ]

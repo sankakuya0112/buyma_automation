@@ -102,7 +102,8 @@ def build_search_url(brand: str, keyword: str) -> str:
       - 末尾スラッシュ必須
     """
     from urllib.parse import quote
-    query_text = f"{brand} {keyword}".strip()
+    parts = [p for p in [(brand or "").strip(), (keyword or "").strip()] if p]
+    query_text = " ".join(parts)
     return SEARCH_URL_BASE + quote(query_text) + "/"
 
 
@@ -384,7 +385,7 @@ def main():
         if args.debug_html:
             # 単発 + デバッグ: HTML を保存
             from playwright.sync_api import sync_playwright
-            url = build_search_url(args.brand, args.keyword)
+            url = build_search_url(args.brand, lookup_kw)
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
                 ctx = browser.new_context(
@@ -414,8 +415,11 @@ def main():
                 browser.close()
             return
 
-        result = fetch_market_for(args.brand, args.keyword)
-        save_cache(args.brand, args.keyword, result)
+        result = fetch_market_for(args.brand, lookup_kw)
+        if args.sku and not args.keyword:
+            result["source"] = "sku"
+            result["search_sku"] = lookup_kw
+        save_cache(args.brand, lookup_kw, result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 

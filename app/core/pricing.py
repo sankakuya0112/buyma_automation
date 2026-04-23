@@ -196,6 +196,7 @@ MIN_PROFIT_FLOOR_JPY = 5000           # 絶対額の下限 (¥5,000)
 MIN_PROFIT_FLOOR_PCT = 0.05           # 売価比の下限 (5%)
 MARKET_POSITION_DISCOUNT = 0.05       # 相場中央値から下げる割合 (5% 安く)
 MIN_MARKET_SAMPLES = 3                # 相場判定に必要な最低件数
+UNRELIABLE_MARKET_COST_RATIO = 0.5    # 市場 median がこの比率 × 原価未満なら偽相場として無視
 
 
 @dataclass
@@ -303,6 +304,17 @@ def decide_final_price(
         cost, buyma_commission_rate, payment_commission_rate
     )
     floor_at_target = _floor_profit(target_price)
+
+    # 偽相場ガード: 市場 median が原価の 50% 未満 = BUYMA の「該当なし → default
+    # 商品リスト」を拾っている疑い濃厚のため信頼しない。ブティック系ブランド
+    # (流通量少) で発生しがち。market = None 扱いにして target を採用する。
+    if (
+        market is not None
+        and market.median_jpy
+        and cost > 0
+        and market.median_jpy < cost * UNRELIABLE_MARKET_COST_RATIO
+    ):
+        market = None
 
     # 市場データ無し → target を採用 (target が breakeven を満たすか確認)
     if market is None or not market.is_reliable():

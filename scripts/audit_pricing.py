@@ -105,13 +105,16 @@ def print_item(idx, n_total, row, min_margin=None):
     print(f"     ──── 原価 {cost} ────")
     print(f"  目標売価 (25%): {sell_target}  |  利益 {profit_target} ({_fmt_pct(margin_target)})")
 
+    comp = row.get("competition_level") or "unknown"
     if market_median:
         try:
             mm = int(float(market_median))
             n = int(float(market_n))
-            print(f"  市場相場: 中央値 {_fmt_yen(mm)} (n={n})")
+            print(f"  市場相場: 中央値 {_fmt_yen(mm)} (n={n}, 競合={comp})")
         except (ValueError, TypeError):
             pass
+    elif comp and comp != "unknown":
+        print(f"  競合密度: {comp}")
 
     if breakeven:
         print(f"  原価下限 (breakeven): {_fmt_yen(breakeven)}  |  最低利益 floor {_fmt_yen(floor)}")

@@ -160,7 +160,7 @@ def main():
                 continue
 
             market = get_market_stats(market_data, vendor, title, sku=row.get("sku", ""))
-            decision = decide_final_price(result, market=market)
+            decision = decide_final_price(result, market=market, category=product_type)
 
             if decision.action == "skip" and not args.include_skipped:
                 skipped_count["skip_reason"] += 1
@@ -207,6 +207,7 @@ def main():
                 "decision_reason": decision.reason,
                 "expected_profit_jpy": decision.expected_profit_jpy,
                 "expected_margin_pct": decision.expected_margin_pct,
+                "competition_level": decision.competition_level,
             }
             rows_out.append(out_row)
             skipped_count["total"] += 1
@@ -233,7 +234,7 @@ def main():
         "market_median_jpy", "market_sample_count",
         "breakeven_price_jpy", "floor_profit_jpy",
         "final_price_jpy", "action", "skip_reason", "decision_reason",
-        "expected_profit_jpy", "expected_margin_pct",
+        "expected_profit_jpy", "expected_margin_pct", "competition_level",
         # 末尾
         "description_en", "image_url", "sub_images", "product_url",
     ]

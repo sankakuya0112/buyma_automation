@@ -38,6 +38,10 @@ from app.core.pricing import (
     PricingParams, calculate_pricing,
     MarketStats, decide_final_price,
 )
+from app.core.external_benchmark import (
+    ExternalBenchmark, evaluate_external_benchmark,
+    load_benchmarks, make_product_key,
+)
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
@@ -107,6 +111,8 @@ def main():
     parser.add_argument("--market", help="市場価格 JSON (fetch_buyma_market_prices.py の出力)")
     parser.add_argument("--include-skipped", action="store_true",
                         help="skip_reason 付きの商品も profitable CSV に含める (監査用)")
+    parser.add_argument("--external-benchmark",
+                        help="Farfetch JP 等の外部ベンチマーク JSON (fetch_farfetch_benchmarks.py の出力)")
     args = parser.parse_args()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -122,6 +128,14 @@ def main():
         print(f"📊 市場データ: {len(market_data)} 件ロード ({os.path.basename(args.market)})")
     else:
         print("📊 市場データ: なし (全商品を target_price 採用)")
+
+    benchmarks: dict = {}
+    if args.external_benchmark:
+        benchmarks = load_benchmarks(args.external_benchmark)
+        if benchmarks:
+            print(f"🌐 外部ベンチマーク: {len(benchmarks)} 件ロード ({os.path.basename(args.external_benchmark)})")
+        else:
+            print(f"🌐 外部ベンチマーク: ファイルが空または存在しない ({args.external_benchmark})")
 
     rows_out = []
     skipped_count = {"total": 0, "unavailable": 0, "parse_error": 0,
@@ -150,6 +164,7 @@ def main():
                 source_price=sale_price_eur,
                 currency="EUR",
                 category=product_type,
+                landed_cost_basis="DDU",  # Baseblu は DDU
             )
             result = calculate_pricing(params)
 
@@ -161,6 +176,37 @@ def main():
 
             market = get_market_stats(market_data, vendor, title, sku=row.get("sku", ""))
             decision = decide_final_price(result, market=market, category=product_type)
+
+            # 外部ベンチマーク評価 (Phase 2b)
+            #   BUYMA 内独占判定の商品 (no_market_data / low_competition / fake_market) は
+            #   Farfetch 等の外部 EC で安く出ていれば SKIP/warn に変える。
+            external_action = "pass"
+            external_reason = "no_external_data"
+            external_min = ""
+            external_url = ""
+            ext_target_reasons = ("no_market_data", "low_competition", "fake_market")
+            if (
+                benchmarks
+                and decision.action == "list"
+                and decision.reason in ext_target_reasons
+                and decision.final_price_jpy
+            ):
+                key = make_product_key(vendor, title, row.get("sku", ""))
+                bench = benchmarks.get(key)
+                external_action, external_reason = evaluate_external_benchmark(
+                    decision.final_price_jpy, bench,
+                )
+                if bench:
+                    external_min = bench.min_price_jpy or ""
+                    external_url = bench.matched_url or ""
+                if external_action == "skip":
+                    # 外部のほうが安い → 出品しても売れない見込み
+                    decision.action = "skip"
+                    decision.reason = "external_cheaper"
+                    decision.final_price_jpy = None
+                elif external_action == "warn":
+                    # 出品はするが優位性薄を decision_reason に追記
+                    decision.reason = f"{decision.reason}|external_close"
 
             if decision.action == "skip" and not args.include_skipped:
                 skipped_count["skip_reason"] += 1
@@ -208,6 +254,12 @@ def main():
                 "expected_profit_jpy": decision.expected_profit_jpy,
                 "expected_margin_pct": decision.expected_margin_pct,
                 "competition_level": decision.competition_level,
+                # Phase 2b 追加
+                "landed_cost_basis": result.landed_cost_basis,
+                "external_action": external_action,
+                "external_reason": external_reason,
+                "external_min_jpy": external_min,
+                "external_url": external_url,
             }
             rows_out.append(out_row)
             skipped_count["total"] += 1
@@ -235,6 +287,9 @@ def main():
         "breakeven_price_jpy", "floor_profit_jpy",
         "final_price_jpy", "action", "skip_reason", "decision_reason",
         "expected_profit_jpy", "expected_margin_pct", "competition_level",
+        # Phase 2b
+        "landed_cost_basis",
+        "external_action", "external_reason", "external_min_jpy", "external_url",
         # 末尾
         "description_en", "image_url", "sub_images", "product_url",
     ]

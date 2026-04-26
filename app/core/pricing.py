@@ -157,6 +157,12 @@ class PricingParams:
     vat_refund_rate: float = DEFAULT_VAT_REFUND_RATE
     duty_rate: Optional[float] = None               # None → マスタから推定
     target_margin_pct: float = DEFAULT_TARGET_MARGIN_PCT
+    # 仕入先の関税負担方式
+    #   "DDU": 商品価格に関税・輸入消費税が含まれず、日本到着時に別途課税
+    #          → 関税・輸入消費税を加算 (Baseblu, FRMODA 等)
+    #   "DDP": チェックアウト価格に関税・輸入税込み (Italist, Tessabit, Antonioli 等)
+    #          → 関税・消費税は加算しない (二重計上を防ぐ)
+    landed_cost_basis: str = "DDU"
     shipping_jpy: Optional[float] = None            # None → 重量 × 単価
     buyma_commission_rate: float = BUYMA_COMMISSION_RATE
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE
@@ -186,6 +192,7 @@ class PricingResult:
     exchange_rate: float
     duty_rate: float
     weight_kg: float
+    landed_cost_basis: str = "DDU"                  # "DDU" or "DDP"
 
     def is_profitable(self, min_profit_jpy: float = 3000.0) -> bool:
         """利益額が閾値を超えているか。"""
@@ -213,7 +220,8 @@ MIN_PROFIT_FLOOR_PCT = 0.05
 
 MARKET_POSITION_DISCOUNT = 0.05       # 相場中央値から下げる割合 (5% 安く)
 MIN_MARKET_SAMPLES = 3                # 相場判定に必要な最低件数
-UNRELIABLE_MARKET_COST_RATIO = 0.5    # 市場 median がこの比率 × 原価未満なら偽相場として無視
+UNRELIABLE_MARKET_COST_RATIO = 0.7    # 市場 median がこの比率 × 原価未満なら偽相場として無視
+                                      # (Phase 2b で 0.5→0.7 引上げ。BUYMA default 商品混入を広めに捕捉)
 
 # 競合密度戦略 (Phase 2a Tier 2)
 HIGH_COMPETITION_THRESHOLD = 10       # サンプル >= この値 → 高競合として SKIP
@@ -538,8 +546,16 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     net_source_jpy = source_price_jpy - vat_refund_jpy
 
     # 2-4. 税関コスト
-    customs_jpy = (net_source_jpy + shipping_jpy) * duty_rate
-    consumption_tax_jpy = (net_source_jpy + shipping_jpy + customs_jpy) * params.consumption_tax_rate
+    # DDP の場合: チェックアウト価格に関税・輸入消費税が含まれているため
+    #             二重計上を防ぐためゼロ扱い
+    # DDU の場合: 日本到着時に別途課税されるため通常通り計算
+    basis = (params.landed_cost_basis or "DDU").upper()
+    if basis == "DDP":
+        customs_jpy = 0.0
+        consumption_tax_jpy = 0.0
+    else:
+        customs_jpy = (net_source_jpy + shipping_jpy) * duty_rate
+        consumption_tax_jpy = (net_source_jpy + shipping_jpy + customs_jpy) * params.consumption_tax_rate
 
     # 5. 総原価 (振込手数料も原価に含める: BUYMA → ショッパー入金時に差し引かれる)
     total_cost_jpy = (
@@ -580,4 +596,5 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         exchange_rate=exchange_rate,
         duty_rate=duty_rate,
         weight_kg=weight_kg,
+        landed_cost_basis=basis,
     )

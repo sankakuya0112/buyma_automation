@@ -35,8 +35,13 @@ baseblu → BUYMA 出品で「人気商品を安く出品して勝つ」アプ�
 - 出品数は最大化 (日次 15-30 件、filter で出品可全件)
 - 価格調整は控えめ (target > 相場 -5% の場合は target 採用で独占性を活かす)
 - 返信・発送を最優先。受注 3 日以内の連絡は必須
-- ターゲットブランド: **AFTERCOAT / THE LATEST / MARBELL / DI STAVNITSER
-  / FRANCESCO MURANO** 等、BUYMA で他店出品の少ないブティック系
+- ターゲットブランド: **AFTERCOAT** (BUYMA で流通量極小。本戦略のコア候補) /
+  **BENEDETTA BRUZZICHES** (高単価 BAGS、独占) / **ALESSANDRA RICH** /
+  **ALAÏA** / **PETAR PETROV** など、`fetch_buyma_market_prices` で
+  competition_level が `none` (n=0) になりやすいブランド
+- ⚠️ **THE LATEST は n=11 の高競合**で 2026-04-26 実測時に SKIP された。
+  ブランド名から想像される「ニッチ感」と実際の BUYMA 流通量が一致しないため、
+  必ずデータベースで競合密度を確認してから戦略候補に加えること
 
 ### 安定期 (累計販売 20-100 件)
 

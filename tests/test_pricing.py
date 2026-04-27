@@ -17,12 +17,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.pricing import (
+    BUYMA_COMMISSION_RATE,
     DEFAULT_DUTY_RATE,
     DEFAULT_EXCHANGE_RATES,
     DEFAULT_WEIGHT,
+    HIGH_COMPETITION_THRESHOLD,
+    LOW_COMPETITION_THRESHOLD,
+    MarketStats,
+    PAYMENT_COMMISSION_RATE,
     PricingParams,
     PricingResult,
+    UNRELIABLE_MARKET_COST_RATIO,
     calculate_pricing,
+    decide_final_price,
     resolve_duty_rate,
     resolve_exchange_rate,
     resolve_weight,
@@ -280,6 +287,230 @@ class TestProfitScenarios(unittest.TestCase):
         self.assertAlmostEqual(r.shipping_jpy, 4000.0)
         self.assertGreater(r.profit_jpy, 0)
         self.assertGreaterEqual(r.margin_pct, 25.0)
+
+
+class TestDecideFinalPriceCompetitionLevels(unittest.TestCase):
+    """decide_final_price の競合レベル別 boundary。"""
+
+    def setUp(self):
+        params = PricingParams(source_price=100.0, currency="EUR", category="dress")
+        self.pricing_result = calculate_pricing(params)
+        self.target = self.pricing_result.selling_price_jpy
+        self.cost = self.pricing_result.total_cost_jpy
+
+    def _market(self, sample_count, median_factor=1.5, confidence=1.0):
+        return MarketStats(
+            sample_count=sample_count,
+            median_jpy=int(self.target * median_factor),
+            brand_match_confidence=confidence,
+        )
+
+    def test_no_market_data(self):
+        d = decide_final_price(self.pricing_result, market=None, category="dress")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "no_market_data")
+        self.assertEqual(d.final_price_jpy, self.target)
+        self.assertEqual(d.competition_level, "none")
+
+    def test_low_competition_n1(self):
+        # n = LOW_COMPETITION_THRESHOLD (=1)
+        d = decide_final_price(
+            self.pricing_result,
+            market=self._market(LOW_COMPETITION_THRESHOLD),
+            category="dress",
+        )
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "low_competition")
+        self.assertEqual(d.final_price_jpy, self.target)
+
+    def test_high_competition_n10(self):
+        # n = HIGH_COMPETITION_THRESHOLD (=10) → skip
+        d = decide_final_price(
+            self.pricing_result,
+            market=self._market(HIGH_COMPETITION_THRESHOLD),
+            category="dress",
+        )
+        self.assertEqual(d.action, "skip")
+        self.assertEqual(d.reason, "high_competition")
+        self.assertIsNone(d.final_price_jpy)
+
+    def test_medium_competition_uses_market_aware(self):
+        # n = 5, median 1.3x → market_aware = round_up(1.3*0.95) > target
+        d = decide_final_price(
+            self.pricing_result,
+            market=self._market(5, median_factor=1.3),
+            category="dress",
+        )
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "market_aware")
+        self.assertGreater(d.final_price_jpy, self.target)
+
+    def test_medium_competition_target_higher_than_market(self):
+        # 高 source_price で breakeven-target gap を大きく取る。
+        # median を target 未満かつ market_aware が breakeven より上になる範囲に設定
+        # → max(target, market_aware) = target が採用される
+        params = PricingParams(
+            source_price=300.0, currency="EUR", category="bag", target_margin_pct=0.30,
+        )
+        r = calculate_pricing(params)
+        market = MarketStats(
+            sample_count=5,
+            median_jpy=int(r.selling_price_jpy * 0.95),
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(r, market=market, category="bag")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "market_aware")
+        self.assertEqual(d.final_price_jpy, r.selling_price_jpy)
+
+    def test_upper_cap_at_1_5x_target(self):
+        # median が target × 2 → market_aware が cap (target × 1.5) を超える
+        d = decide_final_price(
+            self.pricing_result,
+            market=self._market(5, median_factor=2.0),
+            category="dress",
+        )
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "market_aware")
+        # final は target * 1.5 を超えない (round_up 100 単位の許容)
+        self.assertLessEqual(d.final_price_jpy, math.ceil(self.target * 1.5 / 100) * 100)
+
+
+class TestDecideFinalPriceFakeMarket(unittest.TestCase):
+    """偽相場ガード (median < cost × UNRELIABLE_MARKET_COST_RATIO)。"""
+
+    def setUp(self):
+        params = PricingParams(source_price=100.0, currency="EUR", category="dress")
+        self.pricing_result = calculate_pricing(params)
+        self.cost = self.pricing_result.total_cost_jpy
+
+    def test_fake_market_triggered_below_threshold(self):
+        # median = cost × 0.5 < cost × 0.7 (UNRELIABLE_MARKET_COST_RATIO)
+        market = MarketStats(
+            sample_count=8,
+            median_jpy=int(self.cost * 0.5),
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "fake_market")
+        # 偽相場時は competition_level=none に戻される
+        self.assertEqual(d.competition_level, "none")
+        # market_median_jpy / sample_count は None / 0 にリセット
+        self.assertIsNone(d.market_median_jpy)
+        self.assertEqual(d.market_sample_count, 0)
+
+    def test_fake_market_not_triggered_at_threshold(self):
+        # median = cost × 0.71 > cost × 0.7 → 通常パス
+        market = MarketStats(
+            sample_count=8,
+            median_jpy=int(self.cost * 0.71),
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertNotEqual(d.reason, "fake_market")
+
+
+class TestDecideFinalPriceConfidenceGuard(unittest.TestCase):
+    """brand_match_confidence による信頼度ガード (Phase 2c)。"""
+
+    def setUp(self):
+        params = PricingParams(source_price=100.0, currency="EUR", category="dress")
+        self.pricing_result = calculate_pricing(params)
+        self.target = self.pricing_result.selling_price_jpy
+
+    def test_low_confidence_treated_as_no_market(self):
+        # confidence 0.3 < 0.5 → is_reliable() False → no_market_data 扱い
+        market = MarketStats(
+            sample_count=8,
+            median_jpy=int(self.target * 1.5),
+            brand_match_confidence=0.3,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "no_market_data")
+        self.assertEqual(d.final_price_jpy, self.target)
+
+    def test_confidence_at_boundary_is_reliable(self):
+        # confidence 0.5 ちょうど → reliable
+        market = MarketStats(
+            sample_count=8,
+            median_jpy=int(self.target * 1.3),
+            brand_match_confidence=0.5,
+        )
+        self.assertTrue(market.is_reliable())
+
+    def test_default_confidence_is_reliable(self):
+        # 旧スキーマ互換: default 1.0
+        market = MarketStats(sample_count=8, median_jpy=100000)
+        self.assertTrue(market.is_reliable())
+
+
+class TestDecideFinalPriceBreakeven(unittest.TestCase):
+    """breakeven 関連の skip 経路。"""
+
+    def test_target_below_breakeven_no_market(self):
+        # 異常パラメータで target_price が breakeven 未満を強制
+        params = PricingParams(
+            source_price=100.0,
+            currency="EUR",
+            category="dress",
+            target_margin_pct=-0.5,  # 負のマージン → 売価 < 原価
+        )
+        pricing_result = calculate_pricing(params)
+        d = decide_final_price(pricing_result, market=None, category="dress")
+        # market なし + target<breakeven → target_below_breakeven で skip
+        if pricing_result.selling_price_jpy < pricing_result.total_cost_jpy:
+            self.assertEqual(d.action, "skip")
+            self.assertEqual(d.reason, "target_below_breakeven")
+
+    def test_below_breakeven_medium_competition(self):
+        params = PricingParams(source_price=100.0, currency="EUR", category="dress")
+        pricing_result = calculate_pricing(params)
+        # cost より安い median を中競合で → market_aware が breakeven 未満
+        market = MarketStats(
+            sample_count=5,
+            median_jpy=int(pricing_result.total_cost_jpy * 0.85),
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "skip")
+        self.assertEqual(d.reason, "below_breakeven")
+
+
+class TestDecideFinalPriceDDP(unittest.TestCase):
+    """DDP (関税込価格) ルートの整合性。"""
+
+    def test_ddp_skips_customs_and_consumption_tax(self):
+        params_ddu = PricingParams(
+            source_price=200.0, currency="EUR", category="bag",
+            landed_cost_basis="DDU",
+        )
+        params_ddp = PricingParams(
+            source_price=200.0, currency="EUR", category="bag",
+            landed_cost_basis="DDP",
+        )
+        r_ddu = calculate_pricing(params_ddu)
+        r_ddp = calculate_pricing(params_ddp)
+
+        # DDP は関税・消費税ゼロ
+        self.assertEqual(r_ddp.customs_jpy, 0)
+        self.assertEqual(r_ddp.consumption_tax_jpy, 0)
+        # DDU の方が原価高くなる
+        self.assertGreater(r_ddu.total_cost_jpy, r_ddp.total_cost_jpy)
+        # DDP の方が selling_price が低くなる (同じ source_price で関税分安い)
+        self.assertLess(r_ddp.selling_price_jpy, r_ddu.selling_price_jpy)
+
+    def test_ddp_decision_uses_lower_breakeven(self):
+        params_ddp = PricingParams(
+            source_price=200.0, currency="EUR", category="bag",
+            landed_cost_basis="DDP",
+        )
+        r_ddp = calculate_pricing(params_ddp)
+        d = decide_final_price(r_ddp, market=None, category="bag")
+        self.assertEqual(d.action, "list")
+        # DDP の breakeven は DDU より低い
+        self.assertLess(d.breakeven_price_jpy, r_ddp.selling_price_jpy * 1.0)
 
 
 if __name__ == "__main__":

@@ -1,45 +1,31 @@
 """
-scripts.buyma_auto_listing.py 内の純粋関数のユニットテスト。
+app.utils.listing_helpers の純粋関数のユニットテスト。
 
-対象:
+対象 (Phase 2c+ で scripts.buyma_auto_listing から切り出し):
   - _strip_accents
   - normalize_size_for_buyma
   - _map_footwear_to_jp_cm
   - map_size_to_jp_reference
   - translate_color_to_jp
-
-playwright が未インストールでも import 出来るよう sys.modules にスタブを
-注入してから importlib で動的ロードする。
 """
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import unittest
-import unittest.mock as mock
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# playwright を mock してスクリプト import 時の sys.exit を防ぐ
-sys.modules.setdefault("playwright", mock.MagicMock())
-sys.modules.setdefault("playwright.sync_api", mock.MagicMock())
-
-_spec = importlib.util.spec_from_file_location(
-    "buyma_auto_listing",
-    PROJECT_ROOT / "scripts" / "buyma_auto_listing.py",
+from app.utils.listing_helpers import (
+    _map_footwear_to_jp_cm,
+    _strip_accents,
+    map_size_to_jp_reference,
+    normalize_size_for_buyma,
+    translate_color_to_jp,
 )
-buyma_auto_listing = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(buyma_auto_listing)
-
-_strip_accents = buyma_auto_listing._strip_accents
-normalize_size_for_buyma = buyma_auto_listing.normalize_size_for_buyma
-_map_footwear_to_jp_cm = buyma_auto_listing._map_footwear_to_jp_cm
-map_size_to_jp_reference = buyma_auto_listing.map_size_to_jp_reference
-translate_color_to_jp = buyma_auto_listing.translate_color_to_jp
 
 
 class TestStripAccents(unittest.TestCase):

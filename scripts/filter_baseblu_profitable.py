@@ -103,6 +103,7 @@ def get_market_stats(market_data, vendor, title, sku="") -> MarketStats:
         median_jpy=entry.get("median_jpy"),
         min_jpy=entry.get("min_jpy"),
         max_jpy=entry.get("max_jpy"),
+        brand_match_confidence=entry.get("brand_match_confidence", 1.0),
     )
 
 

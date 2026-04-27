@@ -236,10 +236,20 @@ class MarketStats:
     median_jpy: Optional[int] = None                 # 売価中央値
     min_jpy: Optional[int] = None                    # 最安値
     max_jpy: Optional[int] = None                    # 最高値
+    # ブランド一致信頼度 (0.0-1.0)。fetch 側で raw_n のうち
+    # 明確に他ブランドだった件数を控除した比率。default=1.0 で後方互換。
+    brand_match_confidence: float = 1.0
 
     def is_reliable(self, min_samples: int = MIN_MARKET_SAMPLES) -> bool:
-        """中央値を信頼に足る件数が揃っているか。"""
-        return self.sample_count >= min_samples and self.median_jpy is not None
+        """中央値を信頼に足る件数が揃っているか。
+
+        brand_match_confidence が 0.5 未満なら他ブランド混入と判断し False。
+        """
+        return (
+            self.sample_count >= min_samples
+            and self.median_jpy is not None
+            and self.brand_match_confidence >= 0.5
+        )
 
 
 @dataclass

@@ -40,6 +40,7 @@ import statistics
 import sys
 import time
 import unicodedata
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -107,22 +108,128 @@ def build_search_url(brand: str, keyword: str) -> str:
     return SEARCH_URL_BASE + quote(query_text) + "/"
 
 
-def extract_prices_from_html(html: str) -> list[int]:
-    """検索結果 HTML から price (int 円) を抽出する。
+def _find_block_around(html: str, start: int, end: int) -> str:
+    """価格マッチ位置 (start, end) を含む商品ブロック (祖先要素) の HTML を返す。
 
-    BUYMA の確認済み class 名 (2026-04 時点):
-      - product_price / product_price_detail  ← 今の実売価 (採用)
-      - Price_Txt                             ← 上と同じものを囲む子要素 (採用)
-      - price_reference                       ← 取消線の旧価格 (除外)
-      - coupon-price                          ← クーポン適用後の参考価格 (除外)
-      - Price_Percent_detail                  ← 割引率 % (除外)
-
-    アプローチ:
-      1. 旧価格系 class (price_reference / coupon-price 等) の要素を HTML から削除
-      2. product_price class を優先、次に Price_Txt の順で price を抽出
-      3. 1 商品あたり 1 価格になるよう「最初に見つかった数値」のみ採用
-      4. ブランド品の現実レンジ (¥15,000-5,000 万) で sanity check
+    優先順位:
+      1. <a class="product_link"> 直下の祖先 (~6000 chars 範囲)
+      2. <li class*="Product"> 直下の祖先
+      3. ProductImage を含む div 祖先
+    見つからなければ ±1500 chars の周辺 HTML を返す (フォールバック)。
     """
+    window_back = max(0, start - 6000)
+    window_fwd = min(len(html), end + 2000)
+    snippet_back = html[window_back:start]
+    snippet_fwd = html[end:window_fwd]
+
+    # 候補となる開始タグ正規表現 (後方に向かって最近接を探す)
+    open_patterns = [
+        re.compile(r'<a[^>]*class="[^"]*product_link[^"]*"[^>]*>', re.IGNORECASE),
+        re.compile(r'<li[^>]*class="[^"]*Product[^"]*"[^>]*>', re.IGNORECASE),
+        re.compile(r'<div[^>]*class="[^"]*ProductImage[^"]*"[^>]*>', re.IGNORECASE),
+    ]
+    close_patterns = [
+        re.compile(r'</a>', re.IGNORECASE),
+        re.compile(r'</li>', re.IGNORECASE),
+        re.compile(r'</div>', re.IGNORECASE),
+    ]
+
+    for op, cp in zip(open_patterns, close_patterns):
+        # 後方検索: 最後の出現を探す
+        last = None
+        for m in op.finditer(snippet_back):
+            last = m
+        if not last:
+            continue
+        block_start_in_back = last.start()
+        # 対応する閉じタグを前方で探す (ネスト無視の単純対応)
+        cm = cp.search(snippet_fwd)
+        if not cm:
+            continue
+        block_end_in_fwd = cm.end()
+        return snippet_back[block_start_in_back:] + html[start:end] + snippet_fwd[:block_end_in_fwd]
+
+    # フォールバック: ±1500 chars
+    return html[max(0, start - 1500): min(len(html), end + 1500)]
+
+
+def _extract_brand_text(block_html: str) -> str:
+    """商品ブロック HTML からブランド名を抽出する。"""
+    # 1. data-brand 属性
+    m = re.search(r'data-brand="([^"]+)"', block_html, flags=re.IGNORECASE)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    # 2. class*="Brand_Name"
+    m = re.search(
+        r'<[^>]*class="[^"]*Brand_Name[^"]*"[^>]*>(.{0,300}?)</',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    # 3. <p class*="Brand">
+    m = re.search(
+        r'<p[^>]*class="[^"]*Brand[^"]*"[^>]*>(.{0,300}?)</p>',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    # 4. class*="brand_name" lower
+    m = re.search(
+        r'<[^>]*class="[^"]*brand_name[^"]*"[^>]*>(.{0,300}?)</',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_title_text(block_html: str) -> str:
+    """商品ブロック HTML から商品タイトルを抽出する。"""
+    # 1. class*="Product_Title"
+    m = re.search(
+        r'<[^>]*class="[^"]*Product_Title[^"]*"[^>]*>(.{0,500}?)</',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    # 2. class*="ProductName"
+    m = re.search(
+        r'<[^>]*class="[^"]*ProductName[^"]*"[^>]*>(.{0,500}?)</',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    # 3. <a class="product_link"> の text
+    m = re.search(
+        r'<a[^>]*class="[^"]*product_link[^"]*"[^>]*>(.{0,500}?)</a>',
+        block_html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if text:
+            return text
+    return ""
+
+
+def extract_products_from_html(html: str) -> list[dict]:
+    """検索結果 HTML から各商品の {price, brand_text, title_text} を抽出する。
+
+    `extract_prices_from_html` の拡張版。価格抽出のロジックは流用しつつ、
+    各価格マッチ位置から祖先の商品ブロックを推定して brand/title を併記する。
+    """
+    if not html:
+        return []
+
     # --- Step 1: 除外 class の要素を削除 ---
     exclude_pat = (
         r'<(?P<tag>[a-zA-Z0-9]+)[^>]*class="[^"]*'
@@ -131,52 +238,127 @@ def extract_prices_from_html(html: str) -> list[int]:
     )
     html_clean = re.sub(exclude_pat, ' ', html, flags=re.IGNORECASE | re.DOTALL)
 
-    candidates: list[int] = []
+    products: list[dict] = []
 
-    # --- Step 2: product_price を優先狙い撃ち ---
-    # nested タグに対応するため lazy match で 500 文字まで許容
+    # --- Step 2: product_price / Price_Txt を優先狙い撃ち ---
     primary_patterns = [
-        r'<[^>]*class="[^"]*product_price[^"]*"[^>]*>(.{0,500}?)</',
-        r'<[^>]*class="[^"]*Price_Txt[^"]*"[^>]*>(.{0,500}?)</',
+        re.compile(
+            r'<[^>]*class="[^"]*product_price[^"]*"[^>]*>(.{0,500}?)</',
+            flags=re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r'<[^>]*class="[^"]*Price_Txt[^"]*"[^>]*>(.{0,500}?)</',
+            flags=re.IGNORECASE | re.DOTALL,
+        ),
     ]
     for pat in primary_patterns:
-        matches = re.findall(pat, html_clean, flags=re.IGNORECASE | re.DOTALL)
+        matches = list(pat.finditer(html_clean))
         if not matches:
             continue
-        for block in matches:
-            # 1 要素あたり最初にヒットした妥当な値だけ採用
-            for pm in re.findall(r"([0-9][0-9,]{3,})", block):
+        for m in matches:
+            block_text = m.group(1)
+            price_val: Optional[int] = None
+            for pm in re.findall(r"([0-9][0-9,]{3,})", block_text):
                 try:
                     v = int(pm.replace(",", ""))
                 except ValueError:
                     continue
                 if 15000 <= v <= 50_000_000:
-                    candidates.append(v)
+                    price_val = v
                     break
-        if candidates:
-            return candidates
+            if price_val is None:
+                continue
+            block_html = _find_block_around(html_clean, m.start(), m.end())
+            products.append({
+                "price": price_val,
+                "brand_text": _extract_brand_text(block_html),
+                "title_text": _extract_title_text(block_html),
+            })
+        if products:
+            return products
 
-    # --- Step 3: data-price attribute ---
-    for m in re.findall(r'data-price="([0-9]+)"', html_clean):
+    # --- Step 3: data-price attribute フォールバック ---
+    for m in re.finditer(r'data-price="([0-9]+)"', html_clean):
         try:
-            v = int(m)
+            v = int(m.group(1))
         except ValueError:
             continue
         if 15000 <= v <= 50_000_000:
-            candidates.append(v)
-    if candidates:
-        return candidates
+            block_html = _find_block_around(html_clean, m.start(), m.end())
+            products.append({
+                "price": v,
+                "brand_text": _extract_brand_text(block_html),
+                "title_text": _extract_title_text(block_html),
+            })
+    if products:
+        return products
 
-    # --- Step 4: フォールバック ¥表記全捕捉 ---
-    raw: list[int] = []
-    for m in re.findall(r"¥\s*([0-9][0-9,]+)", html_clean):
+    # --- Step 4: ¥表記フォールバック ---
+    for m in re.finditer(r"¥\s*([0-9][0-9,]+)", html_clean):
         try:
-            v = int(m.replace(",", ""))
+            v = int(m.group(1).replace(",", ""))
         except ValueError:
             continue
         if 15000 <= v <= 50_000_000:
-            raw.append(v)
-    return raw
+            block_html = _find_block_around(html_clean, m.start(), m.end())
+            products.append({
+                "price": v,
+                "brand_text": _extract_brand_text(block_html),
+                "title_text": _extract_title_text(block_html),
+            })
+    return products
+
+
+def extract_prices_from_html(html: str) -> list[int]:
+    """検索結果 HTML から price (int 円) を抽出する。
+
+    後方互換 wrapper。`extract_products_from_html` を呼んで price のみ返す。
+
+    BUYMA の確認済み class 名 (2026-04 時点):
+      - product_price / product_price_detail  ← 今の実売価 (採用)
+      - Price_Txt                             ← 上と同じものを囲む子要素 (採用)
+      - price_reference                       ← 取消線の旧価格 (除外)
+      - coupon-price                          ← クーポン適用後の参考価格 (除外)
+      - Price_Percent_detail                  ← 割引率 % (除外)
+    """
+    return [item["price"] for item in extract_products_from_html(html)]
+
+
+def _detect_default_prices(
+    prices_list: list[int],
+    threshold_count: int = 2,
+    min_samples: int = 5,
+) -> set[int]:
+    """同一価格が threshold_count 回以上出現する価格 set を返す。
+
+    BUYMA の検索結果が「該当なし」のときに表示されるデフォルト商品リストは、
+    同じ価格が複数件並ぶ傾向がある (異なるカテゴリの商品でも内部的に同じ価格)。
+    その特徴を利用して default 価格を検出する。
+
+    サンプル数が min_samples 未満のときは noisy になりやすいので空 set を返す。
+    """
+    if not prices_list or len(prices_list) < min_samples:
+        return set()
+    counter = Counter(prices_list)
+    return {price for price, count in counter.items() if count >= threshold_count}
+
+
+def _is_brand_match(item_brand_text: str, query_brand: str) -> Optional[bool]:
+    """商品ブロックのブランドテキストが検索ブランドと一致するか。
+
+    Returns:
+        True : 一致 (substring いずれか方向)
+        False: 不一致 (item_brand 有り、query_brand 有り、いずれの方向にも substring 無し)
+        None : 判定不能 (item_brand_text が空 = 抽出失敗 → 除外でなく「不明」扱い)
+    """
+    if item_brand_text is None or not str(item_brand_text).strip():
+        return None
+    if not query_brand or not query_brand.strip():
+        # 検索 brand 不明の場合は判定不能扱い
+        return None
+    a = str(item_brand_text).strip().lower()
+    b = str(query_brand).strip().lower()
+    return (a in b) or (b in a)
 
 
 def _remove_outliers(prices: list[int]) -> list[int]:
@@ -192,26 +374,122 @@ def _remove_outliers(prices: list[int]) -> list[int]:
     return [p for p in prices if lo <= p <= hi]
 
 
-def compute_stats(prices: list[int]) -> dict:
-    """価格リストから統計を計算する (外れ値除去後)。"""
-    if not prices:
+def compute_stats(items, query_brand: str = "") -> dict:
+    """商品 list (または価格 list) から統計を計算する。
+
+    Args:
+        items: 以下のいずれか
+            - list[dict]: {"price": int, "brand_text": str, "title_text": str}
+            - list[int]:  価格のみ (後方互換: brand 判定はスキップ)
+        query_brand: 検索したブランド名。brand_text と照合する。
+
+    新フィールド:
+        - brand_match_count       : 検索 brand と一致した商品数
+        - brand_mismatch_count    : 明確に他ブランドだった商品数
+        - excluded_count_default_price: default 価格として除外された件数
+        - default_price_warnings  : 検出された default 価格 (sorted list)
+        - brand_match_confidence  : (raw_n - mismatch_count) / raw_n (round 2)
+        - exclusion_breakdown     : {brand_mismatch, default_price, iqr_outlier}
+    """
+    # 後方互換: list[int] 入力なら dict に正規化 (brand 判定をスキップ)
+    normalized: list[dict] = []
+    for it in items or []:
+        if isinstance(it, dict):
+            normalized.append(it)
+        else:
+            # int (旧シグネチャ)
+            try:
+                normalized.append({"price": int(it), "brand_text": "", "title_text": ""})
+            except (TypeError, ValueError):
+                continue
+
+    raw_n = len(normalized)
+
+    if raw_n == 0:
         return {
             "sample_count": 0,
             "median_jpy": None,
             "min_jpy": None,
             "max_jpy": None,
             "raw_sample_count": 0,
+            "brand_match_count": 0,
+            "brand_mismatch_count": 0,
+            "excluded_count_default_price": 0,
+            "default_price_warnings": [],
+            "brand_match_confidence": 1.0,
+            "exclusion_breakdown": {
+                "brand_mismatch": 0,
+                "default_price": 0,
+                "iqr_outlier": 0,
+            },
         }
-    raw_n = len(prices)
-    cleaned = _remove_outliers(prices)
+
+    # --- ブランド一致判定 ---
+    brand_match_count = 0
+    brand_mismatch_count = 0
+    accepted_items: list[dict] = []  # match=True or None (不明) のみ
+    for it in normalized:
+        match = _is_brand_match(it.get("brand_text", ""), query_brand)
+        if match is True:
+            brand_match_count += 1
+            accepted_items.append(it)
+        elif match is False:
+            brand_mismatch_count += 1
+        else:
+            # None: 不明 → 受け入れ (除外せず confidence 分母に残す)
+            accepted_items.append(it)
+
+    prices = [it["price"] for it in accepted_items if it.get("price") is not None]
+
+    # --- default 価格除外 ---
+    default_prices = _detect_default_prices(prices)
+    excluded_default_count = sum(1 for p in prices if p in default_prices)
+    filtered = [p for p in prices if p not in default_prices]
+
+    # --- IQR 外れ値除去 ---
+    pre_iqr_n = len(filtered)
+    iqr_filtered = _remove_outliers(filtered) if filtered else []
+    iqr_outlier_count = pre_iqr_n - len(iqr_filtered)
+
+    # フォールバック: iqr_filtered が空なら filtered、それも空なら prices
+    cleaned = iqr_filtered or filtered or prices
+
     if not cleaned:
-        cleaned = prices
+        median = None
+        mn = None
+        mx = None
+        sample_count = 0
+    else:
+        median = int(statistics.median(cleaned))
+        mn = int(min(cleaned))
+        mx = int(max(cleaned))
+        sample_count = len(cleaned)
+
+    # --- brand_match_confidence ---
+    if raw_n == 0:
+        confidence = 1.0
+    elif brand_mismatch_count == 0:
+        # 確実な mismatch がなければ 1.0 維持
+        confidence = 1.0
+    else:
+        confidence = (raw_n - brand_mismatch_count) / raw_n
+
     return {
-        "sample_count": len(cleaned),
-        "median_jpy": int(statistics.median(cleaned)),
-        "min_jpy": int(min(cleaned)),
-        "max_jpy": int(max(cleaned)),
+        "sample_count": sample_count,
+        "median_jpy": median,
+        "min_jpy": mn,
+        "max_jpy": mx,
         "raw_sample_count": raw_n,
+        "brand_match_count": brand_match_count,
+        "brand_mismatch_count": brand_mismatch_count,
+        "excluded_count_default_price": excluded_default_count,
+        "default_price_warnings": sorted(default_prices),
+        "brand_match_confidence": round(confidence, 2),
+        "exclusion_breakdown": {
+            "brand_mismatch": brand_mismatch_count,
+            "default_price": excluded_default_count,
+            "iqr_outlier": iqr_outlier_count,
+        },
     }
 
 
@@ -266,8 +544,8 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
             except Exception:
                 pass
 
-    prices = extract_prices_from_html(html)
-    stats = compute_stats(prices)
+    items = extract_products_from_html(html)
+    stats = compute_stats(items, query_brand=brand)
     result = {
         "brand": brand,
         "keyword": keyword,
@@ -408,8 +686,9 @@ def main():
                 with open(debug_path, "w", encoding="utf-8") as f:
                     f.write(html)
                 print(f"💾 HTML 保存: {debug_path} ({len(html):,} chars)")
-                prices = extract_prices_from_html(html)
-                stats = compute_stats(prices)
+                items = extract_products_from_html(html)
+                prices = [it["price"] for it in items]
+                stats = compute_stats(items, query_brand=args.brand)
                 print(f"抽出価格 (raw): {prices[:20]}{'...' if len(prices) > 20 else ''}")
                 print(f"統計: {json.dumps(stats, ensure_ascii=False)}")
                 browser.close()

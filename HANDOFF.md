@@ -105,6 +105,23 @@
   `source_name` 列から動的解決
 - `fetch_products()` は Phase 2c 範囲外で NotImplementedError、Italist 実装時に併せて移植
 
+### 5. サーバー完結 4 タスク追加 (4 commits)
+- **Market cache audit**: `scripts/audit_market_cache.py` 新規。 ok/suspicious/legacy/empty
+  分類 + `--re-evaluate` で raw_items から compute_stats 再計算。`fetch_market_for` で
+  `raw_items` をキャッシュに保存して将来の再評価を可能に
+- **decide_final_price boundary tests**: 競合レベル / 偽相場 / 信頼度 / breakeven /
+  DDP の 5 クラス 15 ケース追加 (Phase 2a/2b/2c の判定ルートを網羅)
+- **純粋関数を `app/utils/listing_helpers.py` に切り出し**: `_strip_accents`,
+  `map_size_to_jp_reference`, `translate_color_to_jp`, `_map_footwear_to_jp_cm`,
+  `normalize_size_for_buyma`, `classify_size_category`, `format_size_name_for_listing`
+  + 定数 (COLOR_JA_MAP / _IT_SIZE_RANGES / _ALPHA_SIZE_TO_JP / _EU_SHOE_TO_JP_CM)。
+  `tests/test_listing_pure_functions.py` の importlib モックを撤去し直接 import に簡素化
+- **source_edge スコア (Milestone 1)**: `docs/strategy/SOURCE_EDGE_DESIGN.md` で
+  詳細設計、`app/core/source_edge.py` で stub 実装 (`SourceEdgeStats` dataclass +
+  `evaluate_source_edge`)。Italist 等 2 社目の Source 実装後にパイプライン統合
+
+テスト件数: 138 → **195 ケース全 PASS** (回帰なし)
+
 ---
 
 ## ✅ 動作確認済み（問題なし）

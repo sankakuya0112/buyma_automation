@@ -1250,6 +1250,16 @@ def _select_by_label(page, dropdown_selector_js, label, debug_name=""):
     return True
 
 
+# BUYMA 内部での react-select / カスタムドロップダウンを拾うための拡張セレクタ。
+# 旧クラス (.Select, .bmm-c-select) に加え、新たな custom-select / role=combobox /
+# class に "elect" を含む select 要素 / "dropdown" を含む要素もカバーする。
+# `_find_section_selects` / `_dump_section_elements` / `set_region` で共有。
+_SECTION_SELECT_QUERY = (
+    '.Select, .bmm-c-select, .bmm-c-custom-select, [role="combobox"], '
+    'select[class*="elect"], [class*="dropdown"]:not([class*="hover"])'
+)
+
+
 def _find_section_selects(page, section_title_keyword):
     """
     指定の見出しテキストに続く .Select 要素のインデックスを配列で返す。
@@ -1257,12 +1267,21 @@ def _find_section_selects(page, section_title_keyword):
     .bmm-c-summary__ttl や h3/dt の直後に .Select が並ぶ BUYMA の DOM 構造で、
     closest() が効かない／別セクションの Select まで拾ってしまう事を避けるため、
     「見出し要素の位置」と「次の見出し要素の位置」の間にある .Select を対象にする。
+
+    セレクタは旧 (.Select / .bmm-c-select) に加え、新しい custom-select /
+    role=combobox / [class*=dropdown] 等までカバーするように拡張済み (重複は dedupe)。
     """
     return page.evaluate(f"""(function(){{
         var titles = document.querySelectorAll(
             '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
         );
-        var allSels = Array.from(document.querySelectorAll('.Select, .bmm-c-select'));
+        // 重複は dedupe (.Select かつ [class*=dropdown] みたいな要素を 1 つに)
+        var rawSels = document.querySelectorAll({json.dumps(_SECTION_SELECT_QUERY)});
+        var seen = new Set();
+        var allSels = [];
+        for (var k = 0; k < rawSels.length; k++) {{
+            if (!seen.has(rawSels[k])) {{ seen.add(rawSels[k]); allSels.push(rawSels[k]); }}
+        }}
         var keyword = {json.dumps(section_title_keyword)};
         // このセクションの開始見出しと、次の見出しの DOM 位置を特定する
         var startIdx = -1;
@@ -1303,13 +1322,169 @@ def _find_section_selects(page, section_title_keyword):
     }})()""")
 
 
+def _dump_section_elements(page, section_title_keyword, limit=30):
+    """指定セクション (見出し → 次見出し) のスコープ内 DOM を診断ダンプする。
+
+    Mac 実走 1 ターンで真因取得するため、買付地/発送地のセレクタが効かない場合に
+    section スコープ内に存在する要素のメタ情報（tag/classes/role/id/text）を返す。
+
+    戻り値: dict
+      - error: 'no_title' のとき: {error, found_titles}
+      - 通常: {section_html_length, dom_elements: [...], sels_found_via_extended: [{idx, tag, classes}, ...]}
+    """
+    return page.evaluate(f"""(function(){{
+        var titles = document.querySelectorAll(
+            '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt, label'
+        );
+        var keyword = {json.dumps(section_title_keyword)};
+        var startIdx = -1;
+        for (var i = 0; i < titles.length; i++) {{
+            var t = (titles[i].textContent || '').trim();
+            if (t === keyword || t.indexOf(keyword) === 0) {{ startIdx = i; break; }}
+        }}
+        if (startIdx < 0) {{
+            return {{
+                error: 'no_title',
+                found_titles: Array.from(titles).map(function(t){{
+                    return (t.textContent || '').trim().slice(0, 20);
+                }}).filter(function(s){{ return s.length > 0; }}).slice(0, 60)
+            }};
+        }}
+        var startEl = titles[startIdx];
+        var endEl = titles[startIdx + 1] || null;
+        function afterStart(el){{
+            return startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+        }}
+        function beforeEnd(el){{
+            if (!endEl) return true;
+            return endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING;
+        }}
+        // セクションの HTML 長 (DOM 範囲の概算)
+        var sectionHtmlLength = 0;
+        // start..end の間にあるトップレベル兄弟の outerHTML を概算で合算
+        try {{
+            var node = startEl;
+            while (node && (!endEl || node !== endEl)) {{
+                if (node.outerHTML) sectionHtmlLength += node.outerHTML.length;
+                node = node.nextElementSibling;
+                if (!node) {{
+                    // 親へ上って次へ
+                    var p = (node || startEl).parentElement;
+                    if (!p) break;
+                    node = p.nextElementSibling;
+                    if (!node) break;
+                }}
+                if (sectionHtmlLength > 200000) break;
+            }}
+        }} catch(e) {{}}
+
+        // TreeWalker でセクション内要素を走査
+        var elements = [];
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        var el;
+        var lim = {limit};
+        while ((el = walker.nextNode())) {{
+            if (!afterStart(el)) continue;
+            if (!beforeEnd(el)) break;
+            var cls = (el.className && typeof el.className === 'string') ? el.className : (el.getAttribute && el.getAttribute('class')) || '';
+            var role = (el.getAttribute && el.getAttribute('role')) || '';
+            var idAttr = el.id || '';
+            var txt = ((el.textContent || '').trim()).slice(0, 30);
+            elements.push({{
+                tag: (el.tagName || '').toLowerCase(),
+                classes: String(cls).slice(0, 80),
+                role: role,
+                id: idAttr,
+                text: txt
+            }});
+            if (elements.length >= lim) break;
+        }}
+
+        // 拡張クエリで実際にヒットした要素を section スコープで列挙
+        var rawSels = document.querySelectorAll({json.dumps(_SECTION_SELECT_QUERY)});
+        var hits = [];
+        for (var j = 0; j < rawSels.length; j++) {{
+            var s = rawSels[j];
+            if (!afterStart(s) || !beforeEnd(s)) continue;
+            var c = (s.className && typeof s.className === 'string') ? s.className : (s.getAttribute && s.getAttribute('class')) || '';
+            hits.push({{
+                idx: j,
+                tag: (s.tagName || '').toLowerCase(),
+                classes: String(c).slice(0, 80)
+            }});
+        }}
+
+        return {{
+            section_html_length: sectionHtmlLength,
+            dom_elements: elements,
+            sels_found_via_extended: hits
+        }};
+    }})()""")
+
+
 def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川県"):
     """買付地と発送地を設定する。
 
     - 買付地: 海外 → ヨーロッパ → イタリア（.Select が2つ並ぶ想定）
     - 発送地: 国内ラジオ選択 → 神奈川県 ドロップダウン
+
+    Mac 実走で買付地が空欄のまま保存される事象 (2026-04 時点) に対し、
+    冒頭で買付地/発送地の DOM ダンプを常時実行して真因を取得する。
+    また、4 つの dropdown 選択を Playwright native click (`_click_select_option`)
+    に移行し、失敗時のみ旧 JS 経由 (`_select_by_label`) に fallback する。
     """
     results = []
+
+    # --- 診断ダンプ (常時実行: Mac 実走 1 ターンで真因取得するため) ---
+    try:
+        buy_dump = _dump_section_elements(page, "買付地")
+    except Exception as e:
+        buy_dump = {"error": f"dump_exception:{e}"}
+    print(f"    🌍 [DUMP-買付地] {buy_dump}")
+    try:
+        ship_dump = _dump_section_elements(page, "発送地")
+    except Exception as e:
+        ship_dump = {"error": f"dump_exception:{e}"}
+    print(f"    🌍 [DUMP-発送地] {ship_dump}")
+
+    # ダンプ結果からログに含める dump_keys (重要キー要約) を作る
+    def _dump_keys(d):
+        if not isinstance(d, dict) or d.get("error"):
+            return []
+        hits = d.get("sels_found_via_extended") or []
+        keys = []
+        for h in hits[:8]:
+            tag = h.get("tag", "?")
+            cls = (h.get("classes") or "").split()
+            cls_short = ".".join(cls[:2]) if cls else ""
+            keys.append(f"{tag}.{cls_short}" if cls_short else tag)
+        return keys
+
+    EXT_QUERY = _SECTION_SELECT_QUERY  # extended dropdown query (set_region 内 alias)
+
+    def _click_or_fallback(sel_idx, label, debug_name, legacy_query="'.Select, .bmm-c-select'"):
+        """Playwright native click → 失敗したら旧 JS (_select_by_label) に fallback。
+
+        sel_idx: 拡張クエリでの index (拡張クエリ全体の nth)。
+        legacy_query: fallback 用の document.querySelectorAll セレクタ文字列。
+        """
+        try:
+            dd = page.locator(EXT_QUERY).nth(sel_idx)
+            if _click_select_option(page, dd, label, debug_name=debug_name):
+                return True
+        except Exception as e:
+            print(f"       [_click_or_fallback:{debug_name}] native click 例外: {e}")
+        # fallback: 旧 JS 経由
+        try:
+            return _select_by_label(
+                page,
+                f"document.querySelectorAll({legacy_query})[{sel_idx}]",
+                label,
+                debug_name=f"{debug_name}_fallback",
+            )
+        except Exception as e:
+            print(f"       [_click_or_fallback:{debug_name}] fallback 例外: {e}")
+            return False
 
     # --- 買付地 ---
     info = _find_section_selects(page, "買付地")
@@ -1318,17 +1493,20 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     else:
         sel_indices = info.get("selects", []) if isinstance(info, dict) else []
         if len(sel_indices) >= 2:
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", "ヨーロッパ", debug_name="買付地_大陸"):
+            if _click_or_fallback(sel_indices[0], "ヨーロッパ", "買付地_大陸",
+                                  legacy_query=json.dumps(EXT_QUERY)):
                 results.append("買付地_大陸=ヨーロッパ")
             else:
                 results.append("買付地_大陸 失敗")
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[1]}]", purchase_country, debug_name="買付地_国"):
+            if _click_or_fallback(sel_indices[1], purchase_country, "買付地_国",
+                                  legacy_query=json.dumps(EXT_QUERY)):
                 results.append(f"買付地_国={purchase_country}")
             else:
                 results.append(f"買付地_国 '{purchase_country}' 失敗")
         elif len(sel_indices) == 1:
             # ドロップダウンが 1 つしかない場合（BUYMA の仕様変更等）は 1 段だけ選択を試す
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel_indices[0]}]", purchase_country, debug_name="買付地_1段"):
+            if _click_or_fallback(sel_indices[0], purchase_country, "買付地_1段",
+                                  legacy_query=json.dumps(EXT_QUERY)):
                 results.append(f"買付地={purchase_country} (1段)")
             else:
                 results.append("買付地 1段選択 失敗")
@@ -1338,32 +1516,46 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     # --- 発送地 ---
     info2 = _find_section_selects(page, "発送地")
     if isinstance(info2, dict) and not info2.get("error"):
-        # ラジオから「国内」をクリック
-        domestic_clicked = page.evaluate("""(function(){
-            var titles = document.querySelectorAll(
-                '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
-            );
-            var startIdx = -1;
-            for (var i = 0; i < titles.length; i++) {
-                var t = titles[i].textContent.trim();
-                if (t === '発送地' || t.indexOf('発送地') === 0) { startIdx = i; break; }
-            }
-            if (startIdx < 0) return false;
-            var startEl = titles[startIdx];
-            var endEl = titles[startIdx + 1] || null;
-            var cands = document.querySelectorAll('label, button, div.bmm-c-radio');
-            for (var i = 0; i < cands.length; i++) {
-                var el = cands[i];
-                if (!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-                if (endEl && !(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
-                var txt = (el.textContent || '').trim();
-                if (txt === '国内' || txt.indexOf('国内') === 0) {
-                    el.click();
-                    return true;
+        # ラジオから「国内」をクリック (現状動作しているため、Playwright click を試みつつ
+        # 失敗時は旧 JS click に fallback)
+        domestic_clicked = False
+        try:
+            radio_locator = page.locator(
+                'label:has-text("国内"), div.bmm-c-radio:has-text("国内")'
+            ).first
+            if radio_locator.count() > 0:
+                radio_locator.scroll_into_view_if_needed(timeout=2000)
+                radio_locator.click(timeout=3000)
+                domestic_clicked = True
+        except Exception as e:
+            print(f"       [set_region:発送地_radio] native click 例外: {e}")
+        if not domestic_clicked:
+            # fallback: 旧 JS 経由
+            domestic_clicked = page.evaluate("""(function(){
+                var titles = document.querySelectorAll(
+                    '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
+                );
+                var startIdx = -1;
+                for (var i = 0; i < titles.length; i++) {
+                    var t = titles[i].textContent.trim();
+                    if (t === '発送地' || t.indexOf('発送地') === 0) { startIdx = i; break; }
                 }
-            }
-            return false;
-        })()""")
+                if (startIdx < 0) return false;
+                var startEl = titles[startIdx];
+                var endEl = titles[startIdx + 1] || null;
+                var cands = document.querySelectorAll('label, button, div.bmm-c-radio');
+                for (var i = 0; i < cands.length; i++) {
+                    var el = cands[i];
+                    if (!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                    if (endEl && !(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+                    var txt = (el.textContent || '').trim();
+                    if (txt === '国内' || txt.indexOf('国内') === 0) {
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            })()""")
         time.sleep(0.6)
         if domestic_clicked:
             results.append("発送地_国内選択")
@@ -1371,7 +1563,8 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         info2b = _find_section_selects(page, "発送地")
         sel2 = info2b.get("selects", []) if isinstance(info2b, dict) else []
         if sel2:
-            if _select_by_label(page, f"document.querySelectorAll('.Select, .bmm-c-select')[{sel2[0]}]", ship_prefecture, debug_name="発送地_都道府県"):
+            if _click_or_fallback(sel2[0], ship_prefecture, "発送地_都道府県",
+                                  legacy_query=json.dumps(EXT_QUERY)):
                 results.append(f"発送地={ship_prefecture}")
             else:
                 results.append(f"発送地 '{ship_prefecture}' 失敗")
@@ -1380,6 +1573,9 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     else:
         results.append("発送地_見出し未検出")
 
+    # 末尾に dump 由来の重要キーを追加して、ログから真因判別しやすくする
+    results.append(f"dump_keys_buy={_dump_keys(buy_dump)}")
+    results.append(f"dump_keys_ship={_dump_keys(ship_dump)}")
     print(f"    🌍 地域: {results}")
 
 

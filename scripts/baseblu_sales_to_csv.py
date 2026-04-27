@@ -16,8 +16,15 @@ import requests
 import csv
 import os
 import re
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
+
+# プロジェクトルートを sys.path に追加 (app.core.sources を import するため)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
@@ -385,8 +392,13 @@ def _extract_sizes(variants: list, only_available: bool = False) -> str:
     return ", ".join(out)
 
 
-def parse_product(product, fetch_details=True):
-    """Shopify APIの商品データから必要な項目を抽出する"""
+def parse_product(product, fetch_details=True, source_meta=None):
+    """Shopify APIの商品データから必要な項目を抽出する。
+
+    source_meta: BasebluSource.metadata_dict() などの dict。CSV 出力に
+    source_name / currency / landed_cost_basis 列を付与する用途。
+    None の場合はデフォルト (baseblu / EUR / DDU)。
+    """
     title = product.get("title", "")
     vendor = product.get("vendor", "")
     handle = product.get("handle", "")
@@ -474,6 +486,12 @@ def parse_product(product, fetch_details=True):
     if desc_sku:
         sku = desc_sku
 
+    meta = source_meta or {
+        "source_name": "baseblu",
+        "currency": "EUR",
+        "landed_cost_basis": "DDU",
+    }
+
     return {
         "title": title,
         "vendor": vendor,
@@ -491,6 +509,9 @@ def parse_product(product, fetch_details=True):
         "image_url": image_url,
         "sub_images": sub_images,
         "product_url": product_url,
+        "source_name": meta.get("source_name", "baseblu"),
+        "currency": meta.get("currency", "EUR"),
+        "landed_cost_basis": meta.get("landed_cost_basis", "DDU"),
     }
 
 
@@ -499,7 +520,9 @@ def save_to_csv(rows, output_path):
         "title", "vendor", "product_type", "sku",
         "color", "sizes", "available_sizes", "season",
         "sale_price", "original_price", "discount_rate", "available",
-        "description_en", "image_url", "sub_images", "product_url"
+        "description_en", "image_url", "sub_images", "product_url",
+        # Phase 2c 追加: 仕入先抽象化のメタ列
+        "source_name", "currency", "landed_cost_basis",
     ]
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -516,6 +539,13 @@ def save_to_csv(rows, output_path):
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # Phase 2c: BasebluSource のメタを CSV に注入する
+    try:
+        from app.core.sources import BasebluSource
+        source_meta = BasebluSource().metadata_dict()
+    except Exception:
+        source_meta = {"source_name": "baseblu", "currency": "EUR", "landed_cost_basis": "DDU"}
+
     products = fetch_all_products()
     if not products:
         print("❌ 商品データを取得できませんでした。")
@@ -524,7 +554,7 @@ def main():
     print(f"\n📝 商品詳細を取得中（説明文・品番）...")
     rows = []
     for i, p in enumerate(products, 1):
-        parsed = parse_product(p, fetch_details=True)
+        parsed = parse_product(p, fetch_details=True, source_meta=source_meta)
         if parsed:
             rows.append(parsed)
         if i % 20 == 0:

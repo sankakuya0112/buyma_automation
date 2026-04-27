@@ -42,6 +42,7 @@ from app.core.external_benchmark import (
     ExternalBenchmark, evaluate_external_benchmark,
     load_benchmarks, make_product_key,
 )
+from app.core.sources import get_source
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
@@ -161,11 +162,12 @@ def main():
             vendor = row.get("vendor", "")
             title = row.get("title", "")
 
-            params = PricingParams(
-                source_price=sale_price_eur,
-                currency="EUR",
+            # Phase 2c: source_name 列があれば BaseSource 経由で PricingParams を組み立てる。
+            # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) に fallback する。
+            source = get_source(row.get("source_name", ""))
+            params = source.get_pricing_params(
+                sale_price=sale_price_eur,
                 category=product_type,
-                landed_cost_basis="DDU",  # Baseblu は DDU
             )
             result = calculate_pricing(params)
 

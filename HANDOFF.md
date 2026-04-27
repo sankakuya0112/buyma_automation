@@ -59,8 +59,51 @@
 ## 📍 現在のブランチ・コミット
 
 - ブランチ: `claude/add-test-flag-HibqE`
-- 直近コミット: Phase 2-3 フレームワーク一括実装
+- 直近コミット (2026-04-27): Phase 2c 仕入先抽象化 + 市場精度改善 + テスト拡充 + set_region 移行
 - 作業ツリー: クリーン（push 済み）
+
+---
+
+## 🔑 今セッション(2026-04-27)で追加された 4 タスク
+
+### 1. set_region (買付地) Playwright native click + 診断ダンプ追加
+- **問題**: 買付地が空欄のまま下書き保存される
+- **対応**: `_dump_section_elements()` で見出し範囲内の全要素ダンプを set_region 冒頭で
+  常時実行(Mac 実走 1 ターンで真因取得)。`_select_by_label` 4 箇所を
+  `_click_select_option` (Playwright native click) に移行、JS fallback 残置
+- **次の検証**: Mac 実走で `🌍 [DUMP-買付地]` ログを採取してチャットに貼ってもらう
+
+### 2. fetch_buyma_market_prices.py 偽相場ガード強化
+- **問題**: THE LATEST ブランドで他社デフォルト商品 (¥25,980 等) が混入し、cost 同等の
+  偽 median が出て 2 件が誤 SKIP
+- **対応**: `extract_products_from_html()` で価格と一緒に brand_text/title_text を抽出、
+  `_is_brand_match()` で query との一致判定、`_detect_default_prices()` で重複価格を除外。
+  `MarketStats.brand_match_confidence: float = 1.0` を追加し `is_reliable()` で 0.5 以上を
+  ガード条件に。旧 JSON は default 1.0 で完全互換
+- **新フィールド**: `brand_match_count`, `brand_mismatch_count`, `excluded_count_default_price`,
+  `default_price_warnings`, `brand_match_confidence`, `exclusion_breakdown`
+
+### 3. ユニットテスト拡充 (55 → 155 ケース)
+- 既存 `test_pricing.py` 7 件 + `test_guard.py` 1 件のエラーを EUR=186 改訂に追従
+- **新規**: `test_external_benchmark.py` (19), `test_rules.py` (19),
+  `test_listing_pure_functions.py` (29), `test_market_prices.py` (16),
+  `test_sources.py` (17)
+- importlib + sys.modules モックで playwright 不在環境でも buyma_auto_listing.py の
+  純粋関数をテスト可能に
+- in-memory SQLite で GovernorRules.check_duplicate も統合テスト
+
+### 4. Phase 2c 仕入先抽象化 (BasebluSource 切り出し)
+- **目的**: Italist (DDP) など複数仕入先対応の足場
+- `app/core/sources/{__init__,base,baseblu}.py` を新設
+- `BaseSource` ABC: name / currency / country / landed_cost_basis をクラス変数で保持、
+  `get_pricing_params()` で source 固有の PricingParams を生成
+- `BasebluSource`: name=baseblu / currency=EUR / country=IT / landed_cost_basis=DDU
+- `get_source(name)` factory: 未登録は baseblu に fallback (旧 CSV 透過処理)
+- `scripts/baseblu_sales_to_csv.py` の CSV に source_name / currency / landed_cost_basis
+  3 列を末尾追加
+- `scripts/filter_baseblu_profitable.py` の `landed_cost_basis="DDU"` ハードコード削除、
+  `source_name` 列から動的解決
+- `fetch_products()` は Phase 2c 範囲外で NotImplementedError、Italist 実装時に併せて移植
 
 ---
 
@@ -130,6 +173,18 @@
 - 公開出品(`draft_mode=False`) — 現状 draft のみ
 - エラー時のリトライ戦略
 - 日次バッチ実行
+
+### 5. set_region (買付地) Mac 実走で真因確定が必要 (2026-04-27 追加)
+今セッションで `_dump_section_elements()` を set_region 冒頭で常時実行する形にしたが、
+DOM クラス変更 / 範囲判定 / 別構造 のいずれが真因かはサーバーから判別不能。
+**次セッション最初のアクション**: Mac 実走で `🌍 [DUMP-買付地]` 出力をチャット
+に貼ってもらい、_SECTION_SELECT_QUERY や見出し走査ロジックを最終調整する。
+
+### 6. Italist / Farfetch / Cettire / Mytheresa 各 source 実装 (2026-04-27 追加)
+Phase 2c で `BaseSource` ABC + `BasebluSource` の足場は完成。各サイトの追加は
+それぞれ 1 セッション規模 (HTML 構造調査 + parse_product 移植 + テスト) を想定。
+`app/core/sources/__init__.py:REGISTERED_SOURCES` に登録するだけで filter
+パイプラインに統合される構造。
 
 ---
 

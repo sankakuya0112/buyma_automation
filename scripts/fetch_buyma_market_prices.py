@@ -552,6 +552,8 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
         "url": url,
         "fetched_at": datetime.now().isoformat(),
         **stats,
+        # 将来の re-evaluate のため raw items を保存 (forward 互換)
+        "raw_items": items,
     }
     return result
 

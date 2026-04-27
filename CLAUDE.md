@@ -185,6 +185,74 @@ title 中のキーワードで 3階層パス（parent > middle > leaf）を決�
 
 ---
 
+## 🗂 プロジェクト構造の重要な置き場 (Phase 2c+ 以降)
+
+新規実装やテスト追加時、まず以下の既存資産を確認して再利用すること。
+似た実装を別場所に作らないこと。
+
+### 純粋関数 (Playwright 非依存) は `app/utils/listing_helpers.py`
+- `_strip_accents(text)` — 日本語濁点を保ったまま Latin アクセント除去
+- `map_size_to_jp_reference(size, product_type)` — IT サイズ → BUYMA 参考日本サイズ
+- `_map_footwear_to_jp_cm(size)` — EU/IT 数値 → cm ラベル (女性靴 34〜41.5)
+- `translate_color_to_jp(color)` — 英語色 → BUYMA 系統ラベル
+- `normalize_size_for_buyma`, `classify_size_category`, `format_size_name_for_listing`
+- 定数: `COLOR_JA_MAP`, `_IT_SIZE_RANGES`, `_ALPHA_SIZE_TO_JP`, `_EU_SHOE_TO_JP_CM`
+
+`scripts/buyma_auto_listing.py` からはこれを import している。**新たに純粋な
+変換関数を書くときは scripts/ ではなく app/utils/ に配置**して `tests/test_listing_pure_functions.py`
+にテストを追加すること。
+
+### 仕入先 (Source) の抽象化は `app/core/sources/`
+- `BaseSource` ABC: `name` / `currency` / `country` / `landed_cost_basis` / `get_pricing_params()`
+- `BasebluSource`: name=baseblu / currency=EUR / country=IT / landed_cost_basis=DDU
+- `get_source(name)` factory: 未登録は baseblu に fallback (旧 CSV 透過処理)
+
+新仕入先 (Italist 等) の追加手順:
+1. `app/core/sources/<name>.py` に `class <Name>Source(BaseSource)` を作る
+2. `app/core/sources/__init__.py:REGISTERED_SOURCES` に登録
+3. `tests/test_sources.py` にメタデータ検証テストを追加
+4. `data/categories.json` / `brands.json` に必要なら拡張
+
+CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規約。
+`scripts/filter_baseblu_profitable.py` は `get_source(row.get('source_name'))` で
+動的解決するため、ハードコードを増やさないこと。
+
+### 仕入先優位スコア `source_edge` は `app/core/source_edge.py`
+- `SourceEdgeStats` dataclass: cheapest / second_cheapest / edge_jpy / edge_pct
+- `evaluate_source_edge(edge, final_price, current_source)`:
+  4 経路 (exclusive_source / not_cheapest_source / low_source_edge / high_source_edge)
+
+詳細設計は `docs/strategy/SOURCE_EDGE_DESIGN.md`。本格運用は **2 仕入先目** が
+必要なため、Italist 実装後に Milestone 2 (data/source_index.json + Levenshtein
+マッチング) に進む。
+
+### 市場相場の品質チェックは `scripts/audit_market_cache.py`
+`fetch_buyma_market_prices.py` のキャッシュ JSON を走査:
+- `python3 scripts/audit_market_cache.py` — 統計 (ok/suspicious/legacy/empty)
+- `--re-evaluate` — `raw_items` から `compute_stats` 再計算 (新ロジック適用)
+- `--threshold 0.5` — `brand_match_confidence` の閾値変更
+
+旧キャッシュ (legacy = フィールド未存在) はキャッシュ無視で再 fetch が必要。
+新キャッシュには `raw_items` が forward 互換で保存される。
+
+### エラー通知は `app/utils/notifier.py`
+- `notify(level, title, body)` — Slack + email 両送信
+- `notify_error(operation, exc, context=None)` — 例外時の整形通知
+- 環境変数: `SLACK_WEBHOOK_URL`, `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD`, `NOTIFY_EMAIL_TO`/`NOTIFY_EMAIL_FROM`
+- 設定なしなら silent skip (開発環境で誤通知の心配なし)
+- `NOTIFY_DRY_RUN=1` で実送信せず stdout 出力
+
+### テスト実行
+```bash
+python3 -m unittest discover tests        # 全件 (現状 211 ケース)
+python3 -m unittest tests.test_pricing -v  # 個別ファイル
+```
+
+CI (.github/workflows/test.yml) で push/PR 時に Python 3.11 + 3.12 マトリクスで
+自動実行されるため、commit 前にローカルで全 PASS を必ず確認すること。
+
+---
+
 ## 実行環境について（重要）
 
 ### Claude Code サーバーでできること ✅

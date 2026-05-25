@@ -2634,6 +2634,22 @@ def main():
                 "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
 
+            # 連続失敗の通知 (status が retriable 系で 2 回 retry も失敗した時のみ)
+            # silent skip 設定: SLACK_WEBHOOK_URL / SMTP_HOST 未設定なら何も送られない
+            if status in ("error", "timeout", "publish_failed"):
+                try:
+                    from app.utils.notifier import notify
+                    notify(
+                        "warn",
+                        f"出品失敗: {product['vendor']} {product['title'][:40]}",
+                        f"status={status} attempt=2/2\n"
+                        f"price=¥{int(product['recommended_price']):,}\n"
+                        f"sku={product.get('sku', '')}\n"
+                        f"url={product.get('product_url', '')}"
+                    )
+                except Exception as notify_exc:
+                    print(f"  ⚠️ 通知送信失敗 (無視): {notify_exc}")
+
             # v4.1: status 別に進捗を記録する。重複登録は避ける。
             title = product["title"]
             if status in SUCCESS_STATUSES:
@@ -2683,6 +2699,23 @@ def main():
     print(f"\n{'='*50}")
     print(f"✅ 公開:{pub} 下書き:{dra} スキップ:{skip} 失敗:{fail}")
     print(f"📄 {result_path}")
+
+    # バッチ完了通知 (失敗率 30% 超 or 公開モードなら必ず送る)
+    failure_rate = fail / len(results) if results else 0
+    should_notify = (failure_rate > 0.3) or (publish_mode and (pub + dra) > 0)
+    if should_notify:
+        try:
+            from app.utils.notifier import notify
+            level = "error" if failure_rate > 0.3 else "success"
+            notify(
+                level,
+                f"BUYMA 出品バッチ完了 (mode={'publish' if publish_mode else 'draft'})",
+                f"対象 {len(results)} 件 → 公開:{pub} 下書き:{dra} スキップ:{skip} 失敗:{fail}\n"
+                f"失敗率: {failure_rate*100:.1f}%\n"
+                f"CSV: {result_path}"
+            )
+        except Exception as notify_exc:
+            print(f"⚠️ 完了通知送信失敗 (無視): {notify_exc}")
 
 if __name__ == "__main__":
     main()

@@ -1,3 +1,64 @@
+# 引き継ぎノート（2026-05-25 セッション終了時点 / 7回目更新）
+
+---
+
+## 🆕 2026-05-25 セッション追加 (完成版ラストマイル)
+
+### 1. audit_pricing.py — レガシー CSV 対応 (graceful)
+- 旧 USD パイプライン出力 (`sale_price_jpy` / `suggested_buyma_price_jpy` /
+  `estimated_profit_jpy` のみ) でも `--summary` が機能不全にならないよう、
+  `_normalize_legacy_row()` で新スキーマ (`source_price_jpy` /
+  `selling_price_jpy` / `profit_jpy`) にマップしてから集計。
+- margin_pct も profit / sell から自動導出。
+- 既存 CSV (2026-04-06) で確認: 利益中央値 ¥23,347 / 利益率中央値 **15.0%**
+  / 最小利益 ¥5,125 (floor ¥5,000 ぎりぎり)。Phase 2a の 25% target に
+  届いていない → 新パイプライン (filter_baseblu_profitable.py の最新版)
+  で再生成すれば改善見込み。
+
+### 2. update_listed_prices.py — 価格更新 UI 実装 (診断ダンプ付き)
+- `update_listing_price(page, item_id, new_price, dump=True)` を完成。
+- `_dump_edit_page_state()` で編集ページの visible button / 価格 input を
+  ダンプ → Mac 実走の初回ログから「保存ボタンのテキスト」「価格 input の
+  ancestor 構造」を確定する設計 (set_region の `_dump_section_elements`
+  と同じ思想)。
+- 価格セットは `buyma_auto_listing.set_price` と同じ 6 階層 ancestor 探索 +
+  `window.__si()` (fallback: native setter + input/change dispatch)。
+- 保存ボタンは「更新する」「変更を保存」「保存する」「下書き保存する」を
+  順次試す。確認モーダル ("はい"/"OK"/"保存する"/"更新する") も突破。
+- 成否判定: URL 変化 or `text=保存しました` トースト (10 秒待機)。
+
+### 3. check_inventory.py — 出品停止 UI 実装 (診断ダンプ付き)
+- `stop_buyma_listing(page, item_id, dump=True)` を完成。
+- `_dump_stop_page_state()` で「停止 / 取り下げ / 削除 / 公開停止」を含む
+  visible 要素を button/a/label/radio 横断でダンプ。
+- 停止操作: ["出品停止", "停止する", "公開停止", "停止"] を label/button
+  優先順で順次クリック。続いて保存系ボタン (update_listing_price と同じ
+  4 種) を試行。
+- 成否判定: URL 変化 or toast (10 秒)。
+
+**両関数とも初回 Mac 実走で diagnostic dump をログ採取 → 必要なら微調整**
+の運用。`buyma_auto_listing.set_region` で実証済みのパターン。
+
+### 4. buyma_auto_listing.py — エラー通知統合
+- 連続失敗 (status=error/timeout/publish_failed が 2 retry 後も継続) で
+  `notify("warn", ...)` 送信。
+- バッチ完了時、失敗率 30% 超または publish モード時にサマリ通知
+  (`notify("error" or "success", ...)`)。
+- `SLACK_WEBHOOK_URL` / `SMTP_HOST` 未設定なら silent skip (notifier の
+  既存仕様)。`NOTIFY_DRY_RUN=1` で stdout 出力テスト可能。
+
+### 5. テスト追加 (211 → 215 ケース)
+- `tests/test_audit_pricing_legacy.py` 新規 (4 ケース):
+  legacy 列マップ / 新スキーマ保護 / 0 除算回避 / load_rows 統合。
+
+### Mac 実走で次に確認すべきこと
+1. `update_listed_prices.py --dry-run --limit 3` → 価格差分検出が動く
+2. `check_inventory.py --dry-run --limit 3` → 在庫検出 + sold_out リスト
+3. `--execute` 走行で `🔬 [DUMP-編集ページ]` / `🔬 [DUMP-停止]` ログ採取
+4. ボタンテキスト・selectors を確定 → 必要なら 1-2 行調整して再走
+
+---
+
 # 引き継ぎノート（2026-04-22 セッション終了時点 / 6回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・

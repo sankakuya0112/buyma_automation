@@ -754,6 +754,10 @@ def main():
             brand = (row.get("vendor") or "").strip()
             sku = (row.get("sku") or "").strip()
             keyword = keyword_from_title(row.get("title") or "")
+            # Italist の sku は boutique 側の短い内部番号/サイズ番号が混じりやすく、
+            # BUYMA検索では汎用ノイズになりやすい。Italist はタイトル検索を優先する。
+            if (row.get("source_name") or "").strip().lower() == "italist":
+                sku = ""
             # 2段階: まず SKU 検索用キャッシュを探し、なければ title 検索
             sku_kw = keyword_from_sku(sku)
             key = f"{brand}|{sku_kw or keyword}"

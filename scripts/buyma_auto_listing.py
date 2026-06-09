@@ -34,6 +34,8 @@ BUYMAへの自動出品スクリプト（統合版）
   python3 scripts/buyma_auto_listing.py --from 3              # 3件目から
   python3 scripts/buyma_auto_listing.py --max-price 30000     # ¥30,000以下のみ
   python3 scripts/buyma_auto_listing.py --min-profit 5000     # 利益¥5,000以上のみ
+  python3 scripts/buyma_auto_listing.py --window-x 1800 --window-y 0 --window-w 1400 --window-h 900
+                                                        # 出品ブラウザを別モニタ座標で起動
 
 必要なもの:
   pip install playwright requests --break-system-packages
@@ -89,6 +91,8 @@ OUTPUT_DIR    = os.path.join(BASE_DIR, "outputs", "reports")
 CONFIG_PATH   = os.path.join(BASE_DIR, "config.json")
 PROGRESS_FILE = os.path.join(OUTPUT_DIR, "auto_listing_progress.json")
 DATA_DIR      = os.path.join(BASE_DIR, "data")
+STATE_DIR     = os.path.join(BASE_DIR, "state")
+STORAGE_STATE_PATH = os.path.join(STATE_DIR, "buyma_storage_state.json")
 
 BUYMA_LOGIN_URL   = "https://www.buyma.com/login/"
 BUYMA_LISTING_URL = "https://www.buyma.com/my/sell/new?tab=b"
@@ -131,6 +135,40 @@ FASHION_TERMS = {
 
 
 
+def clean_source_description(desc_en):
+    """仕入先 description から Shopify/JSON 断片など販売文に不要な行を除去する。"""
+    if not desc_en:
+        return ""
+    text = _strip_accents(str(desc_en))
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Shopify product JSON が混じる場合は variants 以降を切り落とす
+    text = re.split(r'"variants"\s*:', text, maxsplit=1)[0]
+    raw_lines = re.split(r"[\r\n]+", text)
+    cleaned = []
+    noise_re = re.compile(
+        r"(price_min|price_max|price_varies|compare_at_price|option1|available|pim:|welcome_|\"id\"|\"title\"|\{\"|\}\]|\],\")",
+        re.IGNORECASE,
+    )
+    for line in raw_lines:
+        line = re.sub(r"\s+", " ", line).strip(" \t,;")
+        if not line:
+            continue
+        if noise_re.search(line):
+            continue
+        if len(re.findall(r'[:{}\[\]"]', line)) >= 3:
+            continue
+        line = re.sub(r"\bSku\s*[:：]\s*[A-Za-z0-9_\-]+\b", "", line, flags=re.IGNORECASE).strip(" ,;")
+        line = re.sub(r"\bSeason\s*[:：]\s*[A-Z]{1,4}\d{2,4}\b", "", line, flags=re.IGNORECASE).strip(" ,;")
+        line = re.sub(r"\bComposition\s*[:：]?\s*GENERAL\s*", "Material: ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bComposition\s*[:：]?\s*", "Material: ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bMaterial\s*[:：]\s*GENERAL\s*", "Material: ", line, flags=re.IGNORECASE)
+        if line:
+            cleaned.append(line)
+    return "\n".join(cleaned[:6])
+
+
 def translate_description(desc_en):
     """英語商品説明を和訳する。
 
@@ -141,6 +179,7 @@ def translate_description(desc_en):
     いずれの場合も末尾でアクセント文字を ASCII に正規化する
     （BUYMA が è 等の文字を validation で弾くため）。
     """
+    desc_en = clean_source_description(desc_en)
     if not desc_en:
         return ""
     try:
@@ -435,14 +474,15 @@ def generate_description(title, vendor, sku, description_en, cat_label):
     lines.append("━━━ 安心の正規品保証 ━━━")
     lines.append("・ヨーロッパ正規取扱店からの直接買付")
     lines.append("・100%正規品・新品未使用・タグ付き")
-    lines.append("・ご希望の方にはレシート画像をお見せできます")
+    lines.append("・ご注文後に丁寧に検品してから発送いたします")
     lines.append("")
 
     # 配送・関税
     lines.append("━━━ 配送について ━━━")
-    lines.append("・買付地: イタリア → 発送地: 日本")
+    lines.append("・買付地: イタリア / 発送地: 神奈川県")
     lines.append("・お届けまで: ご注文確定後 10〜21日程度")
-    lines.append("・関税/消費税は当方で負担いたします（追加費用なし）")
+    lines.append("・海外買付後、国内で検品してから発送いたします")
+    lines.append("・関税等の表示はBUYMAの商品ページ上の記載に準じます")
     lines.append("・追跡番号付きの安心配送でお届けします")
     lines.append("")
 
@@ -458,11 +498,85 @@ def generate_description(title, vendor, sku, description_en, cat_label):
     return '\n'.join(lines)
 
 
+def evaluate_listing_readiness(product, price_jpy, cat_label, description):
+    """自動出品前の安全判定。最初は保守的に OK / 要確認 / NG を返す。"""
+    reasons = []
+    blockers = []
+
+    def _num(v, default=0):
+        try:
+            return int(float(v))
+        except Exception:
+            return default
+
+    profit = _num(product.get("profit_jpy") or product.get("estimated_profit_jpy"))
+    margin_raw = product.get("expected_margin_pct") or product.get("margin_pct") or ""
+    try:
+        margin = float(str(margin_raw).replace("%", ""))
+    except Exception:
+        margin = (profit / price_jpy * 100) if price_jpy else 0
+
+    if profit < 10000 and margin < 15:
+        blockers.append(f"利益基準未満(profit={profit:,}, margin={margin:.1f}%)")
+    else:
+        reasons.append(f"利益基準OK(profit={profit:,}, margin={margin:.1f}%)")
+
+    if price_jpy > 300000:
+        reasons.append(f"高額商品のため要目視(price={price_jpy:,})")
+
+    if not product.get("image_url"):
+        blockers.append("メイン画像なし")
+    sku = (product.get("sku") or "").strip()
+    if not sku or len(sku) < 3 or (sku.isdigit() and len(sku) < 4):
+        reasons.append("品番なし/弱い")
+    if not cat_label:
+        blockers.append("カテゴリ未確定")
+
+    available = (product.get("available_sizes") or product.get("sizes") or "").strip()
+    if not available:
+        blockers.append("在庫サイズ不明")
+
+    bad_desc_tokens = ["variants", "price_min", "compare_at_price", "WELCOME_", "pim:", "レシート画像"]
+    bad_hit = [t for t in bad_desc_tokens if t.lower() in (description or "").lower()]
+    if bad_hit:
+        blockers.append("商品コメントに不要断片: " + ",".join(bad_hit))
+
+    if blockers:
+        return "NG", blockers + reasons
+    if price_jpy > 300000 or not sku or len(sku) < 3 or (sku.isdigit() and len(sku) < 4):
+        return "要確認", reasons
+    return "出品OK", reasons
+
+
+def _buyma_title_width(text: str) -> int:
+    """BUYMA の「全角30文字・半角60文字」相当の幅を概算する。"""
+    width = 0
+    for ch in text:
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+    return width
+
+
+def _trim_buyma_title(text: str, max_width: int = 60) -> str:
+    suffix = "..."
+    if _buyma_title_width(text) <= max_width:
+        return text
+    out = []
+    width = 0
+    suffix_width = _buyma_title_width(suffix)
+    for ch in text:
+        w = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+        if width + w + suffix_width > max_width:
+            break
+        out.append(ch)
+        width += w
+    return "".join(out).rstrip() + suffix
+
+
 def generate_buyma_title(title, vendor, sku, cat_label):
     """BUYMA用 タイトル生成
 
     形式: 【BRAND】 Title   （品番・正規品などは他フィールドに入るのでタイトルには含めない）
-    BUYMA のタイトル上限は 60文字程度。ブランド名を含めて 60文字で切る。
+    BUYMA のタイトル上限（全角30文字・半角60文字）に合わせて幅ベースで切る。
     """
     sv = normalize_text(vendor).strip()
     st = normalize_text(title).strip()
@@ -471,9 +585,7 @@ def generate_buyma_title(title, vendor, sku, cat_label):
         st = st[len(sv):].lstrip(" -:")
 
     base = f"【{sv}】 {st}" if sv else st
-    if len(base) > 60:
-        base = base[:57] + "..."
-    return base
+    return _trim_buyma_title(base, 60)
 
 
 def download_image(url, dest):
@@ -489,7 +601,7 @@ def load_products(max_price=None, min_profit=None):
     利益商品 CSV から商品データを読み込む。
 
     v4.2: `*_pricing_analysis.csv`（手動編集の競合調査ファイル）への依存を削除。
-    `*_baseblu_profitable_products.csv` 単体から読む。
+    `*_profitable_products.csv`（Baseblu/Italist など）から読む。
     これは filter_baseblu_profitable.py が pricing.py 統合済みで、
     全ての必要情報（selling_price_jpy / profit_jpy / total_cost_jpy / ...）を
     含むため。
@@ -499,11 +611,11 @@ def load_products(max_price=None, min_profit=None):
         min_profit: 最低利益（円）。指定時はこの利益以上の商品のみ。
     """
     profitable_files = sorted(
-        glob.glob(os.path.join(OUTPUT_DIR, "*_baseblu_profitable_products.csv")),
+        glob.glob(os.path.join(OUTPUT_DIR, "*_profitable_products.csv")),
         reverse=True,
     )
     if not profitable_files:
-        print("❌ 利益商品 CSV が見つかりません。先に scripts/filter_baseblu_profitable.py を実行してください。")
+        print("❌ 利益商品 CSV が見つかりません。先に sales_to_csv → filter_baseblu_profitable.py を実行してください。")
         sys.exit(1)
 
     latest_csv = profitable_files[0]
@@ -556,6 +668,9 @@ def load_products(max_price=None, min_profit=None):
                 "target_price_jpy": str(target_price),
                 "final_price_jpy": str(final_price) if final_price else "",
                 "sale_price_eur": str(sale_price_eur),
+                "source_name": (row.get("source_name") or "").strip(),
+                "currency": (row.get("currency") or "").strip(),
+                "landed_cost_basis": (row.get("landed_cost_basis") or "").strip(),
                 "total_cost_jpy": str(total_cost),
                 "estimated_profit_jpy": str(profit),
                 "profit_jpy": str(profit),
@@ -589,6 +704,13 @@ def load_products(max_price=None, min_profit=None):
 # ========== Playwright操作関数 ==========
 
 def login(page, email, password):
+    # まず出品ページへ。storage_state が有効ならここでログイン済み判定できる。
+    page.goto(BUYMA_LISTING_URL, wait_until="domcontentloaded", timeout=60000)
+    human_delay(1.2, 2.0)
+    if "signin" not in page.url and "login" not in page.url:
+        print("  ✅ ログイン済みセッション再利用")
+        return True
+
     print("  🔑 ログイン中...")
     page.goto(BUYMA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
     human_delay(2.0, 3.0)
@@ -1226,17 +1348,13 @@ def _dump_section_elements(page, section_title_keyword, limit=30):
 def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川県"):
     """買付地と発送地を設定する。
 
-    - 買付地: 海外 → ヨーロッパ → イタリア（.Select が2つ並ぶ想定）
-    - 発送地: 国内ラジオ選択 → 神奈川県 ドロップダウン
-
-    Mac 実走で買付地が空欄のまま保存される事象 (2026-04 時点) に対し、
-    冒頭で買付地/発送地の DOM ダンプを常時実行して真因を取得する。
-    また、4 つの dropdown 選択を Playwright native click (`_click_select_option`)
-    に移行し、失敗時のみ旧 JS 経由 (`_select_by_label`) に fallback する。
+    BUYMA 側の DOM 変化で「まず 国内/海外 ラジオを押さないと Select が出ない」
+    ケースがあるため、ラジオ選択を先行し、Select 未検出時はグローバル走査で
+    ラベル一致選択を試す。
     """
     results = []
 
-    # --- 診断ダンプ (常時実行: Mac 実走 1 ターンで真因取得するため) ---
+    # --- 診断ダンプ ---
     try:
         buy_dump = _dump_section_elements(page, "買付地")
     except Exception as e:
@@ -1248,7 +1366,6 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         ship_dump = {"error": f"dump_exception:{e}"}
     print(f"    🌍 [DUMP-発送地] {ship_dump}")
 
-    # ダンプ結果からログに含める dump_keys (重要キー要約) を作る
     def _dump_keys(d):
         if not isinstance(d, dict) or d.get("error"):
             return []
@@ -1261,21 +1378,15 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             keys.append(f"{tag}.{cls_short}" if cls_short else tag)
         return keys
 
-    EXT_QUERY = _SECTION_SELECT_QUERY  # extended dropdown query (set_region 内 alias)
+    EXT_QUERY = _SECTION_SELECT_QUERY
 
     def _click_or_fallback(sel_idx, label, debug_name, legacy_query="'.Select, .bmm-c-select'"):
-        """Playwright native click → 失敗したら旧 JS (_select_by_label) に fallback。
-
-        sel_idx: 拡張クエリでの index (拡張クエリ全体の nth)。
-        legacy_query: fallback 用の document.querySelectorAll セレクタ文字列。
-        """
         try:
             dd = page.locator(EXT_QUERY).nth(sel_idx)
             if _click_select_option(page, dd, label, debug_name=debug_name):
                 return True
         except Exception as e:
             print(f"       [_click_or_fallback:{debug_name}] native click 例外: {e}")
-        # fallback: 旧 JS 経由
         try:
             return _select_by_label(
                 page,
@@ -1287,94 +1398,194 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             print(f"       [_click_or_fallback:{debug_name}] fallback 例外: {e}")
             return False
 
-    # --- 買付地 ---
-    info = _find_section_selects(page, "買付地")
-    if isinstance(info, dict) and info.get("error"):
-        results.append(f"買付地_見出し未検出 (found: {info.get('found_titles', [])[:15]})")
-    else:
-        sel_indices = info.get("selects", []) if isinstance(info, dict) else []
-        if len(sel_indices) >= 2:
-            if _click_or_fallback(sel_indices[0], "ヨーロッパ", "買付地_大陸",
-                                  legacy_query=json.dumps(EXT_QUERY)):
-                results.append("買付地_大陸=ヨーロッパ")
-            else:
-                results.append("買付地_大陸 失敗")
-            if _click_or_fallback(sel_indices[1], purchase_country, "買付地_国",
-                                  legacy_query=json.dumps(EXT_QUERY)):
-                results.append(f"買付地_国={purchase_country}")
-            else:
-                results.append(f"買付地_国 '{purchase_country}' 失敗")
-        elif len(sel_indices) == 1:
-            # ドロップダウンが 1 つしかない場合（BUYMA の仕様変更等）は 1 段だけ選択を試す
-            if _click_or_fallback(sel_indices[0], purchase_country, "買付地_1段",
-                                  legacy_query=json.dumps(EXT_QUERY)):
-                results.append(f"買付地={purchase_country} (1段)")
-            else:
-                results.append("買付地 1段選択 失敗")
-        else:
-            results.append(f"買付地_Select未検出 (section内 selects={sel_indices})")
-
-    # --- 発送地 ---
-    info2 = _find_section_selects(page, "発送地")
-    if isinstance(info2, dict) and not info2.get("error"):
-        # ラジオから「国内」をクリック (現状動作しているため、Playwright click を試みつつ
-        # 失敗時は旧 JS click に fallback)
-        domestic_clicked = False
+    def _click_section_radio(section_title, label_text):
+        # section スコープでのみクリック（別セクション誤爆を避ける）
         try:
-            radio_locator = page.locator(
-                'label:has-text("国内"), div.bmm-c-radio:has-text("国内")'
-            ).first
-            if radio_locator.count() > 0:
-                radio_locator.scroll_into_view_if_needed(timeout=2000)
-                radio_locator.click(timeout=3000)
-                domestic_clicked = True
-        except Exception as e:
-            print(f"       [set_region:発送地_radio] native click 例外: {e}")
-        if not domestic_clicked:
-            # fallback: 旧 JS 経由
-            domestic_clicked = page.evaluate("""(function(){
-                var titles = document.querySelectorAll(
-                    '.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'
-                );
+            ok = page.evaluate(f"""(function(){{
+                var keyword = {json.dumps(section_title)};
+                var target = {json.dumps(label_text)};
+                var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt');
                 var startIdx = -1;
-                for (var i = 0; i < titles.length; i++) {
-                    var t = titles[i].textContent.trim();
-                    if (t === '発送地' || t.indexOf('発送地') === 0) { startIdx = i; break; }
-                }
+                for (var i = 0; i < titles.length; i++) {{
+                    var t = (titles[i].textContent || '').trim();
+                    if (t === keyword || t.indexOf(keyword) === 0) {{ startIdx = i; break; }}
+                }}
                 if (startIdx < 0) return false;
                 var startEl = titles[startIdx];
                 var endEl = titles[startIdx + 1] || null;
-                var cands = document.querySelectorAll('label, button, div.bmm-c-radio');
-                for (var i = 0; i < cands.length; i++) {
-                    var el = cands[i];
-                    if (!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-                    if (endEl && !(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
+                function inRange(el) {{
+                    var aft = !!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+                    var bef = !endEl || !!(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING);
+                    return aft && bef;
+                }}
+
+                var cands = document.querySelectorAll('label, button, div.bmm-c-radio, span');
+                for (var j = 0; j < cands.length; j++) {{
+                    var el = cands[j];
+                    if (!inRange(el)) continue;
                     var txt = (el.textContent || '').trim();
-                    if (txt === '国内' || txt.indexOf('国内') === 0) {
+                    if (txt === target || txt.indexOf(target) === 0) {{
                         el.click();
                         return true;
-                    }
-                }
+                    }}
+                }}
                 return false;
-            })()""")
-        time.sleep(0.6)
-        if domestic_clicked:
-            results.append("発送地_国内選択")
-        # 都道府県ドロップダウンを選択（発送地セクション内の .Select を再取得）
-        info2b = _find_section_selects(page, "発送地")
-        sel2 = info2b.get("selects", []) if isinstance(info2b, dict) else []
-        if sel2:
-            if _click_or_fallback(sel2[0], ship_prefecture, "発送地_都道府県",
-                                  legacy_query=json.dumps(EXT_QUERY)):
-                results.append(f"発送地={ship_prefecture}")
-            else:
-                results.append(f"発送地 '{ship_prefecture}' 失敗")
-        else:
-            results.append("発送地_Select未検出")
-    else:
-        results.append("発送地_見出し未検出")
+            }})()""")
+            if ok:
+                return True
+        except Exception as e:
+            print(f"       [_click_section_radio:{section_title}] js 例外: {e}")
+        return False
 
-    # 末尾に dump 由来の重要キーを追加して、ログから真因判別しやすくする
+    def _select_label_anywhere(label, debug_name, max_scan=32):
+        try:
+            count = page.locator(EXT_QUERY).count()
+        except Exception:
+            count = 0
+        lim = min(max_scan, count)
+        for i in range(lim):
+            try:
+                dd = page.locator(EXT_QUERY).nth(i)
+                if _click_select_option(page, dd, label, debug_name=f"{debug_name}_scan{i}"):
+                    return i
+            except Exception:
+                pass
+        return None
+
+    def _radio_checked(section_title, label_text):
+        try:
+            return bool(page.evaluate(f"""(function(){{
+                var keyword = {json.dumps(section_title)};
+                var target = {json.dumps(label_text)};
+                var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt');
+                var startIdx = -1;
+                for (var i = 0; i < titles.length; i++) {{
+                    var t = (titles[i].textContent || '').trim();
+                    if (t === keyword || t.indexOf(keyword) === 0) {{ startIdx = i; break; }}
+                }}
+                if (startIdx < 0) return false;
+                var startEl = titles[startIdx];
+                var endEl = titles[startIdx + 1] || null;
+                function inRange(el) {{
+                    var aft = !!(startEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+                    var bef = !endEl || !!(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING);
+                    return aft && bef;
+                }}
+                var radios = document.querySelectorAll('input[type="radio"]');
+                for (var j = 0; j < radios.length; j++) {{
+                    var r = radios[j];
+                    if (!inRange(r)) continue;
+                    if (!r.checked) continue;
+                    var lb = r.closest('label') || (r.id ? document.querySelector('label[for="'+r.id+'"]') : null) || r.parentElement;
+                    var txt = (lb && lb.textContent) ? lb.textContent.trim() : '';
+                    if (txt === target || txt.indexOf(target) === 0) return true;
+                }}
+                return false;
+            }})()"""))
+        except Exception:
+            return False
+
+    def _find_select_with_option(sel_indices, option_label, debug_name):
+        for idx in sel_indices[:8]:
+            try:
+                dd = page.locator(EXT_QUERY).nth(idx)
+                dd.scroll_into_view_if_needed(timeout=1500)
+                dd.click(timeout=2500)
+                page.wait_for_selector('.Select-menu-outer .Select-option, [role="listbox"] [role="option"]', timeout=2000)
+                opts = page.locator('.Select-menu-outer .Select-option, [role="listbox"] [role="option"]')
+                cnt = min(opts.count(), 30)
+                vals = []
+                for i in range(cnt):
+                    vals.append((opts.nth(i).text_content() or '').strip())
+                try:
+                    page.locator('body').click(timeout=1000)
+                except Exception:
+                    pass
+                if any((v == option_label) or (option_label in v) for v in vals):
+                    return idx
+            except Exception:
+                try:
+                    page.locator('body').click(timeout=800)
+                except Exception:
+                    pass
+                continue
+        print(f"       [_find_select_with_option:{debug_name}] '{option_label}' を含む select 不在: {sel_indices}")
+        return None
+
+    # --- 買付地: 先に海外ラジオを押す ---
+    if _click_section_radio("買付地", "海外"):
+        results.append("買付地_海外選択")
+    time.sleep(0.8)
+
+    info = _find_section_selects(page, "買付地")
+    sel_indices = info.get("selects", []) if isinstance(info, dict) and not info.get("error") else []
+
+    buy_continent_ok = False
+    buy_country_ok = False
+    buy_cont_idx = _find_select_with_option(sel_indices, "ヨーロッパ", "買付地_大陸")
+
+    if buy_cont_idx is not None:
+        buy_continent_ok = _click_or_fallback(buy_cont_idx, "ヨーロッパ", "買付地_大陸", legacy_query=json.dumps(EXT_QUERY))
+    if (not buy_continent_ok) and (buy_cont_idx is not None):
+        buy_continent_ok = _click_or_fallback(buy_cont_idx, "ヨーロッパ", "買付地_大陸_retry", legacy_query=json.dumps(EXT_QUERY))
+
+    # 大陸選択後に国ドロップダウンが描画されるケースがあるため、ここで再探索
+    buy_country_idx = None
+    if buy_continent_ok:
+        time.sleep(0.5)
+        info = _find_section_selects(page, "買付地")
+        sel_indices = info.get("selects", []) if isinstance(info, dict) and not info.get("error") else sel_indices
+        buy_country_idx = _find_select_with_option(sel_indices, purchase_country, "買付地_国")
+
+    if buy_country_idx is not None:
+        buy_country_ok = _click_or_fallback(buy_country_idx, purchase_country, "買付地_国", legacy_query=json.dumps(EXT_QUERY))
+    if (not buy_country_ok) and (buy_country_idx is not None):
+        buy_country_ok = _click_or_fallback(buy_country_idx, purchase_country, "買付地_国_retry", legacy_query=json.dumps(EXT_QUERY))
+
+    if buy_continent_ok:
+        results.append("買付地_大陸=ヨーロッパ")
+    if buy_country_ok:
+        results.append(f"買付地_国={purchase_country}")
+    if not buy_country_ok:
+        results.append(f"買付地_未設定(selects={sel_indices})")
+
+    # --- 発送地: 国内ラジオ選択 → 都道府県 ---
+    domestic_clicked = _click_section_radio("発送地", "国内")
+    if domestic_clicked:
+        results.append("発送地_国内選択")
+    time.sleep(0.8)
+
+    info2 = _find_section_selects(page, "発送地")
+    sel2 = info2.get("selects", []) if isinstance(info2, dict) and not info2.get("error") else []
+    ship_ok = False
+    ship_idx = _find_select_with_option(sel2, ship_prefecture, "発送地_都道府県")
+    if ship_idx is not None:
+        ship_ok = _click_or_fallback(ship_idx, ship_prefecture, "発送地_都道府県", legacy_query=json.dumps(EXT_QUERY))
+    if (not ship_ok) and (ship_idx is not None):
+        ship_ok = _click_or_fallback(ship_idx, ship_prefecture, "発送地_都道府県_retry", legacy_query=json.dumps(EXT_QUERY))
+
+    if ship_ok:
+        results.append(f"発送地={ship_prefecture}")
+    else:
+        results.append(f"発送地_未設定(selects={sel2})")
+
+    # 最終整合チェック（逆転事故の防止）
+    if not _radio_checked("買付地", "海外"):
+        if _click_section_radio("買付地", "海外"):
+            results.append("買付地_海外_再補正")
+            time.sleep(0.4)
+            if buy_cont_idx is not None:
+                _click_or_fallback(buy_cont_idx, "ヨーロッパ", "買付地_大陸_fix", legacy_query=json.dumps(EXT_QUERY))
+            if buy_country_idx is not None:
+                _click_or_fallback(buy_country_idx, purchase_country, "買付地_国_fix", legacy_query=json.dumps(EXT_QUERY))
+
+    if not _radio_checked("発送地", "国内"):
+        if _click_section_radio("発送地", "国内"):
+            results.append("発送地_国内_再補正")
+            time.sleep(0.4)
+            if ship_idx is not None:
+                _click_or_fallback(ship_idx, ship_prefecture, "発送地_都道府県_fix", legacy_query=json.dumps(EXT_QUERY))
+
     results.append(f"dump_keys_buy={_dump_keys(buy_dump)}")
     results.append(f"dump_keys_ship={_dump_keys(ship_dump)}")
     print(f"    🌍 地域: {results}")
@@ -1579,6 +1790,25 @@ def set_season(page, season):
             print(f"    🗓️ シーズン: {cand}")
             return
     print(f"    🗓️ シーズン: 候補該当なし ({season})")
+
+
+def set_theme(page):
+    """テーマ欄を既定値(指定なし)に設定する。未設定だと保存失敗するケースに対応。"""
+    info = _find_section_selects(page, "テーマ")
+    if isinstance(info, dict) and info.get("error"):
+        print("    🧩 テーマ: 見出し未検出")
+        return
+    sel_indices = info.get("selects", []) if isinstance(info, dict) else []
+    if not sel_indices:
+        print("    🧩 テーマ: Select未検出")
+        return
+
+    dd = page.locator(_SECTION_SELECT_QUERY).nth(sel_indices[0])
+    for cand in ["指定なし", "指定なしの場合"]:
+        if _click_select_option(page, dd, cand, debug_name=f"テーマ[{cand}]"):
+            print(f"    🧩 テーマ: {cand}")
+            return
+    print("    🧩 テーマ: 候補該当なし")
 
 
 def set_tags(page, tags):
@@ -2207,7 +2437,7 @@ def set_purchase_memo(page, product):
         f"【商品】\n"
         f"タイトル: {title}"
     )
-    shop_name = "BaseBlu"
+    shop_name = ""
     buyer_name = "BaseBlu"
     buyer_url = product_url
     # 買付先メモ 説明: 現地価格と総コストのみ（品番は専用フィールドに入る）
@@ -2274,40 +2504,101 @@ def set_purchase_memo(page, product):
 
 
 def publish_product(page):
+    captured_urls = []
     vr = {"status": None}
     def on_resp(r):
-        if "validation" in r.url: vr["status"] = r.status
+        captured_urls.append((r.url, r.status))
+        if "validation" in r.url:
+            vr["status"] = r.status
     page.on("response", on_resp)
 
-    clicked = page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
-        .find(function(b){return b.textContent.includes('入力内容を確認する')});
-        if(b){b.click();true}else{false}""")
-    if not clicked:
+    # ボタンテキスト・disabled状態を列挙してデバッグ
+    btns = page.evaluate("""Array.from(document.querySelectorAll('button')).map(function(b){return {text:b.textContent.trim(), disabled:b.disabled, classes:b.className}}).filter(function(b){return b.text.length>0})""")
+    print(f"    🔍 ボタン一覧: {btns}")
+
+    # ネイティブクリックでReactイベントを確実に発火
+    confirm_btn = page.locator("button", has_text="入力内容を確認する").first
+    if confirm_btn.count() == 0:
         page.remove_listener("response", on_resp)
         print("    ❌ 確認ボタンなし"); return False
+    confirm_btn.click()
 
+    # 確認画面への遷移 or API レスポンスを待つ（最大15秒）
     for _ in range(30):
         time.sleep(0.5)
+        cur_url = page.url
         if vr["status"] is not None: break
+        if "confirm" in cur_url or "preview" in cur_url or "check" in cur_url: break
     page.remove_listener("response", on_resp)
 
-    if vr["status"] != 200:
+    # デバッグ: キャプチャした全URLを出力
+    print(f"    🌐 APIレスポンス({len(captured_urls)}件): {[(u.split('?')[0][-60:], s) for u, s in captured_urls[-10:]]}")
+    print(f"    📍 現在URL: {page.url[-80:]}")
+    # スクリーンショット保存
+    import os as _os
+    ss_path = _os.path.join(_os.path.dirname(__file__), "..", "outputs", "reports", "debug_publish_click.png")
+    page.screenshot(path=ss_path, full_page=False)
+    print(f"    📸 スクリーンショット: {ss_path}")
+    # フロントエンドのバリデーションエラーを取得（より広いセレクタ）
+    errors = page.evaluate("""Array.from(document.querySelectorAll('[class*="error"],[class*="Error"],[class*="invalid"],[class*="warning"]')).map(function(e){return e.textContent.trim()}).filter(function(t){return t.length>2 && t.length<300}).slice(0,10)""")
+    if errors:
+        print(f"    ❗ UIエラー: {errors}")
+
+    if vr["status"] is not None and vr["status"] != 200:
         print(f"    ❌ バリデーション失敗 (status={vr['status']})"); return False
-    print("    ✅ バリデーションOK")
+    if vr["status"] == 200:
+        print("    ✅ バリデーションOK (API)")
+    else:
+        print("    ✅ 確認画面へ遷移（APIなし形式）")
     human_delay(0.5, 1.0)
 
-    page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
-        .find(function(b){return b.textContent.includes('公開する')});if(b)b.click();""")
-    for _ in range(30):
+    # 「注意事項に同意して公開する」ボタンをネイティブクリック
+    pub_btns = page.locator("button", has_text="公開する")
+    count = pub_btns.count()
+    print(f"    🔍 公開ボタン候補: {count}件")
+    if count == 0:
+        print("    ❌ 公開するボタンなし"); return False
+    # クリック前SS
+    import os as _os2
+    ss_before = _os2.path.join(_os2.path.dirname(__file__), "..", "outputs", "reports", "debug_before_pubclick.png")
+    page.screenshot(path=ss_before, full_page=False)
+    pub_btns.first.click()
+    # URL が sell/new から離れるまで最大60秒待つ（APIレスポンスに時間がかかる）
+    for _ in range(120):
         time.sleep(0.5)
-        if "completed" in page.url: break
+        cur = page.url
+        if "sell/new" not in cur: break
+    url_after = page.url
+    print(f"    📍 公開後URL: {url_after[-80:]}")
+    # 「出品が完了しました」ページのURL or ページテキストで判定
+    completed_page = page.evaluate("""document.body.innerText.includes('出品が完了しました') || document.body.innerText.includes('出品完了')""")
+    if completed_page or "sell/new" not in url_after:
+        print("    🎉 出品公開完了！"); return True
+    ss2 = _os2.path.join(_os2.path.dirname(__file__), "..", "outputs", "reports", "debug_after_publish.png")
+    page.screenshot(path=ss2, full_page=False)
+    print(f"    ⚠️ 公開後もsell/newのまま"); return False
 
-    if "completed" not in page.url:
-        print(f"    ⚠️ リダイレクト未確認"); return False
-    print("    🎉 出品公開完了！"); return True
+
+def _clear_customs_checkbox(page):
+    """関税負担チェックを外す（保存422 duty_attributes の回避用）。"""
+    return page.evaluate("""(function(){
+        var labels = document.querySelectorAll('label');
+        for(var i=0; i<labels.length; i++){
+            var text = labels[i].textContent || '';
+            if(text.indexOf('関税') === -1) continue;
+            var cb = labels[i].querySelector('input[type="checkbox"]');
+            if(!cb){
+                var f = labels[i].getAttribute('for');
+                if(f) cb = document.getElementById(f);
+            }
+            if(cb && cb.checked){ cb.click(); return 'unchecked'; }
+            if(cb && !cb.checked){ return 'already_unchecked'; }
+        }
+        return 'not_found';
+    })()""")
 
 
-def save_draft(page):
+def save_draft(page, _retried=False):
     """下書き保存ボタンを押し、URLの遷移で成否を判定する。
 
     BUYMA の「下書き保存する」は手動クリックを前提とした React ボタン。
@@ -2317,20 +2608,80 @@ def save_draft(page):
     import re
     url_before = page.url
 
-    # Playwright のネイティブクリック（React が hover/focus を要求するケースに対応）
-    btn = page.locator('button:has-text("下書き保存する")').first
+    # Playwright のネイティブクリック（下部固定バーの visible ボタンを優先）
+    btn = page.locator('.sell-btnbar button:has-text("下書き保存する"):visible').first
+    try:
+        if btn.count() == 0:
+            btn = page.locator('button:has-text("下書き保存する"):visible').first
+    except Exception:
+        btn = page.locator('button:has-text("下書き保存する")').first
+
     try:
         btn.scroll_into_view_if_needed(timeout=2000)
     except Exception:
         pass
+
+    clicked = False
+    net_hit = None
+    net_detail = None
     try:
-        btn.click(timeout=5000)
+        with page.expect_response(
+            lambda r: (r.request.method in ("POST", "PUT", "PATCH") and "/sell" in r.url),
+            timeout=7000,
+        ) as resp_info:
+            btn.click(timeout=5000)
+        resp = resp_info.value
+        net_hit = f"{resp.request.method} {resp.status} {resp.url}"
+        if resp.status >= 400:
+            try:
+                body = resp.text() or ""
+                net_detail = body[:800]
+            except Exception:
+                net_detail = None
+        clicked = True
     except Exception as e:
         print(f"    ⚠️ ボタンクリック失敗: {e}")
+
+    if not clicked:
+        try:
+            btn.click(timeout=3000, force=True)
+            clicked = True
+            print("    ↪ force click で再試行")
+        except Exception as e:
+            print(f"    ⚠️ force click 失敗: {e}")
+
+    if not clicked:
         # フォールバック: JS 経由
-        page.evaluate("""var b=Array.from(document.querySelectorAll('button'))
-            .find(function(b){return b.textContent.trim().includes('下書き保存する')});
-            if(b){b.scrollIntoView();b.click()}""")
+        page.evaluate("""(function(){
+            var btns = Array.from(document.querySelectorAll('button')).filter(function(b){
+                return (b.textContent||'').trim().includes('下書き保存する');
+            });
+            var visible = btns.filter(function(b){
+                var r = b.getBoundingClientRect();
+                var st = window.getComputedStyle(b);
+                return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+            });
+            var b = visible[0] || btns[0];
+            if(!b) return false;
+            b.scrollIntoView({block:'center'});
+            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(type){
+                b.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window}));
+            });
+            return true;
+        })()""")
+
+    if net_hit:
+        print(f"    📡 保存通信: {net_hit}")
+    if net_detail:
+        print(f"       保存API応答(抜粋): {net_detail}")
+
+    # 422 duty_attributes は「関税込み時の発送エリア/発送都市不足」
+    # 一度だけ関税チェックを外して保存を再試行する
+    if (not _retried) and net_detail and ("duty_attributes" in net_detail):
+        clr = _clear_customs_checkbox(page)
+        print(f"    ↪ 関税チェック解除して再試行: {clr}")
+        time.sleep(0.4)
+        return save_draft(page, _retried=True)
 
     # 確認モーダルがあればクリック（「保存する」「はい」「OK」など）
     for modal_text in ["保存する", "はい", "OK"]:
@@ -2367,6 +2718,37 @@ def save_draft(page):
     if url_after != url_before and "/sell/new" not in url_after:
         print(f"    💾 下書き保存（ID未確定）: {url_after}")
         return "saved"
+
+    # URL が変わらない実装に備えて、DOM 上の成功トースト/ヒントを確認
+    save_hint = page.evaluate("""(function(){
+        var text = (document.body && document.body.innerText) ? document.body.innerText : '';
+        var hints = [
+            '下書き保存しました',
+            '保存しました',
+            '保存が完了しました',
+            '下書きに保存しました'
+        ];
+        var matched = '';
+        for (var i = 0; i < hints.length; i++) {
+            if (text.indexOf(hints[i]) !== -1) { matched = hints[i]; break; }
+        }
+
+        var itemId = null;
+        var nodes = document.querySelectorAll('a[href*="/my/sell/"], form[action*="/my/sell/"]');
+        for (var j = 0; j < nodes.length; j++) {
+            var v = nodes[j].getAttribute('href') || nodes[j].getAttribute('action') || '';
+            var m = v.match(new RegExp('/my/sell/(\\d+)(?:/edit)?'));
+            if (m) { itemId = m[1]; break; }
+        }
+        return {matched: matched, item_id: itemId};
+    })()""")
+    if save_hint.get("item_id"):
+        print(f"    💾 下書き保存: ID={save_hint['item_id']} (DOM検出)")
+        return save_hint["item_id"]
+    if save_hint.get("matched"):
+        print(f"    💾 下書き保存（URL据え置き）: {save_hint['matched']}")
+        return "saved"
+
     # 失敗時はフォーム上のエラー表示を dump する（visible なものだけ）
     errors = page.evaluate("""(function(){
         var errs = [];
@@ -2374,18 +2756,81 @@ def save_draft(page):
             .forEach(function(e){
                 var t = (e.textContent || '').trim();
                 if (!t || t.length > 120) return;
-                // visible かどうかを判定: getBoundingClientRect で幅/高さがあり、
-                // かつ style.display !== 'none' && visibility !== 'hidden'
                 var rect = e.getBoundingClientRect();
                 var style = window.getComputedStyle(e);
                 var visible = rect.width > 0 && rect.height > 0
                     && style.display !== 'none' && style.visibility !== 'hidden';
                 errs.push({text: t, visible: visible, cls: e.className});
             });
+
+        var titles = Array.from(document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt'));
+        function sectionName(el){
+            var cur = '';
+            for (var i = 0; i < titles.length; i++) {
+                if (titles[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                    cur = (titles[i].textContent || '').trim();
+                } else {
+                    break;
+                }
+            }
+            return cur;
+        }
+
+        var placeholders = [];
+        document.querySelectorAll('.Select-placeholder').forEach(function(p){
+            var txt = (p.textContent || '').trim();
+            if (!txt || txt.indexOf('選択') === -1) return;
+            var rect = p.getBoundingClientRect();
+            var style = window.getComputedStyle(p);
+            var visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            if (!visible) return;
+            placeholders.push({section: sectionName(p), text: txt});
+        });
+
         var btn = Array.from(document.querySelectorAll('button'))
             .find(function(b){return b.textContent.trim().indexOf('下書き保存') !== -1});
         var btnInfo = btn ? ('btn disabled=' + btn.disabled) : 'no_button';
-        return {errors: errs.slice(0, 10), button: btnInfo};
+        var btnHtml = btn ? (btn.outerHTML || '').slice(0, 240) : '';
+
+        var invalids = [];
+        document.querySelectorAll(':invalid').forEach(function(el){
+            var name = el.getAttribute('name') || el.id || el.className || el.tagName;
+            var req = !!el.required;
+            var val = ('value' in el) ? String(el.value || '') : '';
+            invalids.push({name: name, required: req, value_len: val.length});
+        });
+
+        var dutyFields = [];
+        var dutyLabels = Array.from(document.querySelectorAll('label, .bmm-c-summary__ttl, .bmm-c-label, dt, th')).filter(function(n){
+            var t = (n.textContent || '').trim();
+            return t.indexOf('発送エリア') !== -1 || t.indexOf('発送都市') !== -1;
+        });
+        dutyLabels.forEach(function(lb){
+            var root = lb.closest('tr, .bmm-l-row, .bmm-c-form-group, .bmm-c-summary__item, .bmm-c-summary') || lb.parentElement;
+            if (!root) return;
+            var cand = root.querySelector('input, select, textarea, [role="combobox"], .Select-input input');
+            var info = {
+                label: (lb.textContent || '').trim().slice(0, 40),
+                field_found: !!cand
+            };
+            if (cand) {
+                info.tag = cand.tagName;
+                info.type = cand.type || '';
+                info.name = cand.name || cand.id || '';
+                info.value = ('value' in cand) ? String(cand.value || '') : '';
+                info.placeholder = cand.placeholder || '';
+            }
+            dutyFields.push(info);
+        });
+
+        return {
+            errors: errs.slice(0, 10),
+            button: btnInfo,
+            button_html: btnHtml,
+            placeholders: placeholders.slice(0, 20),
+            invalids: invalids.slice(0, 20),
+            duty_fields: dutyFields.slice(0, 10)
+        };
     })()""")
     print(f"    ⚠️ 保存未確認 (url={url_after})")
     print(f"       診断: {errors}")
@@ -2413,10 +2858,13 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     display_title = generate_buyma_title(title, vendor, sku, cat_label)
     desc = generate_description(title, vendor, sku, desc_en, cat_label)
 
+    readiness, readiness_reasons = evaluate_listing_readiness(product, price, cat_label, desc)
+
     print(f"  📦 {display_title[:50]}")
     print(f"     ブランド={safe_vendor}(id={b_id}) カテゴリ={cat_label} ¥{price:,}")
     if sku:
         print(f"     品番={sku}")
+    print(f"     出品判定={readiness} / {readiness_reasons}")
 
     # ページ遷移
     try:
@@ -2451,10 +2899,13 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     # 7. シーズン（baseblu の "AW25" 等）
     set_season(page, product.get("season", "")); human_delay(0.3, 0.6)
 
-    # 8. 購入期限（90日）
+    # 8. テーマ（未設定だと保存失敗する場合があるため先に埋める）
+    set_theme(page); human_delay(0.2, 0.5)
+
+    # 9. 購入期限（90日）
     set_purchase_deadline(page); human_delay(0.3, 0.6)
 
-    # 9. 関税チェック
+    # 10. 関税チェック
     set_customs_checkbox(page); human_delay(0.3, 0.6)
 
     # 10. 色: baseblu から抽出した英語 color を日本語にマップ（色の系統ドロップダウン用）
@@ -2530,6 +2981,12 @@ def main():
     limit_count = None
     max_price = None
     min_profit = None
+    include_review = "--include-review" in args
+    # SU環境デフォルト: 右モニタ上部に出す
+    window_x = 1800
+    window_y = 0
+    window_w = 1400
+    window_h = 900
     if "--from" in args:
         idx = args.index("--from")
         try: start_from = int(args[idx + 1])
@@ -2546,6 +3003,20 @@ def main():
         idx = args.index("--min-profit")
         try: min_profit = int(args[idx + 1])
         except: print("❌ --min-profit の後に数字を指定"); sys.exit(1)
+
+    def _read_int_arg(name, default=None):
+        if name not in args:
+            return default
+        idx = args.index(name)
+        try:
+            return int(args[idx + 1])
+        except Exception:
+            print(f"❌ {name} の後に数字を指定"); sys.exit(1)
+
+    window_x = _read_int_arg("--window-x", window_x)
+    window_y = _read_int_arg("--window-y", window_y)
+    window_w = _read_int_arg("--window-w", window_w)
+    window_h = _read_int_arg("--window-h", window_h)
 
     print("=" * 50)
     mode_label = "下書き" if draft_mode else "🚨 本公開"
@@ -2578,6 +3049,36 @@ def main():
     if not products:
         print("❌ 商品なし"); sys.exit(1)
 
+    # 自動出品の安全策: デフォルトでは「出品OK」判定のみを対象にする。
+    # 高額・サイズ不明・コメント汚染などは --include-review 指定時だけ処理対象に含める。
+    if not include_review:
+        ready_products = []
+        skipped_review = 0
+        for p in products:
+            cat_label = " > ".join(get_category_path(p["title"], p.get("product_type", ""), cat_data))
+            desc = generate_description(p["title"], p["vendor"], p.get("sku", ""), p.get("description_en", ""), cat_label)
+            verdict, reasons = evaluate_listing_readiness(p, int(float(p.get("recommended_price") or 0)), cat_label, desc)
+            if verdict == "出品OK":
+                ready_products.append(p)
+            else:
+                skipped_review += 1
+                print(f"  ⏭ 要確認除外: {p['vendor']} / {p['title'][:40]} ({verdict}: {reasons[:2]})")
+        products = ready_products
+        print(f"🛡 出品OKフィルタ: {len(products)} 件 / 要確認・NG除外 {skipped_review} 件")
+        if not products:
+            print("❌ 出品OK商品なし（--include-review で要確認商品も対象化できます）"); sys.exit(1)
+
+    progress = load_progress()
+    if resume_mode:
+        # v4.1: --resume は「成功済み」と「恒久的スキップ」のみ除外する。
+        # limit 適用前に除外しないと、先頭が成功済みの場合に --limit 1 が空振りする。
+        succeeded = set(progress.get("succeeded_titles", []))
+        # 後方互換: 旧スキーマでは processed_titles に全件が入っていたが、
+        # エラー履歴と成功履歴の区別ができないため、--resume 時は無視する。
+        # （必要なら --resume-legacy で旧挙動を復元可能）
+        products = [p for p in products if p["title"] not in succeeded]
+        print(f"↩️ 再開: 成功済み {len(succeeded)} 件を除外 → 残り {len(products)} 件")
+
     target = products[start_from - 1:]
     if test_mode:
         target = target[:1]
@@ -2585,31 +3086,35 @@ def main():
         target = target[:limit_count]
     print(f"📦 対象: {len(target)}件（{start_from}番〜）")
 
-    progress = load_progress()
-    if resume_mode:
-        # v4.1: --resume は「成功済み」と「恒久的スキップ」のみ除外する。
-        # 過去に error / timeout / publish_failed だった商品は再試行対象に戻す。
-        succeeded = set(progress.get("succeeded_titles", []))
-        # 後方互換: 旧スキーマでは processed_titles に全件が入っていたが、
-        # エラー履歴と成功履歴の区別ができないため、--resume 時は無視する。
-        # （必要なら --resume-legacy で旧挙動を復元可能）
-        skipped_titles = succeeded
-        target = [p for p in target if p["title"] not in skipped_titles]
-        print(f"↩️ 再開: 成功済み {len(succeeded)} 件を除外 → 残り {len(target)} 件")
+    os.makedirs(STATE_DIR, exist_ok=True)
 
     results = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"])
-        ctx = browser.new_context(
-            viewport={"width": 1280, "height": 800},
+        launch_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox", f"--window-size={window_w},{window_h}"]
+        if window_x is not None and window_y is not None:
+            launch_args.append(f"--window-position={window_x},{window_y}")
+
+        browser = pw.chromium.launch(headless=False, args=launch_args)
+
+        context_kwargs = dict(
+            viewport=None,
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="ja-JP", timezone_id="Asia/Tokyo")
+            locale="ja-JP",
+            timezone_id="Asia/Tokyo",
+        )
+        if os.path.exists(STORAGE_STATE_PATH):
+            context_kwargs["storage_state"] = STORAGE_STATE_PATH
+
+        ctx = browser.new_context(**context_kwargs)
         page = ctx.new_page()
 
         if not login(page, config["buyma_email"], config["buyma_password"]):
             browser.close(); sys.exit(1)
+
+        try:
+            ctx.storage_state(path=STORAGE_STATE_PATH)
+        except Exception as e:
+            print(f"  ⚠️ storage_state 保存失敗: {e}")
 
         total = len(target)
         for i, product in enumerate(target, 1):

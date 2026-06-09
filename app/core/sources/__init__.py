@@ -13,12 +13,13 @@ from __future__ import annotations
 
 from app.core.sources.base import BaseSource
 from app.core.sources.baseblu import BasebluSource
+from app.core.sources.italist import ItalistSource
 
 
 REGISTERED_SOURCES: dict[str, type[BaseSource]] = {
     "baseblu": BasebluSource,
+    "italist": ItalistSource,
     # 将来追加予定:
-    # "italist": ItalistSource,
     # "farfetch": FarfetchSource,
 }
 

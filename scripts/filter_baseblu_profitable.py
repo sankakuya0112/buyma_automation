@@ -49,8 +49,9 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs",
 MIN_PROFIT_JPY = 5000          # 予備フィルタ: 従来の最低利益 (profit_jpy) で予備除外
 
 
-def get_latest_sales_csv():
-    pattern = os.path.join(OUTPUT_DIR, "*_baseblu_sales_products_sorted.csv")
+def get_latest_sales_csv(source="baseblu"):
+    source = (source or "baseblu").strip().lower()
+    pattern = os.path.join(OUTPUT_DIR, f"*_{source}_sales_products_sorted.csv")
     files = sorted(glob.glob(pattern), reverse=True)
     return files[0] if files else None
 
@@ -82,16 +83,23 @@ def load_market_data(path):
         return json.load(f)
 
 
-def get_market_stats(market_data, vendor, title, sku="") -> MarketStats:
-    """SKU キー優先、なければ title キーで fetch 結果を引く。"""
+def get_market_stats(market_data, vendor, title, sku="", source_name="") -> MarketStats:
+    """市場データを引く。BasebluはSKU優先、Italistはタイトル優先。"""
     if not market_data:
         return MarketStats()
     v = (vendor or "").strip()
     sku_kw = keyword_from_sku(sku)
     keys_to_try = []
-    if sku_kw:
-        keys_to_try.append(f"{v}|{sku_kw}")
-    keys_to_try.append(f"{v}|{keyword_from_title(title)}")
+    title_key = f"{v}|{keyword_from_title(title)}"
+    sku_key = f"{v}|{sku_kw}" if sku_kw else ""
+    if (source_name or "").strip().lower() == "italist":
+        keys_to_try.append(title_key)
+        if sku_key:
+            keys_to_try.append(sku_key)
+    else:
+        if sku_key:
+            keys_to_try.append(sku_key)
+        keys_to_try.append(title_key)
     entry = None
     for k in keys_to_try:
         if k in market_data:
@@ -109,7 +117,8 @@ def get_market_stats(market_data, vendor, title, sku="") -> MarketStats:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="baseblu 利益計算 + 市場連動価格フィルタ")
+    parser = argparse.ArgumentParser(description="仕入先 CSV 利益計算 + 市場連動価格フィルタ")
+    parser.add_argument("--source", default="baseblu", help="仕入先名 (baseblu / italist など)")
     parser.add_argument("--market", help="市場価格 JSON (fetch_buyma_market_prices.py の出力)")
     parser.add_argument("--include-skipped", action="store_true",
                         help="skip_reason 付きの商品も profitable CSV に含める (監査用)")
@@ -119,9 +128,10 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    input_path = get_latest_sales_csv()
+    source_name = (args.source or "baseblu").strip().lower()
+    input_path = get_latest_sales_csv(source_name)
     if not input_path:
-        print("❌ 入力CSVが見つかりません。先に baseblu_sales_to_csv.py を実行してください。")
+        print(f"❌ 入力CSVが見つかりません。先に scripts/{source_name}_sales_to_csv.py を実行してください。")
         return
     print(f"📂 入力ファイル: {os.path.basename(input_path)}")
 
@@ -152,7 +162,7 @@ def main():
                 continue
 
             try:
-                sale_price_eur = float(row["sale_price"])
+                source_price = float(row["sale_price"])
             except (ValueError, KeyError):
                 skipped_count["parse_error"] += 1
                 skipped_count["total"] += 1
@@ -166,7 +176,7 @@ def main():
             # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) に fallback する。
             source = get_source(row.get("source_name", ""))
             params = source.get_pricing_params(
-                sale_price=sale_price_eur,
+                sale_price=source_price,
                 category=product_type,
             )
             result = calculate_pricing(params)
@@ -177,7 +187,7 @@ def main():
                 skipped_count["total"] += 1
                 continue
 
-            market = get_market_stats(market_data, vendor, title, sku=row.get("sku", ""))
+            market = get_market_stats(market_data, vendor, title, sku=row.get("sku", ""), source_name=row.get("source_name", ""))
             decision = decide_final_price(result, market=market, category=product_type)
 
             # 外部ベンチマーク評価 (Phase 2b)
@@ -225,7 +235,7 @@ def main():
                 "sizes": row.get("sizes", ""),
                 "available_sizes": row.get("available_sizes", ""),
                 "season": row.get("season", ""),
-                "sale_price_eur": sale_price_eur,
+                "sale_price_eur": source_price,  # 後方互換カラム名。実通貨は source_name/currency を参照。
                 "original_price_eur": row.get("original_price", ""),
                 "discount_rate": row.get("discount_rate", ""),
                 "description_en": row.get("description_en", ""),
@@ -258,6 +268,8 @@ def main():
                 "expected_margin_pct": decision.expected_margin_pct,
                 "competition_level": decision.competition_level,
                 # Phase 2b 追加
+                "source_name": source.name,
+                "currency": source.currency,
                 "landed_cost_basis": result.landed_cost_basis,
                 "external_action": external_action,
                 "external_reason": external_reason,
@@ -274,7 +286,7 @@ def main():
     )
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    output_path = os.path.join(OUTPUT_DIR, f"{date_str}_baseblu_profitable_products.csv")
+    output_path = os.path.join(OUTPUT_DIR, f"{date_str}_{source_name}_profitable_products.csv")
 
     fieldnames = [
         "title", "vendor", "product_type", "sku",
@@ -290,8 +302,8 @@ def main():
         "breakeven_price_jpy", "floor_profit_jpy",
         "final_price_jpy", "action", "skip_reason", "decision_reason",
         "expected_profit_jpy", "expected_margin_pct", "competition_level",
-        # Phase 2b
-        "landed_cost_basis",
+        # Phase 2b/2c
+        "source_name", "currency", "landed_cost_basis",
         "external_action", "external_reason", "external_min_jpy", "external_url",
         # 末尾
         "description_en", "image_url", "sub_images", "product_url",
@@ -321,7 +333,7 @@ def main():
             em = float(top.get("expected_margin_pct") or top.get("margin_pct") or 0)
             print(f"\n🏆 最高期待利益商品:")
             print(f"   {top['title']} ({top['vendor']})")
-            print(f"   仕入: EUR {top['sale_price_eur']:.0f} → 原価: ¥{top['total_cost_jpy']:,}")
+            print(f"   仕入: {top.get('currency') or source_name} {top['sale_price_eur']:.0f} → 原価: ¥{top['total_cost_jpy']:,}")
             print(f"   最終売価: ¥{fp:,}  期待利益: ¥{ep:,} ({em:.1f}%)")
 
 

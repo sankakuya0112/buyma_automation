@@ -1,74 +1,305 @@
 {
   "brands": {
-    "gucci": {"brand_id": null, "phonetic": "グッチ"},
-    "prada": {"brand_id": null, "phonetic": "プラダ"},
-    "louis vuitton": {"brand_id": null, "phonetic": "ルイ・ヴィトン"},
-    "chanel": {"brand_id": null, "phonetic": "シャネル"},
-    "hermes": {"brand_id": null, "phonetic": "エルメス"},
-    "fendi": {"brand_id": null, "phonetic": "フェンディ"},
-    "burberry": {"brand_id": null, "phonetic": "バーバリー"},
-    "versace": {"brand_id": null, "phonetic": "ヴェルサーチェ"},
-    "dolce & gabbana": {"brand_id": null, "phonetic": "ドルチェ&ガッバーナ"},
-    "dolce&gabbana": {"brand_id": null, "phonetic": "ドルチェ&ガッバーナ"},
-    "bottega veneta": {"brand_id": null, "phonetic": "ボッテガ・ヴェネタ"},
-    "saint laurent": {"brand_id": null, "phonetic": "サンローラン"},
-    "yves saint laurent": {"brand_id": null, "phonetic": "イヴ・サンローラン"},
-    "balenciaga": {"brand_id": null, "phonetic": "バレンシアガ"},
-    "givenchy": {"brand_id": 43, "phonetic": "ジバンシィ"},
-    "celine": {"brand_id": null, "phonetic": "セリーヌ"},
-    "loewe": {"brand_id": null, "phonetic": "ロエベ"},
-    "valentino": {"brand_id": null, "phonetic": "ヴァレンティノ"},
-    "miu miu": {"brand_id": null, "phonetic": "ミュウミュウ"},
-    "dior": {"brand_id": null, "phonetic": "ディオール"},
-    "christian dior": {"brand_id": null, "phonetic": "クリスチャン・ディオール"},
-    "alexander mcqueen": {"brand_id": null, "phonetic": "アレキサンダー・マックイーン"},
-    "vivienne westwood": {"brand_id": null, "phonetic": "ヴィヴィアン・ウエストウッド"},
-    "marc jacobs": {"brand_id": null, "phonetic": "マーク・ジェイコブス"},
-    "moschino": {"brand_id": null, "phonetic": "モスキーノ"},
-    "off-white": {"brand_id": null, "phonetic": "オフホワイト"},
-    "stone island": {"brand_id": null, "phonetic": "ストーン・アイランド"},
-    "canada goose": {"brand_id": null, "phonetic": "カナダグース"},
-    "moncler": {"brand_id": null, "phonetic": "モンクレール"},
-    "woolrich": {"brand_id": null, "phonetic": "ウールリッチ"},
-    "tod's": {"brand_id": null, "phonetic": "トッズ"},
-    "tods": {"brand_id": null, "phonetic": "トッズ"},
-    "salvatore ferragamo": {"brand_id": null, "phonetic": "サルヴァトーレ・フェラガモ"},
-    "ferragamo": {"brand_id": null, "phonetic": "フェラガモ"},
-    "giorgio armani": {"brand_id": null, "phonetic": "ジョルジオ・アルマーニ"},
-    "armani": {"brand_id": null, "phonetic": "アルマーニ"},
-    "emporio armani": {"brand_id": null, "phonetic": "エンポリオ・アルマーニ"},
-    "max mara": {"brand_id": null, "phonetic": "マックスマーラ"},
-    "etro": {"brand_id": null, "phonetic": "エトロ"},
-    "missoni": {"brand_id": null, "phonetic": "ミッソーニ"},
-    "roberto cavalli": {"brand_id": null, "phonetic": "ロベルト・カヴァリ"},
-    "philipp plein": {"brand_id": null, "phonetic": "フィリップ・プレイン"},
-    "dsquared2": {"brand_id": null, "phonetic": "ディースクエアード"},
-    "diesel": {"brand_id": null, "phonetic": "ディーゼル"},
-    "replay": {"brand_id": null, "phonetic": "リプレイ"},
-    "hugo boss": {"brand_id": null, "phonetic": "ヒューゴ・ボス"},
-    "boss": {"brand_id": null, "phonetic": "ボス"},
-    "lacoste": {"brand_id": null, "phonetic": "ラコステ"},
-    "polo ralph lauren": {"brand_id": null, "phonetic": "ポロ・ラルフローレン"},
-    "ralph lauren": {"brand_id": null, "phonetic": "ラルフローレン"},
-    "tommy hilfiger": {"brand_id": null, "phonetic": "トミー・ヒルフィガー"},
-    "calvin klein": {"brand_id": null, "phonetic": "カルバン・クライン"},
-    "michael kors": {"brand_id": null, "phonetic": "マイケル・コース"},
-    "coach": {"brand_id": null, "phonetic": "コーチ"},
-    "kate spade": {"brand_id": null, "phonetic": "ケイト・スペード"},
-    "tory burch": {"brand_id": null, "phonetic": "トリー・バーチ"},
-    "kenzo": {"brand_id": null, "phonetic": "ケンゾー"},
-    "isabel marant": {"brand_id": null, "phonetic": "イザベル・マラン"},
-    "a.p.c.": {"brand_id": null, "phonetic": "アー・ペー・セー"},
-    "apc": {"brand_id": null, "phonetic": "アー・ペー・セー"},
-    "acne studios": {"brand_id": null, "phonetic": "アクネ・ストゥディオズ"},
-    "maison margiela": {"brand_id": null, "phonetic": "メゾン・マルジェラ"},
-    "rick owens": {"brand_id": null, "phonetic": "リック・オウエンス"},
-    "comme des garcons": {"brand_id": null, "phonetic": "コム・デ・ギャルソン"},
-    "comme des garçons": {"brand_id": null, "phonetic": "コム・デ・ギャルソン"},
-    "issey miyake": {"brand_id": null, "phonetic": "イッセイ・ミヤケ"},
-    "yohji yamamoto": {"brand_id": null, "phonetic": "ヨウジヤマモト"},
-    "kenzo takada": {"brand_id": null, "phonetic": "高田賢三"}
+    "gucci": {
+      "brand_id": 203,
+      "phonetic": "グッチ"
+    },
+    "prada": {
+      "brand_id": null,
+      "phonetic": "プラダ"
+    },
+    "louis vuitton": {
+      "brand_id": null,
+      "phonetic": "ルイ・ヴィトン"
+    },
+    "chanel": {
+      "brand_id": null,
+      "phonetic": "シャネル"
+    },
+    "hermes": {
+      "brand_id": null,
+      "phonetic": "エルメス"
+    },
+    "fendi": {
+      "brand_id": null,
+      "phonetic": "フェンディ"
+    },
+    "burberry": {
+      "brand_id": null,
+      "phonetic": "バーバリー"
+    },
+    "versace": {
+      "brand_id": null,
+      "phonetic": "ヴェルサーチェ"
+    },
+    "dolce & gabbana": {
+      "brand_id": null,
+      "phonetic": "ドルチェ&ガッバーナ"
+    },
+    "dolce&gabbana": {
+      "brand_id": null,
+      "phonetic": "ドルチェ&ガッバーナ"
+    },
+    "bottega veneta": {
+      "brand_id": null,
+      "phonetic": "ボッテガ・ヴェネタ"
+    },
+    "saint laurent": {
+      "brand_id": null,
+      "phonetic": "サンローラン"
+    },
+    "yves saint laurent": {
+      "brand_id": null,
+      "phonetic": "イヴ・サンローラン"
+    },
+    "balenciaga": {
+      "brand_id": null,
+      "phonetic": "バレンシアガ"
+    },
+    "givenchy": {
+      "brand_id": 43,
+      "phonetic": "ジバンシィ"
+    },
+    "celine": {
+      "brand_id": null,
+      "phonetic": "セリーヌ"
+    },
+    "loewe": {
+      "brand_id": null,
+      "phonetic": "ロエベ"
+    },
+    "valentino": {
+      "brand_id": null,
+      "phonetic": "ヴァレンティノ"
+    },
+    "miu miu": {
+      "brand_id": null,
+      "phonetic": "ミュウミュウ"
+    },
+    "dior": {
+      "brand_id": null,
+      "phonetic": "ディオール"
+    },
+    "christian dior": {
+      "brand_id": null,
+      "phonetic": "クリスチャン・ディオール"
+    },
+    "alexander mcqueen": {
+      "brand_id": null,
+      "phonetic": "アレキサンダー・マックイーン"
+    },
+    "vivienne westwood": {
+      "brand_id": null,
+      "phonetic": "ヴィヴィアン・ウエストウッド"
+    },
+    "marc jacobs": {
+      "brand_id": null,
+      "phonetic": "マーク・ジェイコブス"
+    },
+    "moschino": {
+      "brand_id": null,
+      "phonetic": "モスキーノ"
+    },
+    "off-white": {
+      "brand_id": null,
+      "phonetic": "オフホワイト"
+    },
+    "stone island": {
+      "brand_id": null,
+      "phonetic": "ストーン・アイランド"
+    },
+    "canada goose": {
+      "brand_id": null,
+      "phonetic": "カナダグース"
+    },
+    "moncler": {
+      "brand_id": null,
+      "phonetic": "モンクレール"
+    },
+    "woolrich": {
+      "brand_id": null,
+      "phonetic": "ウールリッチ"
+    },
+    "tod's": {
+      "brand_id": null,
+      "phonetic": "トッズ"
+    },
+    "tods": {
+      "brand_id": null,
+      "phonetic": "トッズ"
+    },
+    "salvatore ferragamo": {
+      "brand_id": null,
+      "phonetic": "サルヴァトーレ・フェラガモ"
+    },
+    "ferragamo": {
+      "brand_id": null,
+      "phonetic": "フェラガモ"
+    },
+    "giorgio armani": {
+      "brand_id": null,
+      "phonetic": "ジョルジオ・アルマーニ"
+    },
+    "armani": {
+      "brand_id": null,
+      "phonetic": "アルマーニ"
+    },
+    "emporio armani": {
+      "brand_id": null,
+      "phonetic": "エンポリオ・アルマーニ"
+    },
+    "max mara": {
+      "brand_id": 258,
+      "phonetic": "マックスマーラ"
+    },
+    "etro": {
+      "brand_id": 188,
+      "phonetic": "エトロ"
+    },
+    "missoni": {
+      "brand_id": null,
+      "phonetic": "ミッソーニ"
+    },
+    "roberto cavalli": {
+      "brand_id": null,
+      "phonetic": "ロベルト・カヴァリ"
+    },
+    "philipp plein": {
+      "brand_id": null,
+      "phonetic": "フィリップ・プレイン"
+    },
+    "dsquared2": {
+      "brand_id": null,
+      "phonetic": "ディースクエアード"
+    },
+    "diesel": {
+      "brand_id": null,
+      "phonetic": "ディーゼル"
+    },
+    "replay": {
+      "brand_id": null,
+      "phonetic": "リプレイ"
+    },
+    "hugo boss": {
+      "brand_id": null,
+      "phonetic": "ヒューゴ・ボス"
+    },
+    "boss": {
+      "brand_id": null,
+      "phonetic": "ボス"
+    },
+    "lacoste": {
+      "brand_id": null,
+      "phonetic": "ラコステ"
+    },
+    "polo ralph lauren": {
+      "brand_id": null,
+      "phonetic": "ポロ・ラルフローレン"
+    },
+    "ralph lauren": {
+      "brand_id": null,
+      "phonetic": "ラルフローレン"
+    },
+    "tommy hilfiger": {
+      "brand_id": null,
+      "phonetic": "トミー・ヒルフィガー"
+    },
+    "calvin klein": {
+      "brand_id": null,
+      "phonetic": "カルバン・クライン"
+    },
+    "michael kors": {
+      "brand_id": null,
+      "phonetic": "マイケル・コース"
+    },
+    "coach": {
+      "brand_id": null,
+      "phonetic": "コーチ"
+    },
+    "kate spade": {
+      "brand_id": null,
+      "phonetic": "ケイト・スペード"
+    },
+    "tory burch": {
+      "brand_id": null,
+      "phonetic": "トリー・バーチ"
+    },
+    "kenzo": {
+      "brand_id": null,
+      "phonetic": "ケンゾー"
+    },
+    "isabel marant": {
+      "brand_id": null,
+      "phonetic": "イザベル・マラン"
+    },
+    "a.p.c.": {
+      "brand_id": null,
+      "phonetic": "アー・ペー・セー"
+    },
+    "apc": {
+      "brand_id": null,
+      "phonetic": "アー・ペー・セー"
+    },
+    "acne studios": {
+      "brand_id": null,
+      "phonetic": "アクネ・ストゥディオズ"
+    },
+    "maison margiela": {
+      "brand_id": null,
+      "phonetic": "メゾン・マルジェラ"
+    },
+    "rick owens": {
+      "brand_id": null,
+      "phonetic": "リック・オウエンス"
+    },
+    "comme des garcons": {
+      "brand_id": null,
+      "phonetic": "コム・デ・ギャルソン"
+    },
+    "comme des garçons": {
+      "brand_id": null,
+      "phonetic": "コム・デ・ギャルソン"
+    },
+    "issey miyake": {
+      "brand_id": null,
+      "phonetic": "イッセイ・ミヤケ"
+    },
+    "yohji yamamoto": {
+      "brand_id": null,
+      "phonetic": "ヨウジヤマモト"
+    },
+    "kenzo takada": {
+      "brand_id": null,
+      "phonetic": "高田賢三"
+    },
+    "brunello cucinelli": {
+      "brand_id": 1301,
+      "phonetic": "ブルネロクチネリ"
+    },
+    "benedetta bruzziches": {
+      "brand_id": 10681,
+      "phonetic": "ベネデッタブルッツィケス"
+    },
+    "alaia": {
+      "brand_id": 2603,
+      "phonetic": "アライア"
+    },
+    "francesco russo": {
+      "brand_id": 9473,
+      "phonetic": "フランチェスコルッソ"
+    },
+    "chloe": {
+      "brand_id": 85,
+      "phonetic": "クロエ"
+    },
+    "pucci": {
+      "brand_id": 186,
+      "phonetic": "プッチ"
+    }
   },
-  "unregistered": [],
+  "unregistered": [
+    "AFTERCOAT",
+    "THE LATEST"
+  ],
   "auto_lookup_enabled": true
 }

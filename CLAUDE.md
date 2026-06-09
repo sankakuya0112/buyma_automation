@@ -375,7 +375,9 @@ python3 scripts/run_pipeline.py --test
 ## 認証情報の管理
 
 - BUYMA のメール・パスワードは **Mac 上の `.env` または `config.json`** に設定
-- `config.json` は `.gitignore` に追加済み（GitHub に漏れない）
+- `config.json` は 2026-06-09 に git 追跡解除 + `.gitignore` 追加済み
+  (それ以前は誤って追跡されていた。履歴に実パスワードが入ったことはない)
+- 新環境では `config.json.example` をコピーして `config.json` を作る
 - `.env` も `.gitignore` に追加済み
 - チャットには絶対に貼り付けない
 

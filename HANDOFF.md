@@ -1,4 +1,64 @@
-# 引き継ぎノート（2026-05-25 セッション終了時点 / 7回目更新）
+# 引き継ぎノート（2026-06-09 セッション終了時点 / 8回目更新）
+
+---
+
+## 🆕 2026-06-09 セッション追加 (Phase 2d: 収益最適化 + 需要発掘)
+
+設計レビューで発見した収益直結の問題を修正し、「相場より安く需要のある
+商品を見つける仕組み」を実装した。詳細: docs/strategy/DEMAND_DISCOVERY.md
+
+### 1. 在庫判定バグ修正 (fix/scraper) — 最重要
+`parse_product()` が variants[0] のみで在庫判定しており、最初のサイズが
+売切れただけで商品全体が除外されていた。2026-04-26 実測の「在庫なし 42/70 件」
+には誤除外が相当数含まれていた可能性が高い。**Mac で CSV 再生成すると
+出品候補が増えるはず**。価格も「在庫あり最安バリアント」基準に変更。
+
+### 2. 実コストモデル (feat/pricing Phase 2d)
+- 海外カード決済手数料 2.2% (未計上だった)
+- 国内発送費 ¥1,000 (未計上だった)
+- baseblu 実送料: €50 固定 / €850 以上無料 (旧: 重量×¥3,000/kg は
+  低額商品で送料を ¥8,000 以上過小評価していた)
+- すべて BaseSource クラス変数 → get_pricing_params 経由で注入。
+  PricingParams 直接生成時は default 0 で後方互換
+- ⚠️ **要 Mac 検証**: baseblu の表示価格が既に VAT 抜き輸出価格なら、
+  現行 16.7% 控除は二重控除 = 利益過大評価。チェックアウト画面で
+  products.json の価格と日本宛て請求額を比較し、一致するなら
+  `BasebluSource.vat_refund_rate = 0.0` に変更すること
+
+### 3. 価格決定戦略 (decide_final_price 改訂)
+- **price_leader 新設**: 高競合 (n≥10) = 需要実証済み。市場最安値 -3% が
+  breakeven 以上なら出品 (旧: 無条件 SKIP で「需要があり安く出せる商品」
+  を全捨てしていた)
+- **market_aware_discounted 新設**: 中競合で相場 < target でも floor 利益を
+  守れる限り相場-5% に下げて成約を取る (旧: max(target, 相場-5%) で
+  相場より高い売れない出品を量産)
+
+### 4. 期待値ベースの商品選別 (app/core/opportunity.py 新規)
+opportunity_score = 期待利益 × P(成約)。P(成約) は競合密度・価格優位・
+仕入元消化率 (sizes vs available_sizes)・お気に入り数から推定。
+filter の CSV ソートが期待利益順 → 期待値順に変更。
+新列: price_edge_ratio / source_sellthrough / sale_probability / opportunity_score
+
+### 5. 需要起点スカウト (scripts/scout_demand.py 新規)
+- モード1 (サーバー可): market_cache をブランド集計 → 需要インデックス
+  (sweet_spot / proven_high_demand / exclusive / unreliable)
+- モード2: --match-source latest で需要×供給の交点を列挙
+- モード3 (Mac): --probe-from-csv latest で全 vendor の需要を能動調査
+- fetch_buyma_market_prices.py にお気に入り数 (♡) 抽出を追加
+  (wish_total / wish_max)。**セレクタは Mac の --debug-html で要確認**
+
+### Mac 実走チェックリスト (次セッション)
+1. `python3 scripts/baseblu_sales_to_csv.py` — 在庫判定修正後の再生成
+   (出品候補数が増えるか確認)
+2. baseblu チェックアウトで VAT 二重控除の検証 (上記 2 参照)
+3. `python3 scripts/fetch_buyma_market_prices.py --brand "GIVENCHY" --keyword "bag" --debug-html`
+   → /tmp/buyma_market_debug.html でお気に入り数の実セレクタ確認
+4. `python3 scripts/scout_demand.py --probe-from-csv latest` → 需要インデックス構築
+5. `python3 scripts/scout_demand.py --match-source latest` → 交点確認
+6. filter 再実行で price_leader / market_aware_discounted / opportunity_score
+   の実数値を確認
+
+テスト: 215 → **271 ケース全 PASS**
 
 ---
 

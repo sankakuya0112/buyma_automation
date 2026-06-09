@@ -38,3 +38,6 @@ data/*.db
 # Chrome driver
 chromedriver
 chromedriver.exe
+
+# BUYMA credentials (real values live only on the user's Mac)
+config.json

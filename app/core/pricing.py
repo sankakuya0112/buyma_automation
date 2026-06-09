@@ -236,6 +236,11 @@ UNRELIABLE_MARKET_COST_RATIO = 0.7    # 市場 median がこの比率 × 原価�
 HIGH_COMPETITION_THRESHOLD = 10       # サンプル >= この値 → 高競合として SKIP
 LOW_COMPETITION_THRESHOLD = 1         # サンプル <= この値 → 低競合として target 採用
 
+# 価格リーダー戦略 (Phase 2d)。高競合 = 需要実証済み。原価優位があれば
+# 市場最安値を undercut して出品する。新規アカウントでも「最安値」は
+# 検索ソートで露出が取れるため、信頼プレミアム不足を価格で相殺できる。
+PRICE_LEADER_UNDERCUT = 0.03          # 市場最安値から下げる割合 (3% 安く)
+
 
 @dataclass
 class MarketStats:
@@ -369,15 +374,22 @@ def decide_final_price(
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE,
     category: str = "",
 ) -> FinalPriceDecision:
-    """低競合戦略を軸に最終売価を決定する (Phase 2a Tier 2)。
+    """競合密度と原価優位を軸に最終売価を決定する (Phase 2a Tier 2 → 2d 改訂)。
 
     戦略:
       1. 競合ゼロ/低 (n ≤ 1)  → target 採用: 独占チャンスで強気
-      2. 高競合 (n ≥ 10)      → SKIP: 新規アカウントの価格競争は不利
-      3. 偽相場 (median < 原価 × 50%) → ブティック系の BUYMA デフォルト表示扱いで
+      2. 高競合 (n ≥ 10) = 需要実証済み:
+         2a. 最安値 -3% が breakeven 以上 → price_leader で出品
+             (原価優位がある商品は最安値圏で勝負。需要があるので回転が速い)
+         2b. 原価優位なし → SKIP (high_competition)
+      3. 偽相場 (median < 原価 × 70%) → ブティック系の BUYMA デフォルト表示扱いで
                                           target 採用 (competition_level は none)
-      4. 中競合で相場が原価割れ → SKIP (below_breakeven)
-      5. 中競合で正常相場    → target vs (中央値 -5%) の高い方、上限 target × 1.5
+      4. 中競合で相場-5% が breakeven 未満 → SKIP (below_breakeven)
+      5. 中競合で相場-5% ≥ target → 相場-5% 採用 (上限 target × 1.5、reason=market_aware)
+      6. 中競合で breakeven ≤ 相場-5% < target → 相場-5% 採用
+         (reason=market_aware_discounted)。旧実装は max(target, 相場-5%) で
+         必ず target 以上にしていたが、相場より高い出品は成約しないため、
+         floor 利益さえ守れれば相場に合わせて成約を取る方が期待値が高い。
 
     引数 `category` は floor 金額決定 + 最終判定の文脈に使う。
     """
@@ -445,8 +457,16 @@ def decide_final_price(
         )
         return _build_list_decision(target_price, reason)
 
-    # --- 2. 高競合 ---
+    upper_cap = _round_up_100(target_price * 1.5)
+
+    # --- 2. 高競合 = 需要実証済み。原価優位があれば最安値圏で勝負 ---
     if competition == "high":
+        if market.min_jpy:
+            # 最安値 -3% (100 円単位切り下げ: undercut を確実にするため)
+            leader_price = int(market.min_jpy * (1 - PRICE_LEADER_UNDERCUT)) // 100 * 100
+            if leader_price >= breakeven_price:
+                final_price = min(leader_price, upper_cap)
+                return _build_list_decision(final_price, "price_leader")
         return _build_skip_decision("high_competition")
 
     # --- 3. 中競合 ---
@@ -454,11 +474,14 @@ def decide_final_price(
     if market_aware_price < breakeven_price:
         return _build_skip_decision("below_breakeven")
 
-    # target と market_aware_price の高いほう (上限 target × 1.5)
-    upper_cap = _round_up_100(target_price * 1.5)
-    chosen = max(target_price, market_aware_price)
-    final_price = min(chosen, upper_cap)
-    return _build_list_decision(final_price, "market_aware")
+    if market_aware_price >= target_price:
+        # 相場が target より高い → 相場-5% まで上げて利益増 (上限 target × 1.5)
+        final_price = min(market_aware_price, upper_cap)
+        return _build_list_decision(final_price, "market_aware")
+
+    # 相場が target より低い → floor 利益を守れる範囲で相場に合わせて成約を取る。
+    # 旧実装の max(target, 相場-5%) は相場より高い「売れない出品」を量産していた。
+    return _build_list_decision(market_aware_price, "market_aware_discounted")
 
 
 # ---------------------------------------------------------------------------

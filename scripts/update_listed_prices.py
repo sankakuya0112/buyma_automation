@@ -48,6 +48,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -133,16 +136,176 @@ def load_listing_records() -> list[dict]:
     return list(recs.values())
 
 
-def update_listing_price(page, item_id: str, new_price: int) -> bool:
-    """BUYMA 上で価格を更新する (スケルトン)。
+EDIT_URL = "https://www.buyma.com/my/sell/{item_id}/edit?tab=b"
 
-    TODO: 実装
-        1. /my/sell/{item_id}/edit?tab=b に遷移
-        2. 「販売価格」input を特定
-        3. 値をクリア → 新価格をタイプ
-        4. 「保存」ボタンクリック → 確認モーダル対応
-        5. URL 遷移で成否判定
+
+def _dump_edit_page_state(page, item_id: str, context: str) -> None:
+    """編集ページの主要要素を診断ダンプする。
+
+    Mac 実走の初回ログから「保存ボタンのテキスト」「価格 input の位置」を
+    確定するために使う。set_region の `_dump_section_elements` と同じ思想。
     """
+    info = page.evaluate("""(function(){
+        function visible(el){
+            if (!el) return false;
+            var r = el.getBoundingClientRect();
+            var s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0
+                && s.display !== 'none' && s.visibility !== 'hidden';
+        }
+        var btns = Array.from(document.querySelectorAll('button'))
+            .filter(visible)
+            .map(function(b){
+                return {
+                    text: (b.textContent || '').trim().slice(0, 30),
+                    disabled: b.disabled,
+                    cls: b.className.slice(0, 60)
+                };
+            })
+            .slice(0, 30);
+        var priceInputs = [];
+        document.querySelectorAll('input').forEach(function(el){
+            if (el.type !== 'text' || !visible(el)) return;
+            var anc = el;
+            var path = '';
+            for (var d = 0; d < 6; d++) {
+                if (!anc.parentElement) break;
+                anc = anc.parentElement;
+                var t = (anc.textContent || '');
+                if (t.includes('商品価格') || t.includes('販売価格') || t.includes('価格')) {
+                    path = t.slice(0, 80);
+                    break;
+                }
+            }
+            if (path) priceInputs.push({value: el.value, placeholder: el.placeholder, near: path});
+        });
+        return {url: location.href, buttons: btns, priceInputs: priceInputs.slice(0, 5)};
+    })()""")
+    print(f"    🔬 [DUMP-{context}] item={item_id}")
+    print(f"       url={info.get('url', '?')}")
+    for b in info.get("buttons", []):
+        print(f"       btn: '{b['text']}' disabled={b['disabled']}")
+    for p in info.get("priceInputs", []):
+        print(f"       price-input: value={p['value']!r} placeholder={p['placeholder']!r} near={p['near']!r}")
+
+
+def update_listing_price(page, item_id: str, new_price: int, dump: bool = True) -> bool:
+    """BUYMA 編集ページで販売価格を更新する。
+
+    フロー:
+        1. /my/sell/{item_id}/edit?tab=b に遷移
+        2. ページ全体スクロールで lazy render を解除
+        3. (初回 dump=True 時) 編集ページのボタン/価格 input を診断ダンプ
+        4. 商品価格 input を 6 階層 ancestor 探索で特定 → 新価格を __si() でセット
+        5. 「更新する」「保存する」「下書き保存する」のいずれかを Playwright native click
+        6. 確認モーダル ("はい"/"OK"/"保存する") があれば突破
+        7. 完了画面 or URL 変化で成否判定
+
+    diagnostic dump は Mac 実走の初回でセレクタを確定する目的。確定後は dump=False
+    で運用しても良いが、診断目的で常時 ON でも問題ない (1 商品あたり 50ms 程度)。
+    """
+    try:
+        page.goto(EDIT_URL.format(item_id=item_id), wait_until="domcontentloaded", timeout=20000)
+    except Exception as e:
+        print(f"    ❌ 編集ページ遷移失敗: {e}")
+        return False
+
+    time.sleep(1.0)
+    # 既存パターンに合わせて lazy render を解除
+    try:
+        for _ in range(8):
+            page.mouse.wheel(0, 500)
+            time.sleep(0.15)
+        page.mouse.wheel(0, -8 * 500)
+    except Exception:
+        pass
+
+    if dump:
+        try:
+            _dump_edit_page_state(page, item_id, "編集ページ")
+        except Exception as e:
+            print(f"    ⚠️ dump 失敗: {e}")
+
+    # 1) 商品価格 input をセット (buyma_auto_listing.set_price と同じ ancestor 探索)
+    set_result = page.evaluate(f"""(function(){{
+        var inputs = document.querySelectorAll('input');
+        for (var i = 0; i < inputs.length; i++) {{
+            var el = inputs[i];
+            if (el.type !== 'text') continue;
+            var a = el;
+            for (var d = 0; d < 6; d++) {{
+                if (!a.parentElement) break;
+                a = a.parentElement;
+                if (a.textContent && (a.textContent.includes('商品価格')
+                                       || a.textContent.includes('販売価格'))) {{
+                    if (typeof window.__si === 'function') {{
+                        window.__si(el, {json.dumps(str(int(new_price)))});
+                    }} else {{
+                        // フォールバック: native setter + input イベント
+                        var setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(el, {json.dumps(str(int(new_price)))});
+                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}
+                    return 'set';
+                }}
+            }}
+        }}
+        return 'not_found';
+    }})()""")
+    if set_result != "set":
+        print(f"    ❌ 価格 input が見つからない (result={set_result})")
+        return False
+
+    # 2) 保存系ボタンを順次試す
+    save_button_texts = ["更新する", "変更を保存", "保存する", "下書き保存する"]
+    clicked_label = None
+    for label in save_button_texts:
+        btn = page.locator(f'button:has-text("{label}")').first
+        try:
+            if btn.is_visible(timeout=1500):
+                try:
+                    btn.scroll_into_view_if_needed(timeout=1500)
+                except Exception:
+                    pass
+                btn.click(timeout=4000)
+                clicked_label = label
+                break
+        except Exception:
+            continue
+
+    if not clicked_label:
+        print(f"    ❌ 保存ボタンが見つからない (試行: {save_button_texts})")
+        return False
+
+    # 3) 確認モーダル突破
+    for modal_text in ["保存する", "更新する", "はい", "OK"]:
+        try:
+            modal_btn = page.locator(f'button:has-text("{modal_text}")').nth(1)
+            if modal_btn.is_visible(timeout=1000):
+                modal_btn.click(timeout=2000)
+                break
+        except Exception:
+            continue
+
+    # 4) URL 変化 or トースト/完了表示で成否判定
+    url_before = page.url
+    for _ in range(20):
+        time.sleep(0.5)
+        if page.url != url_before:
+            print(f"    ✅ 価格更新: ¥{new_price:,} ({clicked_label} → {page.url})")
+            return True
+        # 同一 URL のまま成功するパターン (toast 表示) を考慮
+        try:
+            ok = page.locator('text=保存しました').first.is_visible(timeout=500)
+            if ok:
+                print(f"    ✅ 価格更新: ¥{new_price:,} ({clicked_label}, toast)")
+                return True
+        except Exception:
+            continue
+
+    print(f"    ⚠️ 価格更新の応答未確認 ({clicked_label} クリック後 10s 経過)")
     return False
 
 

@@ -217,6 +217,22 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 `scripts/filter_baseblu_profitable.py` は `get_source(row.get('source_name'))` で
 動的解決するため、ハードコードを増やさないこと。
 
+### 期待値スコア (商品選別) は `app/core/opportunity.py` (Phase 2d)
+- `opportunity_score = expected_profit_jpy × P(成約)`
+- `DemandSignals` dataclass: market_sample_count / source sellthrough /
+  discount_rate / market_wish_total
+- `estimate_sale_probability(competition_level, price_edge_ratio, signals)`
+- filter の CSV ソートはこの期待値順。係数は成約実績で較正する前提
+- 戦略の全体像: `docs/strategy/DEMAND_DISCOVERY.md`
+
+### 需要起点スカウトは `scripts/scout_demand.py` (Phase 2d)
+- モード1 (オフライン): market_cache → ブランド需要インデックス
+  (data/demand_index.json)
+- モード2: `--match-source latest` で需要×供給の交点
+- モード3 (Mac): `--probe-from-csv latest` でブランド需要を能動調査
+- 価格決定の `price_leader` / `market_aware_discounted` 経路とセットで
+  「需要実証済み商品を原価優位で出す」戦略を構成する
+
 ### 仕入先優位スコア `source_edge` は `app/core/source_edge.py`
 - `SourceEdgeStats` dataclass: cheapest / second_cheapest / edge_jpy / edge_pct
 - `evaluate_source_edge(edge, final_price, current_source)`:

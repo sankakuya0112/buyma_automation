@@ -43,6 +43,10 @@ from app.core.external_benchmark import (
     load_benchmarks, make_product_key,
 )
 from app.core.sources import get_source
+from app.core.opportunity import (
+    DemandSignals, estimate_sale_probability, opportunity_score,
+    price_edge_ratio, count_sizes,
+)
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
@@ -226,6 +230,27 @@ def main():
                 skipped_count["total"] += 1
                 continue
 
+            # Phase 2d: 期待値 (EV) スコア = 期待利益 × 成約確率
+            try:
+                disc = float(row.get("discount_rate") or 0)
+            except (ValueError, TypeError):
+                disc = 0.0
+            signals = DemandSignals(
+                market_sample_count=decision.market_sample_count,
+                source_total_sizes=count_sizes(row.get("sizes", "")),
+                source_available_sizes=count_sizes(row.get("available_sizes", "")),
+                discount_rate=disc,
+                market_wish_total=int(market_data.get(
+                    f"{vendor}|{keyword_from_sku(row.get('sku', '')) or keyword_from_title(title)}",
+                    {},
+                ).get("wish_total", 0) or 0) if market_data else 0,
+            )
+            edge = price_edge_ratio(decision.market_median_jpy, decision.final_price_jpy)
+            p_sale = estimate_sale_probability(
+                decision.competition_level, price_edge_ratio=edge, signals=signals,
+            )
+            opp = opportunity_score(decision.expected_profit_jpy, p_sale)
+
             out_row = {
                 "title": title,
                 "vendor": vendor,
@@ -275,13 +300,20 @@ def main():
                 "external_reason": external_reason,
                 "external_min_jpy": external_min,
                 "external_url": external_url,
+                # Phase 2d 追加: EV スコア
+                "price_edge_ratio": round(edge, 4),
+                "source_sellthrough": round(signals.sellthrough, 3),
+                "sale_probability": round(p_sale, 4),
+                "opportunity_score": opp,
             }
             rows_out.append(out_row)
             skipped_count["total"] += 1
 
-    # listing 可能なもの (action=list) を利益順にソート
+    # listing 可能なもの (action=list) を期待値 (opportunity_score) 順にソート。
+    # 利益額が大きくても売れにくい商品より、売れやすく十分儲かる商品を優先する。
     rows_out.sort(
         key=lambda x: (0 if x.get("action") == "list" else 1,
+                       -int(x.get("opportunity_score") or 0),
                        -int(x.get("expected_profit_jpy") or x.get("profit_jpy") or 0)),
     )
 
@@ -305,6 +337,9 @@ def main():
         # Phase 2b/2c
         "source_name", "currency", "landed_cost_basis",
         "external_action", "external_reason", "external_min_jpy", "external_url",
+        # Phase 2d
+        "price_edge_ratio", "source_sellthrough",
+        "sale_probability", "opportunity_score",
         # 末尾
         "description_en", "image_url", "sub_images", "product_url",
     ]
@@ -331,10 +366,13 @@ def main():
             fp = int(top.get("final_price_jpy") or top.get("selling_price_jpy") or 0)
             ep = int(top.get("expected_profit_jpy") or top.get("profit_jpy") or 0)
             em = float(top.get("expected_margin_pct") or top.get("margin_pct") or 0)
-            print(f"\n🏆 最高期待利益商品:")
+            ps = float(top.get("sale_probability") or 0)
+            opp = int(top.get("opportunity_score") or 0)
+            print(f"\n🏆 最高期待値商品 (利益 × 成約確率):")
             print(f"   {top['title']} ({top['vendor']})")
             print(f"   仕入: {top.get('currency') or source_name} {top['sale_price_eur']:.0f} → 原価: ¥{top['total_cost_jpy']:,}")
             print(f"   最終売価: ¥{fp:,}  期待利益: ¥{ep:,} ({em:.1f}%)")
+            print(f"   成約確率: {ps*100:.1f}%/月  期待値スコア: ¥{opp:,}")
 
 
 if __name__ == "__main__":

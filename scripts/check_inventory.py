@@ -134,18 +134,159 @@ def check_baseblu_stock(handle: str) -> dict:
     }
 
 
-def stop_buyma_listing(page, item_id: str) -> bool:
-    """BUYMA で出品を停止する (スケルトン実装)。
+EDIT_URL = "https://www.buyma.com/my/sell/{item_id}/edit?tab=b"
 
-    TODO: 実装
-        - /my/sell/{item_id}/edit?tab=b に遷移
-        - 「出品停止」または「この商品を削除」ボタンを特定
-        - クリック → 確認モーダル → 停止確定
 
-    実際の UI セレクタは BUYMA 管理画面を見て要調整。初期運用では
-    --dry-run で sold_out の item_id を列挙 → ユーザが手動停止が安全。
+def _dump_stop_page_state(page, item_id: str) -> None:
+    """編集ページの停止/取り下げ候補ボタンをダンプ。
+
+    Mac 実走の初回ログから「停止ボタンのテキスト」「ラジオ/トグルの位置」を
+    確定するためのもの。`set_region` の `_dump_section_elements` と同じ思想で、
+    DOM 構造を一度知れば本体の処理を最終調整できる。
     """
-    # 現時点では未実装。False を返して「停止できなかった」扱いにする
+    info = page.evaluate("""(function(){
+        function visible(el){
+            if (!el) return false;
+            var r = el.getBoundingClientRect();
+            var s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0
+                && s.display !== 'none' && s.visibility !== 'hidden';
+        }
+        var keywords = ['停止', '取り下げ', '削除', '公開停止', '出品停止'];
+        var candidates = [];
+        document.querySelectorAll('button, a, label, input[type=radio]').forEach(function(el){
+            if (!visible(el)) return;
+            var t = (el.textContent || el.value || '').trim();
+            if (!t) return;
+            if (keywords.some(function(k){return t.indexOf(k) !== -1})) {
+                candidates.push({
+                    tag: el.tagName,
+                    text: t.slice(0, 40),
+                    cls: (el.className || '').slice(0, 60)
+                });
+            }
+        });
+        return {url: location.href, candidates: candidates.slice(0, 20)};
+    })()""")
+    print(f"    🔬 [DUMP-停止] item={item_id}")
+    print(f"       url={info.get('url', '?')}")
+    if not info.get("candidates"):
+        print(f"       (停止/取下げ系の visible 要素なし — 別 URL の可能性)")
+    for c in info.get("candidates", []):
+        print(f"       {c['tag']}: '{c['text']}'  cls={c['cls']!r}")
+
+
+def stop_buyma_listing(page, item_id: str, dump: bool = True) -> bool:
+    """BUYMA で出品を停止する。
+
+    フロー:
+        1. 編集ページに遷移
+        2. lazy render 解除のためスクロール
+        3. (初回 dump=True) 停止候補要素を診断ダンプ
+        4. 「出品停止」ボタン / ラジオを Playwright native click
+        5. 「更新する」「保存する」「下書き保存する」のいずれかをクリック
+        6. 確認モーダル ("はい"/"OK") 突破
+        7. URL 変化または toast で成否判定
+
+    BUYMA 編集画面は「販売中 / 停止 / 取り下げ」のラジオ + 保存ボタンの構造
+    が定説。初回 Mac 実走で正確なテキスト/構造を dump → 必要なら微調整。
+    """
+    try:
+        page.goto(EDIT_URL.format(item_id=item_id), wait_until="domcontentloaded", timeout=20000)
+    except Exception as e:
+        print(f"    ❌ 編集ページ遷移失敗: {e}")
+        return False
+
+    time.sleep(1.0)
+    # lazy render 解除
+    try:
+        for _ in range(8):
+            page.mouse.wheel(0, 500)
+            time.sleep(0.15)
+        page.mouse.wheel(0, -8 * 500)
+    except Exception:
+        pass
+
+    if dump:
+        try:
+            _dump_stop_page_state(page, item_id)
+        except Exception as e:
+            print(f"    ⚠️ dump 失敗: {e}")
+
+    # 1) 停止系ラジオ/ボタンを順次クリック (Playwright native)
+    stop_labels = ["出品停止", "停止する", "公開停止", "停止"]
+    clicked_stop = None
+    for label in stop_labels:
+        # まず label/button タグを優先
+        for selector in [f'label:has-text("{label}")', f'button:has-text("{label}")']:
+            try:
+                el = page.locator(selector).first
+                if el.is_visible(timeout=1500):
+                    try:
+                        el.scroll_into_view_if_needed(timeout=1500)
+                    except Exception:
+                        pass
+                    el.click(timeout=3000)
+                    clicked_stop = label
+                    break
+            except Exception:
+                continue
+        if clicked_stop:
+            break
+
+    if not clicked_stop:
+        print(f"    ⚠️ 停止系要素が見つからない (試行: {stop_labels})")
+        return False
+
+    time.sleep(0.5)
+
+    # 2) 保存系ボタン
+    save_labels = ["更新する", "変更を保存", "保存する", "下書き保存する"]
+    clicked_save = None
+    for label in save_labels:
+        try:
+            btn = page.locator(f'button:has-text("{label}")').first
+            if btn.is_visible(timeout=1500):
+                try:
+                    btn.scroll_into_view_if_needed(timeout=1500)
+                except Exception:
+                    pass
+                btn.click(timeout=4000)
+                clicked_save = label
+                break
+        except Exception:
+            continue
+
+    if not clicked_save:
+        print(f"    ⚠️ 保存ボタンが見つからない (試行: {save_labels})")
+        return False
+
+    # 3) 確認モーダル突破
+    for modal_text in ["保存する", "更新する", "はい", "OK", "停止する"]:
+        try:
+            modal_btn = page.locator(f'button:has-text("{modal_text}")').nth(1)
+            if modal_btn.is_visible(timeout=1000):
+                modal_btn.click(timeout=2000)
+                break
+        except Exception:
+            continue
+
+    # 4) URL 変化 or toast で成否判定
+    url_before = page.url
+    for _ in range(20):
+        time.sleep(0.5)
+        if page.url != url_before:
+            print(f"    ✅ 停止: {item_id} ({clicked_stop} + {clicked_save})")
+            return True
+        try:
+            ok = page.locator('text=保存しました').first.is_visible(timeout=500)
+            if ok:
+                print(f"    ✅ 停止: {item_id} ({clicked_stop} + {clicked_save}, toast)")
+                return True
+        except Exception:
+            continue
+
+    print(f"    ⚠️ 停止応答未確認: {item_id} ({clicked_stop} + {clicked_save} 後 10s)")
     return False
 
 

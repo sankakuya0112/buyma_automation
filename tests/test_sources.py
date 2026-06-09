@@ -107,5 +107,77 @@ class TestBaseSourceContract(unittest.TestCase):
             list(BasebluSource().fetch_products())
 
 
+class TestBasebluShippingPolicy(unittest.TestCase):
+    """baseblu の送料体系 (Asia €50 固定 / €850 以上無料)。"""
+
+    def setUp(self):
+        self.s = BasebluSource()
+
+    def test_below_threshold_charges_flat_fee(self):
+        self.assertEqual(self.s.shipping_cost_local(200.0), 50.0)
+
+    def test_at_threshold_free(self):
+        self.assertEqual(self.s.shipping_cost_local(850.0), 0.0)
+
+    def test_above_threshold_free(self):
+        self.assertEqual(self.s.shipping_cost_local(1200.0), 0.0)
+
+    def test_shipping_jpy_injected_into_params(self):
+        """get_pricing_params の shipping_jpy = €50 × 為替レート。"""
+        from app.core.pricing import resolve_exchange_rate
+        params = self.s.get_pricing_params(sale_price=200.0, category="wallet")
+        expected = 50.0 * resolve_exchange_rate("EUR")
+        self.assertAlmostEqual(params.shipping_jpy, expected, places=2)
+
+    def test_free_shipping_injected_as_zero(self):
+        params = self.s.get_pricing_params(sale_price=900.0, category="bag")
+        self.assertEqual(params.shipping_jpy, 0.0)
+
+
+class TestRealCostModel(unittest.TestCase):
+    """Phase 2d: 海外決済手数料 + 国内発送費が原価に反映される。"""
+
+    def test_params_carry_fx_fee_and_domestic_shipping(self):
+        params = BasebluSource().get_pricing_params(sale_price=500.0, category="dress")
+        self.assertEqual(params.purchase_fx_fee_rate, 0.022)
+        self.assertEqual(params.domestic_shipping_jpy, 1000.0)
+        self.assertEqual(params.vat_refund_rate, 0.167)
+
+    def test_fx_fee_increases_total_cost(self):
+        from app.core.pricing import calculate_pricing, PricingParams
+        base = PricingParams(source_price=500.0, currency="EUR", category="dress")
+        with_fee = PricingParams(
+            source_price=500.0, currency="EUR", category="dress",
+            purchase_fx_fee_rate=0.022,
+        )
+        r0 = calculate_pricing(base)
+        r1 = calculate_pricing(with_fee)
+        # fx fee = 仕入値(円) × 2.2%
+        self.assertAlmostEqual(
+            r1.total_cost_jpy - r0.total_cost_jpy,
+            r0.source_price_jpy * 0.022,
+            places=1,
+        )
+        self.assertAlmostEqual(r1.purchase_fx_fee_jpy, r0.source_price_jpy * 0.022, places=1)
+
+    def test_domestic_shipping_increases_total_cost(self):
+        from app.core.pricing import calculate_pricing, PricingParams
+        base = PricingParams(source_price=500.0, currency="EUR", category="dress")
+        with_ship = PricingParams(
+            source_price=500.0, currency="EUR", category="dress",
+            domestic_shipping_jpy=1000.0,
+        )
+        r0 = calculate_pricing(base)
+        r1 = calculate_pricing(with_ship)
+        self.assertAlmostEqual(r1.total_cost_jpy - r0.total_cost_jpy, 1000.0, places=1)
+
+    def test_defaults_remain_backward_compatible(self):
+        """PricingParams 直接生成 (Source 非経由) では追加コストゼロ。"""
+        from app.core.pricing import calculate_pricing, PricingParams
+        r = calculate_pricing(PricingParams(source_price=100.0, currency="EUR"))
+        self.assertEqual(r.purchase_fx_fee_jpy, 0.0)
+        self.assertEqual(r.domestic_shipping_jpy, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,38 @@ def _extract_brand_text(block_html: str) -> str:
     return ""
 
 
+def _extract_wish_count(block_html: str) -> int:
+    """商品ブロック HTML からお気に入り (♡) 数を抽出する。
+
+    お気に入り数は「この商品が欲しい人の数」= 需要の直接シグナル。
+    BUYMA の検索カードは複数のマークアップ世代が混在するため、
+    代表的なパターンを順に試す。見つからなければ 0 (シグナルなし扱い)。
+
+    ⚠️ セレクタは Mac 実走の --debug-html で実 HTML を確認して調整すること。
+    """
+    if not block_html:
+        return 0
+    patterns = [
+        # 1. class に fav/favorite/wish を含む要素内の数値
+        r'class="[^"]*(?:favorite|fav-count|fav_count|wish)[^"]*"[^>]*>\s*(?:<[^>]+>\s*)*([0-9][0-9,]*)\s*<',
+        # 2. お気に入り表記の近傍数値
+        r'お気に入り[^0-9]{0,20}([0-9][0-9,]*)',
+        # 3. data-favorite-count 属性
+        r'data-favorite-count="([0-9]+)"',
+    ]
+    for pat in patterns:
+        m = re.search(pat, block_html, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            try:
+                v = int(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            # 価格の誤マッチ防止: お気に入り数は現実的に 0-99999
+            if 0 <= v < 100000:
+                return v
+    return 0
+
+
 def _extract_title_text(block_html: str) -> str:
     """商品ブロック HTML から商品タイトルを抽出する。"""
     # 1. class*="Product_Title"
@@ -273,6 +305,7 @@ def extract_products_from_html(html: str) -> list[dict]:
                 "price": price_val,
                 "brand_text": _extract_brand_text(block_html),
                 "title_text": _extract_title_text(block_html),
+                "wish": _extract_wish_count(block_html),
             })
         if products:
             return products
@@ -289,6 +322,7 @@ def extract_products_from_html(html: str) -> list[dict]:
                 "price": v,
                 "brand_text": _extract_brand_text(block_html),
                 "title_text": _extract_title_text(block_html),
+                "wish": _extract_wish_count(block_html),
             })
     if products:
         return products
@@ -305,6 +339,7 @@ def extract_products_from_html(html: str) -> list[dict]:
                 "price": v,
                 "brand_text": _extract_brand_text(block_html),
                 "title_text": _extract_title_text(block_html),
+                "wish": _extract_wish_count(block_html),
             })
     return products
 
@@ -422,6 +457,8 @@ def compute_stats(items, query_brand: str = "") -> dict:
                 "default_price": 0,
                 "iqr_outlier": 0,
             },
+            "wish_total": 0,
+            "wish_max": 0,
         }
 
     # --- ブランド一致判定 ---
@@ -474,6 +511,11 @@ def compute_stats(items, query_brand: str = "") -> dict:
     else:
         confidence = (raw_n - brand_mismatch_count) / raw_n
 
+    # --- お気に入り数の集計 (需要シグナル、Phase 2d) ---
+    wishes = [int(it.get("wish") or 0) for it in accepted_items]
+    wish_total = sum(wishes)
+    wish_max = max(wishes) if wishes else 0
+
     return {
         "sample_count": sample_count,
         "median_jpy": median,
@@ -490,6 +532,8 @@ def compute_stats(items, query_brand: str = "") -> dict:
             "default_price": excluded_default_count,
             "iqr_outlier": iqr_outlier_count,
         },
+        "wish_total": wish_total,
+        "wish_max": wish_max,
     }
 
 

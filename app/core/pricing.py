@@ -167,6 +167,13 @@ class PricingParams:
     buyma_commission_rate: float = BUYMA_COMMISSION_RATE
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE
     consumption_tax_rate: float = CONSUMPTION_TAX_RATE
+    # 海外決済手数料 (クレジットカードの海外事務手数料 ~2.2%)。
+    # 外貨建て仕入れで必ず発生するが従来モデルでは未計上だった。
+    # default 0.0 で後方互換。Source.get_pricing_params() が実値を注入する。
+    purchase_fx_fee_rate: float = 0.0
+    # 国内発送費 (BUYMA 出品者→購入者、送料込み出品が前提)。
+    # default 0.0 で後方互換。Source.get_pricing_params() が実値を注入する。
+    domestic_shipping_jpy: float = 0.0
 
 
 @dataclass
@@ -193,6 +200,8 @@ class PricingResult:
     duty_rate: float
     weight_kg: float
     landed_cost_basis: str = "DDU"                  # "DDU" or "DDP"
+    purchase_fx_fee_jpy: float = 0.0                # 海外決済手数料 (円)
+    domestic_shipping_jpy: float = 0.0              # 国内発送費 (円)
 
     def is_profitable(self, min_profit_jpy: float = 3000.0) -> bool:
         """利益額が閾値を超えているか。"""
@@ -226,6 +235,11 @@ UNRELIABLE_MARKET_COST_RATIO = 0.7    # 市場 median がこの比率 × 原価�
 # 競合密度戦略 (Phase 2a Tier 2)
 HIGH_COMPETITION_THRESHOLD = 10       # サンプル >= この値 → 高競合として SKIP
 LOW_COMPETITION_THRESHOLD = 1         # サンプル <= この値 → 低競合として target 採用
+
+# 価格リーダー戦略 (Phase 2d)。高競合 = 需要実証済み。原価優位があれば
+# 市場最安値を undercut して出品する。新規アカウントでも「最安値」は
+# 検索ソートで露出が取れるため、信頼プレミアム不足を価格で相殺できる。
+PRICE_LEADER_UNDERCUT = 0.03          # 市場最安値から下げる割合 (3% 安く)
 
 
 @dataclass
@@ -360,15 +374,22 @@ def decide_final_price(
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE,
     category: str = "",
 ) -> FinalPriceDecision:
-    """低競合戦略を軸に最終売価を決定する (Phase 2a Tier 2)。
+    """競合密度と原価優位を軸に最終売価を決定する (Phase 2a Tier 2 → 2d 改訂)。
 
     戦略:
       1. 競合ゼロ/低 (n ≤ 1)  → target 採用: 独占チャンスで強気
-      2. 高競合 (n ≥ 10)      → SKIP: 新規アカウントの価格競争は不利
-      3. 偽相場 (median < 原価 × 50%) → ブティック系の BUYMA デフォルト表示扱いで
+      2. 高競合 (n ≥ 10) = 需要実証済み:
+         2a. 最安値 -3% が breakeven 以上 → price_leader で出品
+             (原価優位がある商品は最安値圏で勝負。需要があるので回転が速い)
+         2b. 原価優位なし → SKIP (high_competition)
+      3. 偽相場 (median < 原価 × 70%) → ブティック系の BUYMA デフォルト表示扱いで
                                           target 採用 (competition_level は none)
-      4. 中競合で相場が原価割れ → SKIP (below_breakeven)
-      5. 中競合で正常相場    → target vs (中央値 -5%) の高い方、上限 target × 1.5
+      4. 中競合で相場-5% が breakeven 未満 → SKIP (below_breakeven)
+      5. 中競合で相場-5% ≥ target → 相場-5% 採用 (上限 target × 1.5、reason=market_aware)
+      6. 中競合で breakeven ≤ 相場-5% < target → 相場-5% 採用
+         (reason=market_aware_discounted)。旧実装は max(target, 相場-5%) で
+         必ず target 以上にしていたが、相場より高い出品は成約しないため、
+         floor 利益さえ守れれば相場に合わせて成約を取る方が期待値が高い。
 
     引数 `category` は floor 金額決定 + 最終判定の文脈に使う。
     """
@@ -436,8 +457,16 @@ def decide_final_price(
         )
         return _build_list_decision(target_price, reason)
 
-    # --- 2. 高競合 ---
+    upper_cap = _round_up_100(target_price * 1.5)
+
+    # --- 2. 高競合 = 需要実証済み。原価優位があれば最安値圏で勝負 ---
     if competition == "high":
+        if market.min_jpy:
+            # 最安値 -3% (100 円単位切り下げ: undercut を確実にするため)
+            leader_price = int(market.min_jpy * (1 - PRICE_LEADER_UNDERCUT)) // 100 * 100
+            if leader_price >= breakeven_price:
+                final_price = min(leader_price, upper_cap)
+                return _build_list_decision(final_price, "price_leader")
         return _build_skip_decision("high_competition")
 
     # --- 3. 中競合 ---
@@ -445,11 +474,14 @@ def decide_final_price(
     if market_aware_price < breakeven_price:
         return _build_skip_decision("below_breakeven")
 
-    # target と market_aware_price の高いほう (上限 target × 1.5)
-    upper_cap = _round_up_100(target_price * 1.5)
-    chosen = max(target_price, market_aware_price)
-    final_price = min(chosen, upper_cap)
-    return _build_list_decision(final_price, "market_aware")
+    if market_aware_price >= target_price:
+        # 相場が target より高い → 相場-5% まで上げて利益増 (上限 target × 1.5)
+        final_price = min(market_aware_price, upper_cap)
+        return _build_list_decision(final_price, "market_aware")
+
+    # 相場が target より低い → floor 利益を守れる範囲で相場に合わせて成約を取る。
+    # 旧実装の max(target, 相場-5%) は相場より高い「売れない出品」を量産していた。
+    return _build_list_decision(market_aware_price, "market_aware_discounted")
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +587,11 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     vat_refund_jpy = source_price_jpy * params.vat_refund_rate
     net_source_jpy = source_price_jpy - vat_refund_jpy
 
+    # 1b. 海外決済手数料 (カード会社の海外事務手数料)。
+    # 課金額ベース = チェックアウト総額に掛かるが、保守的に商品価格全額
+    # (VAT 還付前) に適用する。還付が後日でもカード請求は満額のため。
+    purchase_fx_fee_jpy = source_price_jpy * params.purchase_fx_fee_rate
+
     # 2-4. 税関コスト
     # DDP の場合: チェックアウト価格に関税・輸入消費税が含まれているため
     #             二重計上を防ぐためゼロ扱い
@@ -570,6 +607,7 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     # 5. 総原価 (振込手数料も原価に含める: BUYMA → ショッパー入金時に差し引かれる)
     total_cost_jpy = (
         net_source_jpy + shipping_jpy + customs_jpy + consumption_tax_jpy
+        + purchase_fx_fee_jpy + params.domestic_shipping_jpy
         + BANK_TRANSFER_FEE_JPY
     )
 
@@ -607,4 +645,6 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         duty_rate=duty_rate,
         weight_kg=weight_kg,
         landed_cost_basis=basis,
+        purchase_fx_fee_jpy=round(purchase_fx_fee_jpy, 2),
+        domestic_shipping_jpy=round(params.domestic_shipping_jpy, 2),
     )

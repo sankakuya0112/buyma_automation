@@ -416,8 +416,23 @@ def parse_product(product, fetch_details=True, source_meta=None):
     if not variants:
         return None
 
-    variant = variants[0]
-    available = variant.get("available", False)
+    # 在庫判定はバリアント横断で行う。variants[0] だけ見ると
+    # 「サイズ36売切・38/40在庫あり」の商品が在庫なし扱いになり機会損失する。
+    available = any(v.get("available", False) for v in variants)
+
+    # 価格・SKU の参照バリアントは「在庫のある最安バリアント」を優先する
+    # (Shopify ではバリアントごとに価格が異なることがある)。
+    def _variant_price(v):
+        try:
+            return float(v.get("price", 0))
+        except (ValueError, TypeError):
+            return float("inf")
+
+    available_variants = [v for v in variants if v.get("available", False)]
+    if available_variants:
+        variant = min(available_variants, key=_variant_price)
+    else:
+        variant = variants[0]
     # variant SKU からサイズ suffix を剥がして製品レベル SKU にする
     sku = _extract_sku_from_variant(variant.get("sku", ""), variant.get("option1", ""))
 

@@ -56,9 +56,42 @@ def _latest_profitable_csv():
     return files[-1]
 
 
+LEGACY_COLUMN_MAP = {
+    # legacy USD pipeline -> new pipeline equivalents
+    "sale_price_jpy": "source_price_jpy",
+    "suggested_buyma_price_jpy": "selling_price_jpy",
+    "estimated_profit_jpy": "profit_jpy",
+}
+
+
+def _normalize_legacy_row(row: dict) -> dict:
+    """旧 USD ベースの CSV を新スキーマに最低限揃える。
+
+    audit_pricing.py は元々 Phase 2a 以降の filter_baseblu_profitable.py
+    出力 (`sale_price_eur` / `selling_price_jpy` / `profit_jpy` 等) を
+    想定しているが、サーバー上に残っている古い CSV (USD列のみ) でも
+    集計が成立するようにする。
+    """
+    out = dict(row)
+    for legacy_key, new_key in LEGACY_COLUMN_MAP.items():
+        if not out.get(new_key) and out.get(legacy_key):
+            out[new_key] = out[legacy_key]
+    # マージン率を導出 (旧 CSV にはカラムなし)
+    if not out.get("margin_pct"):
+        try:
+            profit = float(out.get("profit_jpy") or 0)
+            sell = float(out.get("selling_price_jpy") or 0)
+            if sell > 0:
+                out["margin_pct"] = f"{(profit / sell) * 100:.2f}"
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def load_rows(path):
     with open(path, encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    return [_normalize_legacy_row(r) for r in rows]
 
 
 def print_item(idx, n_total, row, min_margin=None):

@@ -1,3 +1,143 @@
+# 引き継ぎノート（2026-06-09 セッション終了時点 / 8回目更新）
+
+---
+
+## 🆕 2026-06-09 追記: Mac 作業の AI 化 + 1 コマンド化
+
+ユーザーから「Mac での手作業が手間でミスも多い。AI に任せたい」との要望。
+
+- `scripts/run_weekly.py` 新規: 週次サイクル (セール取得 → filter →
+  相場取得 → 相場連動 filter → 需要分析) を 1 コマンドで正しい順序実行。
+  `--dry-run` / `--skip-scrape` / `--skip-market` / `--market-limit` /
+  `--probe` オプションあり。失敗工程はコマンドとエラーを表示して
+  「Claude に貼り付けてください」と案内する
+- `docs/MAC_AI_SETUP.md` 新規: Mac に Claude Code (デスクトップ/CLI) を
+  入れて Mac 側の実行作業を AI に任せる手順。役割分担は
+  「開発・push = クラウド側 / 実走・診断 = Mac 側 Claude」。
+  リポジトリの CLAUDE.md / HANDOFF.md が Mac 側セッションにも文脈を与える
+- **ユーザーへの案内方針**: Mac での操作説明は今後
+  「`claude` を起動して『〇〇して』と頼む」形を基本とし、
+  生コマンドは保険として併記する
+
+---
+
+## 🆕 2026-06-09 セッション追加 (Phase 2d: 収益最適化 + 需要発掘)
+
+設計レビューで発見した収益直結の問題を修正し、「相場より安く需要のある
+商品を見つける仕組み」を実装した。詳細: docs/strategy/DEMAND_DISCOVERY.md
+
+### 1. 在庫判定バグ修正 (fix/scraper) — 最重要
+`parse_product()` が variants[0] のみで在庫判定しており、最初のサイズが
+売切れただけで商品全体が除外されていた。2026-04-26 実測の「在庫なし 42/70 件」
+には誤除外が相当数含まれていた可能性が高い。**Mac で CSV 再生成すると
+出品候補が増えるはず**。価格も「在庫あり最安バリアント」基準に変更。
+
+### 2. 実コストモデル (feat/pricing Phase 2d)
+- 海外カード決済手数料 2.2% (未計上だった)
+- 国内発送費 ¥1,000 (未計上だった)
+- baseblu 実送料: €50 固定 / €850 以上無料 (旧: 重量×¥3,000/kg は
+  低額商品で送料を ¥8,000 以上過小評価していた)
+- すべて BaseSource クラス変数 → get_pricing_params 経由で注入。
+  PricingParams 直接生成時は default 0 で後方互換
+- ⚠️ **要 Mac 検証**: baseblu の表示価格が既に VAT 抜き輸出価格なら、
+  現行 16.7% 控除は二重控除 = 利益過大評価。チェックアウト画面で
+  products.json の価格と日本宛て請求額を比較し、一致するなら
+  `BasebluSource.vat_refund_rate = 0.0` に変更すること
+
+### 3. 価格決定戦略 (decide_final_price 改訂)
+- **price_leader 新設**: 高競合 (n≥10) = 需要実証済み。市場最安値 -3% が
+  breakeven 以上なら出品 (旧: 無条件 SKIP で「需要があり安く出せる商品」
+  を全捨てしていた)
+- **market_aware_discounted 新設**: 中競合で相場 < target でも floor 利益を
+  守れる限り相場-5% に下げて成約を取る (旧: max(target, 相場-5%) で
+  相場より高い売れない出品を量産)
+
+### 4. 期待値ベースの商品選別 (app/core/opportunity.py 新規)
+opportunity_score = 期待利益 × P(成約)。P(成約) は競合密度・価格優位・
+仕入元消化率 (sizes vs available_sizes)・お気に入り数から推定。
+filter の CSV ソートが期待利益順 → 期待値順に変更。
+新列: price_edge_ratio / source_sellthrough / sale_probability / opportunity_score
+
+### 5. 需要起点スカウト (scripts/scout_demand.py 新規)
+- モード1 (サーバー可): market_cache をブランド集計 → 需要インデックス
+  (sweet_spot / proven_high_demand / exclusive / unreliable)
+- モード2: --match-source latest で需要×供給の交点を列挙
+- モード3 (Mac): --probe-from-csv latest で全 vendor の需要を能動調査
+- fetch_buyma_market_prices.py にお気に入り数 (♡) 抽出を追加
+  (wish_total / wish_max)。**セレクタは Mac の --debug-html で要確認**
+
+### Mac 実走チェックリスト (次セッション)
+1. `python3 scripts/baseblu_sales_to_csv.py` — 在庫判定修正後の再生成
+   (出品候補数が増えるか確認)
+2. baseblu チェックアウトで VAT 二重控除の検証 (上記 2 参照)
+3. `python3 scripts/fetch_buyma_market_prices.py --brand "GIVENCHY" --keyword "bag" --debug-html`
+   → /tmp/buyma_market_debug.html でお気に入り数の実セレクタ確認
+4. `python3 scripts/scout_demand.py --probe-from-csv latest` → 需要インデックス構築
+5. `python3 scripts/scout_demand.py --match-source latest` → 交点確認
+6. filter 再実行で price_leader / market_aware_discounted / opportunity_score
+   の実数値を確認
+
+テスト: 215 → **271 ケース全 PASS**
+
+---
+
+## 🆕 2026-05-25 セッション追加 (完成版ラストマイル)
+
+### 1. audit_pricing.py — レガシー CSV 対応 (graceful)
+- 旧 USD パイプライン出力 (`sale_price_jpy` / `suggested_buyma_price_jpy` /
+  `estimated_profit_jpy` のみ) でも `--summary` が機能不全にならないよう、
+  `_normalize_legacy_row()` で新スキーマ (`source_price_jpy` /
+  `selling_price_jpy` / `profit_jpy`) にマップしてから集計。
+- margin_pct も profit / sell から自動導出。
+- 既存 CSV (2026-04-06) で確認: 利益中央値 ¥23,347 / 利益率中央値 **15.0%**
+  / 最小利益 ¥5,125 (floor ¥5,000 ぎりぎり)。Phase 2a の 25% target に
+  届いていない → 新パイプライン (filter_baseblu_profitable.py の最新版)
+  で再生成すれば改善見込み。
+
+### 2. update_listed_prices.py — 価格更新 UI 実装 (診断ダンプ付き)
+- `update_listing_price(page, item_id, new_price, dump=True)` を完成。
+- `_dump_edit_page_state()` で編集ページの visible button / 価格 input を
+  ダンプ → Mac 実走の初回ログから「保存ボタンのテキスト」「価格 input の
+  ancestor 構造」を確定する設計 (set_region の `_dump_section_elements`
+  と同じ思想)。
+- 価格セットは `buyma_auto_listing.set_price` と同じ 6 階層 ancestor 探索 +
+  `window.__si()` (fallback: native setter + input/change dispatch)。
+- 保存ボタンは「更新する」「変更を保存」「保存する」「下書き保存する」を
+  順次試す。確認モーダル ("はい"/"OK"/"保存する"/"更新する") も突破。
+- 成否判定: URL 変化 or `text=保存しました` トースト (10 秒待機)。
+
+### 3. check_inventory.py — 出品停止 UI 実装 (診断ダンプ付き)
+- `stop_buyma_listing(page, item_id, dump=True)` を完成。
+- `_dump_stop_page_state()` で「停止 / 取り下げ / 削除 / 公開停止」を含む
+  visible 要素を button/a/label/radio 横断でダンプ。
+- 停止操作: ["出品停止", "停止する", "公開停止", "停止"] を label/button
+  優先順で順次クリック。続いて保存系ボタン (update_listing_price と同じ
+  4 種) を試行。
+- 成否判定: URL 変化 or toast (10 秒)。
+
+**両関数とも初回 Mac 実走で diagnostic dump をログ採取 → 必要なら微調整**
+の運用。`buyma_auto_listing.set_region` で実証済みのパターン。
+
+### 4. buyma_auto_listing.py — エラー通知統合
+- 連続失敗 (status=error/timeout/publish_failed が 2 retry 後も継続) で
+  `notify("warn", ...)` 送信。
+- バッチ完了時、失敗率 30% 超または publish モード時にサマリ通知
+  (`notify("error" or "success", ...)`)。
+- `SLACK_WEBHOOK_URL` / `SMTP_HOST` 未設定なら silent skip (notifier の
+  既存仕様)。`NOTIFY_DRY_RUN=1` で stdout 出力テスト可能。
+
+### 5. テスト追加 (211 → 215 ケース)
+- `tests/test_audit_pricing_legacy.py` 新規 (4 ケース):
+  legacy 列マップ / 新スキーマ保護 / 0 除算回避 / load_rows 統合。
+
+### Mac 実走で次に確認すべきこと
+1. `update_listed_prices.py --dry-run --limit 3` → 価格差分検出が動く
+2. `check_inventory.py --dry-run --limit 3` → 在庫検出 + sold_out リスト
+3. `--execute` 走行で `🔬 [DUMP-編集ページ]` / `🔬 [DUMP-停止]` ログ採取
+4. ボタンテキスト・selectors を確定 → 必要なら 1-2 行調整して再走
+
+---
+
 # 引き継ぎノート（2026-04-22 セッション終了時点 / 6回目更新）
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・

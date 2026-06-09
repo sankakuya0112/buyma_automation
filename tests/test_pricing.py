@@ -323,16 +323,61 @@ class TestDecideFinalPriceCompetitionLevels(unittest.TestCase):
         self.assertEqual(d.reason, "low_competition")
         self.assertEqual(d.final_price_jpy, self.target)
 
-    def test_high_competition_n10(self):
-        # n = HIGH_COMPETITION_THRESHOLD (=10) → skip
+    def test_high_competition_no_cost_advantage_skips(self):
+        # n = HIGH_COMPETITION_THRESHOLD (=10) で市場最安値が breakeven 未満
+        # → 原価優位なし → skip
+        market = MarketStats(
+            sample_count=HIGH_COMPETITION_THRESHOLD,
+            median_jpy=int(self.target * 1.5),
+            min_jpy=int(self.cost * 0.8),   # 最安値が原価の 8 割 = 勝てない
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "skip")
+        self.assertEqual(d.reason, "high_competition")
+        self.assertIsNone(d.final_price_jpy)
+
+    def test_high_competition_no_min_price_skips(self):
+        # min_jpy 不明 (旧キャッシュ等) → 従来通り skip
         d = decide_final_price(
             self.pricing_result,
             market=self._market(HIGH_COMPETITION_THRESHOLD),
             category="dress",
         )
+        # self._market は min_jpy=None
         self.assertEqual(d.action, "skip")
         self.assertEqual(d.reason, "high_competition")
-        self.assertIsNone(d.final_price_jpy)
+
+    def test_high_competition_with_cost_advantage_price_leader(self):
+        # Phase 2d: 高競合 = 需要実証済み。最安値 -3% が breakeven 以上なら
+        # price_leader として出品する (原価優位で最安値圏を取る)。
+        market_min = int(self.target * 1.4)   # 市場最安値が我々の target より高い
+        market = MarketStats(
+            sample_count=HIGH_COMPETITION_THRESHOLD + 5,
+            median_jpy=int(self.target * 1.6),
+            min_jpy=market_min,
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "price_leader")
+        # 最安値より確実に安い
+        self.assertLess(d.final_price_jpy, market_min)
+        # breakeven (floor 利益確保ライン) は割らない
+        self.assertGreaterEqual(d.final_price_jpy, d.breakeven_price_jpy)
+
+    def test_price_leader_capped_at_1_5x_target(self):
+        # 市場最安値が異常に高くても上限は target × 1.5
+        market = MarketStats(
+            sample_count=HIGH_COMPETITION_THRESHOLD,
+            median_jpy=int(self.target * 3.0),
+            min_jpy=int(self.target * 2.5),
+            brand_match_confidence=1.0,
+        )
+        d = decide_final_price(self.pricing_result, market=market, category="dress")
+        self.assertEqual(d.action, "list")
+        self.assertEqual(d.reason, "price_leader")
+        self.assertLessEqual(d.final_price_jpy, math.ceil(self.target * 1.5 / 100) * 100)
 
     def test_medium_competition_uses_market_aware(self):
         # n = 5, median 1.3x → market_aware = round_up(1.3*0.95) > target
@@ -345,23 +390,28 @@ class TestDecideFinalPriceCompetitionLevels(unittest.TestCase):
         self.assertEqual(d.reason, "market_aware")
         self.assertGreater(d.final_price_jpy, self.target)
 
-    def test_medium_competition_target_higher_than_market(self):
-        # 高 source_price で breakeven-target gap を大きく取る。
-        # median を target 未満かつ market_aware が breakeven より上になる範囲に設定
-        # → max(target, market_aware) = target が採用される
+    def test_medium_competition_market_below_target_discounts(self):
+        # Phase 2d: median が target 未満かつ market_aware が breakeven より上
+        # → 旧実装は max(target, 相場-5%)=target だったが、相場より高い出品は
+        #   成約しないため、相場-5% に下げて成約を取る (market_aware_discounted)。
         params = PricingParams(
             source_price=300.0, currency="EUR", category="bag", target_margin_pct=0.30,
         )
         r = calculate_pricing(params)
+        median = int(r.selling_price_jpy * 0.95)
         market = MarketStats(
             sample_count=5,
-            median_jpy=int(r.selling_price_jpy * 0.95),
+            median_jpy=median,
             brand_match_confidence=1.0,
         )
         d = decide_final_price(r, market=market, category="bag")
         self.assertEqual(d.action, "list")
-        self.assertEqual(d.reason, "market_aware")
-        self.assertEqual(d.final_price_jpy, r.selling_price_jpy)
+        self.assertEqual(d.reason, "market_aware_discounted")
+        expected = math.ceil(median * 0.95 / 100) * 100
+        self.assertEqual(d.final_price_jpy, expected)
+        self.assertLess(d.final_price_jpy, r.selling_price_jpy)
+        # floor 利益は守られている
+        self.assertGreaterEqual(d.final_price_jpy, d.breakeven_price_jpy)
 
     def test_upper_cap_at_1_5x_target(self):
         # median が target × 2 → market_aware が cap (target × 1.5) を超える

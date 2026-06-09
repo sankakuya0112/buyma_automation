@@ -20,8 +20,18 @@ class BasebluSource(BaseSource):
     country = "IT"
     landed_cost_basis = "DDU"
 
+    # Asia 向け送料 €50 固定、€850 以上で送料無料 (docs/strategy/PROCUREMENT_ROADMAP.md)。
+    # 単品買付 (無在庫) 前提なので閾値判定は商品単価に対して行う。
+    SHIPPING_FLAT_EUR = 50.0
+    FREE_SHIPPING_THRESHOLD_EUR = 850.0
+
     def __init__(self, fetch_details: bool = True) -> None:
         self.fetch_details = fetch_details
+
+    def shipping_cost_local(self, sale_price: float) -> float:
+        if sale_price >= self.FREE_SHIPPING_THRESHOLD_EUR:
+            return 0.0
+        return self.SHIPPING_FLAT_EUR
 
     def fetch_products(self, limit: Optional[int] = None) -> Iterable[dict]:
         """Baseblu の Shopify JSON API からセール商品を取得して dict を yield。

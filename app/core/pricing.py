@@ -167,6 +167,13 @@ class PricingParams:
     buyma_commission_rate: float = BUYMA_COMMISSION_RATE
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE
     consumption_tax_rate: float = CONSUMPTION_TAX_RATE
+    # 海外決済手数料 (クレジットカードの海外事務手数料 ~2.2%)。
+    # 外貨建て仕入れで必ず発生するが従来モデルでは未計上だった。
+    # default 0.0 で後方互換。Source.get_pricing_params() が実値を注入する。
+    purchase_fx_fee_rate: float = 0.0
+    # 国内発送費 (BUYMA 出品者→購入者、送料込み出品が前提)。
+    # default 0.0 で後方互換。Source.get_pricing_params() が実値を注入する。
+    domestic_shipping_jpy: float = 0.0
 
 
 @dataclass
@@ -193,6 +200,8 @@ class PricingResult:
     duty_rate: float
     weight_kg: float
     landed_cost_basis: str = "DDU"                  # "DDU" or "DDP"
+    purchase_fx_fee_jpy: float = 0.0                # 海外決済手数料 (円)
+    domestic_shipping_jpy: float = 0.0              # 国内発送費 (円)
 
     def is_profitable(self, min_profit_jpy: float = 3000.0) -> bool:
         """利益額が閾値を超えているか。"""
@@ -555,6 +564,11 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     vat_refund_jpy = source_price_jpy * params.vat_refund_rate
     net_source_jpy = source_price_jpy - vat_refund_jpy
 
+    # 1b. 海外決済手数料 (カード会社の海外事務手数料)。
+    # 課金額ベース = チェックアウト総額に掛かるが、保守的に商品価格全額
+    # (VAT 還付前) に適用する。還付が後日でもカード請求は満額のため。
+    purchase_fx_fee_jpy = source_price_jpy * params.purchase_fx_fee_rate
+
     # 2-4. 税関コスト
     # DDP の場合: チェックアウト価格に関税・輸入消費税が含まれているため
     #             二重計上を防ぐためゼロ扱い
@@ -570,6 +584,7 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     # 5. 総原価 (振込手数料も原価に含める: BUYMA → ショッパー入金時に差し引かれる)
     total_cost_jpy = (
         net_source_jpy + shipping_jpy + customs_jpy + consumption_tax_jpy
+        + purchase_fx_fee_jpy + params.domestic_shipping_jpy
         + BANK_TRANSFER_FEE_JPY
     )
 
@@ -607,4 +622,6 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         duty_rate=duty_rate,
         weight_kg=weight_kg,
         landed_cost_basis=basis,
+        purchase_fx_fee_jpy=round(purchase_fx_fee_jpy, 2),
+        domestic_shipping_jpy=round(params.domestic_shipping_jpy, 2),
     )

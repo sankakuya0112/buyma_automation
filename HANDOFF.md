@@ -2,6 +2,32 @@
 
 ---
 
+## 🆕 2026-06-10 追記2: 初の下書き保存成功 + 発送地修正 + Italist 実走結果
+
+### マイルストーン: end-to-end 下書き保存成功 🎉
+- BENEDETTA BRUZZICHES Mame Weekend Shoulder Bag → **下書き ID=133231149**
+  (POST 201 /rorapi/sell/products、¥235,000、利益¥43,410/25%)
+- ブランドガード修正の実証: filter 16→11 件 (未登録 8 件除外、AFTERCOAT 残存 0)
+- FREE→指定なし修正の実証: size=UNI jp=指定なし で click_failed 0 件
+
+### 発送地 (都道府県) 未設定の修正 (サーバー側、要 Mac 再検証)
+実走診断: 「国内」radio クリック後に都道府県 select が遅延描画されるが、
+旧実装は 0.8 秒後に即時探索して空振り (DUMP で section 内 select ゼロ、
+selects=[18,19] は別物)。修正:
+1. section scrollIntoView + 実ホイール → 2. 出現を最大 6 秒ポーリング →
+3. 全域 select 走査フォールバック (_select_label_anywhere、都道府県名は一意)
+**次回 Mac 実走で「発送地=神奈川県」が results に出ることを確認すること。**
+
+### Italist 実走結果 (重要な制約が判明)
+- 実 URL: `collections/women-sale/products.json` (DEFAULT に反映済み)
+- **gating で 1 件しか返らない**。/products.json と collections/all は
+  250件/page で正常だが compare_at_price ほぼ全件 null = 割引情報なし
+- パイプライン自体は USD/DDP/VAT0 で end-to-end 動作確認済み (1件 → 出品可1件)
+- 次回調査候補: 商品ページ HTML の旧価格 / カテゴリ別 sale handle /
+  all の定期取得で自前の値下がり検出 (価格履歴差分)
+
+---
+
 ## 🆕 2026-06-10 追記: Mac 側作業 (kuro ブランチ) の統合 + Italist 修正
 
 Mac 側 Claude Code セッションの作業 (80a3127: Italist source 登録、

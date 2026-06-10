@@ -55,10 +55,18 @@ from baseblu_sales_to_csv import (  # noqa: E402
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
 
-# ⚠️ Mac 実走で要確認。ItalistSource の docstring (Mac 調査) によれば
-# Shopify storefront の products.json が公開されている。実 URL が異なる場合は
-# --url オプションで上書きするか、この定数を修正する。
-DEFAULT_PRODUCTS_JSON_URL = "https://www.italist.com/collections/sale/products.json"
+# 2026-06-10 Mac 実走で確認済みの実 URL (collection handle = women-sale)。
+#
+# ⚠️ 既知の制約 (Mac 調査結果):
+#   - collections/women-sale : 正しい handle だが gating で 1 件しか返らない
+#   - collections/sale       : 存在しない handle (空が返る)
+#   - /products.json, collections/all : 250件/page で正常ページネーションするが
+#     compare_at_price がほぼ全件 null → セール割引情報が取れない
+#
+# つまり「セール × 割引情報 × 量」を同時に満たす経路が未発見。
+# 候補: 商品ページ HTML の旧価格表示 / 別 collection handle (カテゴリ別 sale) /
+# 自前の価格履歴差分 (all を定期取得して値下がりを検出)。次回 Mac 調査タスク。
+DEFAULT_PRODUCTS_JSON_URL = "https://www.italist.com/collections/women-sale/products.json"
 
 REQUEST_DELAY_SEC = 1.0   # PROCUREMENT_ROADMAP.md: Italist は 5-10 秒/req 推奨だが
                           # collection JSON はページ数が少ないため 1 秒 + 低頻度運用

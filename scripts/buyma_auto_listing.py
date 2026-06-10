@@ -1458,8 +1458,40 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         results.append("発送地_国内選択")
     time.sleep(0.8)
 
-    info2 = _find_section_selects(page, "発送地")
-    sel2 = info2.get("selects", []) if isinstance(info2, dict) and not info2.get("error") else []
+    def _scroll_section_into_view(keyword):
+        """セクション見出しを画面中央に出し、実ホイールで IntersectionObserver を発火させる。"""
+        try:
+            page.evaluate(f"""(function(){{
+                var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt');
+                for (var i = 0; i < titles.length; i++) {{
+                    var t = (titles[i].textContent || '').trim();
+                    if (t === {json.dumps(keyword)} || t.indexOf({json.dumps(keyword)}) === 0) {{
+                        titles[i].scrollIntoView({{block: 'center'}});
+                        return true;
+                    }}
+                }}
+                return false;
+            }})()""")
+            page.mouse.wheel(0, 80)
+            time.sleep(0.15)
+            page.mouse.wheel(0, -80)
+        except Exception:
+            pass
+
+    # 都道府県 select は「国内」ラジオのクリック後に遅延描画される。
+    # 2026-06-10 実走: radio 直後の即時探索では section 内に select が存在せず
+    # (DUMP: section_html_length=269 で 国内海外 field のみ)、発送地が未設定の
+    # まま保存されていた。section を視界に入れつつ出現を最大 6 秒ポーリングする。
+    _scroll_section_into_view("発送地")
+    sel2 = []
+    for _ in range(12):
+        info2 = _find_section_selects(page, "発送地")
+        sel2 = info2.get("selects", []) if isinstance(info2, dict) and not info2.get("error") else []
+        if sel2:
+            break
+        time.sleep(0.5)
+        _scroll_section_into_view("発送地")
+
     ship_ok = False
     ship_idx = _find_select_with_option(sel2, ship_prefecture, "発送地_都道府県")
     if ship_idx is not None:
@@ -1467,8 +1499,19 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     if (not ship_ok) and (ship_idx is not None):
         ship_ok = _click_or_fallback(ship_idx, ship_prefecture, "発送地_都道府県_retry", legacy_query=json.dumps(EXT_QUERY))
 
+    # 最終フォールバック: セクション範囲特定に失敗しても、都道府県名は
+    # 都道府県 dropdown にしか出現しないため、ページ全域の select を走査して
+    # 直接選択する (_select_label_anywhere は発見時にクリックまで行う)。
+    if not ship_ok:
+        scan_idx = _select_label_anywhere(ship_prefecture, "発送地_都道府県_scan")
+        if scan_idx is not None:
+            ship_ok = True
+            ship_idx = scan_idx
+            results.append(f"発送地={ship_prefecture}(全域scan:{scan_idx})")
+
     if ship_ok:
-        results.append(f"発送地={ship_prefecture}")
+        if not any(r.startswith("発送地=") for r in results):
+            results.append(f"発送地={ship_prefecture}")
     else:
         results.append(f"発送地_未設定(selects={sel2})")
 

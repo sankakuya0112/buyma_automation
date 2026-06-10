@@ -21,9 +21,13 @@ Mac 側 Claude Code セッションの作業 (80a3127: Italist source 登録、
 3. テスト 271 → 295 ケース (Italist 7 + 純粋関数 18 追加)
 
 ### 未完了 (次タスク)
-- `scripts/italist_sales_to_csv.py` が未実装 (ItalistSource の docstring が
-  参照しているが、ファイルはまだ無い)。baseblu_sales_to_csv.py をテンプレに
-  Italist の products.json 構造に合わせて実装する
+- ~~`scripts/italist_sales_to_csv.py` が未実装~~ → **2026-06-10 実装済み**。
+  汎用 Shopify 解析は baseblu_sales_to_csv.py から再利用。`--test` で
+  モック疎通可。**collection URL は Mac 実走で要確認**
+  (DEFAULT_PRODUCTS_JSON_URL が仮値。違ったら --url で上書き or 定数修正)。
+  疎通確認済みフロー: `italist_sales_to_csv.py --test` →
+  `filter_baseblu_profitable.py --source italist` → DDP/USD/VAT0 が CSV に
+  正しく流れることを検証済み
 - Italist の実送料・USD/JPY 表示の検証 (Mac)
 - 2026-06-10 パイプライン実績: 38 件取得 → 出品可 16 件 / SWEET SPOT 27
   ブランド。次は出品テスト (--draft --limit 1 --hold) から

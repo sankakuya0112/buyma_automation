@@ -123,8 +123,15 @@ class TestMapSizeToJpReference(unittest.TestCase):
         self.assertEqual(map_size_to_jp_reference("m", ""), "M")
 
     def test_unique_size(self):
-        """UNI → FREE 扱い。"""
-        self.assertEqual(map_size_to_jp_reference("UNI", ""), "FREE")
+        """UNI/FREE → 指定なし。
+
+        BUYMA の「参考日本サイズ」dropdown に FREE は無い (2026-06-10 実走で
+        click_failed 確認)。サイズ名 input には FREE が入る (normalize 側) が、
+        参考日本サイズは「指定なし」を選ぶのが正。
+        """
+        self.assertEqual(map_size_to_jp_reference("UNI", ""), "指定なし")
+        self.assertEqual(map_size_to_jp_reference("FREE", ""), "指定なし")
+        self.assertEqual(map_size_to_jp_reference("ONE SIZE", ""), "指定なし")
 
     def test_empty_returns_unspecified(self):
         self.assertEqual(map_size_to_jp_reference("", ""), "指定なし")

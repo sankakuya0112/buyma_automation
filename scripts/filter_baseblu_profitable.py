@@ -50,7 +50,33 @@ from app.core.opportunity import (
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 MIN_PROFIT_JPY = 5000          # 予備フィルタ: 従来の最低利益 (profit_jpy) で予備除外
+
+
+def load_unregistered_brands(path=None) -> set[str]:
+    """brands.json の unregistered リスト (BUYMA に存在しないブランド) を返す。
+
+    これらのブランドは buyma_auto_listing.py が出品時に必ず brand_not_found
+    でスキップするため、filter 段階で除外して出品枠の浪費を防ぐ
+    (2026-06-10 実走で候補 16 件中 5 件が AFTERCOAT = 必スキップだった)。
+    """
+    path = path or os.path.join(DATA_DIR, "brands.json")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(b).strip().upper() for b in data.get("unregistered", []) if str(b).strip()}
+    except Exception:
+        return set()
+
+
+def is_brand_unregistered(vendor: str, unregistered: set[str]) -> bool:
+    """vendor が BUYMA 未登録ブランドリストに載っているか (大文字小文字無視)。"""
+    if not vendor or not unregistered:
+        return False
+    return vendor.strip().upper() in unregistered
 
 
 def get_latest_sales_csv(source="baseblu"):
@@ -153,9 +179,14 @@ def main():
         else:
             print(f"🌐 外部ベンチマーク: ファイルが空または存在しない ({args.external_benchmark})")
 
+    unregistered_brands = load_unregistered_brands()
+    if unregistered_brands:
+        print(f"🚫 BUYMA 未登録ブランド (出品不可): {len(unregistered_brands)} 件を除外対象に")
+
     rows_out = []
     skipped_count = {"total": 0, "unavailable": 0, "parse_error": 0,
-                     "low_base_profit": 0, "skip_reason": 0}
+                     "low_base_profit": 0, "skip_reason": 0,
+                     "brand_unregistered": 0}
 
     with open(input_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -175,6 +206,13 @@ def main():
             product_type = row.get("product_type", "")
             vendor = row.get("vendor", "")
             title = row.get("title", "")
+
+            # BUYMA 未登録ブランドは出品時に必ず brand_not_found でスキップ
+            # されるため、ここで除外して出品枠の浪費を防ぐ
+            if is_brand_unregistered(vendor, unregistered_brands):
+                skipped_count["brand_unregistered"] += 1
+                skipped_count["total"] += 1
+                continue
 
             # Phase 2c: source_name 列があれば BaseSource 経由で PricingParams を組み立てる。
             # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) に fallback する。
@@ -357,6 +395,7 @@ def main():
     print(f"   除外 (利益不足)           : {skipped_count['low_base_profit']} 件")
     print(f"   除外 (在庫なし)           : {skipped_count['unavailable']} 件")
     print(f"   除外 (市場連動でスキップ) : {skipped_count['skip_reason']} 件")
+    print(f"   除外 (BUYMA未登録ブランド): {skipped_count['brand_unregistered']} 件")
     print(f"   保存先                    : {output_path}")
 
     if rows_out:

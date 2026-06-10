@@ -63,10 +63,13 @@ _ALPHA_SIZE_TO_JP: dict[str, str] = {
     "XL": "XL",
     "XXL": "XXL",
     "XXXL": "XXL",
-    "FREE": "FREE",
-    "UNI": "FREE",
-    "ONE SIZE": "FREE",
-    "TU": "FREE",
+    # BUYMA の「参考日本サイズ」dropdown に FREE は存在しない
+    # (候補: 指定なし/XS以下/S/M/L/XL...)。フリーサイズは「指定なし」を選ぶ。
+    # 2026-06-10 Mac 実走で jp_dd=click_failed を確認して修正。
+    "FREE": "指定なし",
+    "UNI": "指定なし",
+    "ONE SIZE": "指定なし",
+    "TU": "指定なし",
 }
 
 

@@ -20,6 +20,15 @@ class ItalistSource(BaseSource):
     # 日本向けの関税込み表示を前提に DDP として計算（二重課税を避ける）。
     landed_cost_basis = "DDP"
 
+    # Italist の日本向け表示価格は既に EU VAT 抜きの輸出価格 (DDP)。
+    # BaseSource デフォルトの 16.7% 還付を適用すると原価を 16.7% 過小評価し
+    # 赤字出品リスクになるため 0 に固定する。
+    vat_refund_rate = 0.0
+
+    # 国際送料は要検証 (無料キャンペーン/定額の時期がある)。確定するまでは
+    # shipping_cost_local 未実装 = calculate_pricing の重量ベース推定に
+    # フォールバック (保守的な非ゼロ見積もり)。
+
     def fetch_products(self, limit: Optional[int] = None) -> Iterable[dict]:
         raise NotImplementedError(
             "ItalistSource.fetch_products は scripts/italist_sales_to_csv.py を使用してください。"

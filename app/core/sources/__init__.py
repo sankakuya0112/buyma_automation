@@ -34,4 +34,4 @@ def get_source(name: str) -> BaseSource:
     return cls()
 
 
-__all__ = ["BaseSource", "BasebluSource", "REGISTERED_SOURCES", "get_source"]
+__all__ = ["BaseSource", "BasebluSource", "ItalistSource", "REGISTERED_SOURCES", "get_source"]

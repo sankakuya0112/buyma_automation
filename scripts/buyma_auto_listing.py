@@ -70,9 +70,13 @@ from app.utils.listing_helpers import (
     _ALPHA_SIZE_TO_JP,
     _EU_SHOE_TO_JP_CM,
     _IT_SIZE_RANGES,
+    _buyma_title_width,
     _map_footwear_to_jp_cm,
     _strip_accents,
+    _trim_buyma_title,
     classify_size_category,
+    clean_source_description,
+    evaluate_listing_readiness,
     format_size_name_for_listing,
     map_size_to_jp_reference,
     normalize_size_for_buyma,
@@ -135,38 +139,7 @@ FASHION_TERMS = {
 
 
 
-def clean_source_description(desc_en):
-    """仕入先 description から Shopify/JSON 断片など販売文に不要な行を除去する。"""
-    if not desc_en:
-        return ""
-    text = _strip_accents(str(desc_en))
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    # Shopify product JSON が混じる場合は variants 以降を切り落とす
-    text = re.split(r'"variants"\s*:', text, maxsplit=1)[0]
-    raw_lines = re.split(r"[\r\n]+", text)
-    cleaned = []
-    noise_re = re.compile(
-        r"(price_min|price_max|price_varies|compare_at_price|option1|available|pim:|welcome_|\"id\"|\"title\"|\{\"|\}\]|\],\")",
-        re.IGNORECASE,
-    )
-    for line in raw_lines:
-        line = re.sub(r"\s+", " ", line).strip(" \t,;")
-        if not line:
-            continue
-        if noise_re.search(line):
-            continue
-        if len(re.findall(r'[:{}\[\]"]', line)) >= 3:
-            continue
-        line = re.sub(r"\bSku\s*[:：]\s*[A-Za-z0-9_\-]+\b", "", line, flags=re.IGNORECASE).strip(" ,;")
-        line = re.sub(r"\bSeason\s*[:：]\s*[A-Z]{1,4}\d{2,4}\b", "", line, flags=re.IGNORECASE).strip(" ,;")
-        line = re.sub(r"\bComposition\s*[:：]?\s*GENERAL\s*", "Material: ", line, flags=re.IGNORECASE)
-        line = re.sub(r"\bComposition\s*[:：]?\s*", "Material: ", line, flags=re.IGNORECASE)
-        line = re.sub(r"\bMaterial\s*[:：]\s*GENERAL\s*", "Material: ", line, flags=re.IGNORECASE)
-        if line:
-            cleaned.append(line)
-    return "\n".join(cleaned[:6])
+# clean_source_description は app.utils.listing_helpers に移設 (Phase 2d)
 
 
 def translate_description(desc_en):
@@ -498,78 +471,8 @@ def generate_description(title, vendor, sku, description_en, cat_label):
     return '\n'.join(lines)
 
 
-def evaluate_listing_readiness(product, price_jpy, cat_label, description):
-    """自動出品前の安全判定。最初は保守的に OK / 要確認 / NG を返す。"""
-    reasons = []
-    blockers = []
-
-    def _num(v, default=0):
-        try:
-            return int(float(v))
-        except Exception:
-            return default
-
-    profit = _num(product.get("profit_jpy") or product.get("estimated_profit_jpy"))
-    margin_raw = product.get("expected_margin_pct") or product.get("margin_pct") or ""
-    try:
-        margin = float(str(margin_raw).replace("%", ""))
-    except Exception:
-        margin = (profit / price_jpy * 100) if price_jpy else 0
-
-    if profit < 10000 and margin < 15:
-        blockers.append(f"利益基準未満(profit={profit:,}, margin={margin:.1f}%)")
-    else:
-        reasons.append(f"利益基準OK(profit={profit:,}, margin={margin:.1f}%)")
-
-    if price_jpy > 300000:
-        reasons.append(f"高額商品のため要目視(price={price_jpy:,})")
-
-    if not product.get("image_url"):
-        blockers.append("メイン画像なし")
-    sku = (product.get("sku") or "").strip()
-    if not sku or len(sku) < 3 or (sku.isdigit() and len(sku) < 4):
-        reasons.append("品番なし/弱い")
-    if not cat_label:
-        blockers.append("カテゴリ未確定")
-
-    available = (product.get("available_sizes") or product.get("sizes") or "").strip()
-    if not available:
-        blockers.append("在庫サイズ不明")
-
-    bad_desc_tokens = ["variants", "price_min", "compare_at_price", "WELCOME_", "pim:", "レシート画像"]
-    bad_hit = [t for t in bad_desc_tokens if t.lower() in (description or "").lower()]
-    if bad_hit:
-        blockers.append("商品コメントに不要断片: " + ",".join(bad_hit))
-
-    if blockers:
-        return "NG", blockers + reasons
-    if price_jpy > 300000 or not sku or len(sku) < 3 or (sku.isdigit() and len(sku) < 4):
-        return "要確認", reasons
-    return "出品OK", reasons
-
-
-def _buyma_title_width(text: str) -> int:
-    """BUYMA の「全角30文字・半角60文字」相当の幅を概算する。"""
-    width = 0
-    for ch in text:
-        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
-    return width
-
-
-def _trim_buyma_title(text: str, max_width: int = 60) -> str:
-    suffix = "..."
-    if _buyma_title_width(text) <= max_width:
-        return text
-    out = []
-    width = 0
-    suffix_width = _buyma_title_width(suffix)
-    for ch in text:
-        w = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
-        if width + w + suffix_width > max_width:
-            break
-        out.append(ch)
-        width += w
-    return "".join(out).rstrip() + suffix
+# evaluate_listing_readiness / _buyma_title_width / _trim_buyma_title は
+# app.utils.listing_helpers に移設 (Phase 2d)
 
 
 def generate_buyma_title(title, vendor, sku, cat_label):

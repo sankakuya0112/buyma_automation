@@ -2,6 +2,34 @@
 
 ---
 
+## 🆕 2026-06-10 追記: Mac 側作業 (kuro ブランチ) の統合 + Italist 修正
+
+Mac 側 Claude Code セッションの作業 (80a3127: Italist source 登録、
+出品前安全判定、説明文クリーニング、タイトル幅トリム、brands.json 拡充) を
+クラウド側で取り込みレビューした。
+
+### クラウド側で行った統合修正
+1. **ItalistSource.vat_refund_rate = 0.0 に修正 (収益クリティカル)**
+   Italist は DDP で日本向け表示価格が既に EU VAT 抜きの輸出価格。
+   BaseSource デフォルトの 16.7% 還付を継承すると原価を 16.7% 過小評価し
+   赤字出品リスクだった。送料は未確定のため重量モデルにフォールバック
+   (Mac で実送料を確認したら shipping_cost_local を実装する)
+2. **純粋関数 4 つを app/utils/listing_helpers.py に移設** (CLAUDE.md 規約):
+   clean_source_description / evaluate_listing_readiness /
+   _buyma_title_width / _trim_buyma_title。
+   buyma_auto_listing.py は import に差し替え (動作は不変)
+3. テスト 271 → 295 ケース (Italist 7 + 純粋関数 18 追加)
+
+### 未完了 (次タスク)
+- `scripts/italist_sales_to_csv.py` が未実装 (ItalistSource の docstring が
+  参照しているが、ファイルはまだ無い)。baseblu_sales_to_csv.py をテンプレに
+  Italist の products.json 構造に合わせて実装する
+- Italist の実送料・USD/JPY 表示の検証 (Mac)
+- 2026-06-10 パイプライン実績: 38 件取得 → 出品可 16 件 / SWEET SPOT 27
+  ブランド。次は出品テスト (--draft --limit 1 --hold) から
+
+---
+
 ## 🆕 2026-06-09 追記: Mac 作業の AI 化 + 1 コマンド化
 
 ユーザーから「Mac での手作業が手間でミスも多い。AI に任せたい」との要望。

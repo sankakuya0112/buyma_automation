@@ -166,5 +166,147 @@ class TestTranslateColorToJp(unittest.TestCase):
         self.assertEqual(translate_color_to_jp(""), "マルチカラー")
 
 
+class CleanSourceDescriptionTest(unittest.TestCase):
+    """clean_source_description (Phase 2d で Mac 実装 → helpers 移設)。"""
+
+    def test_strips_html_and_keeps_text(self):
+        from app.utils.listing_helpers import clean_source_description
+        out = clean_source_description("<p>Leather shoulder bag</p><br>Made in Italy")
+        self.assertIn("Leather shoulder bag", out)
+        self.assertIn("Made in Italy", out)
+        self.assertNotIn("<p>", out)
+
+    def test_removes_shopify_json_noise(self):
+        from app.utils.listing_helpers import clean_source_description
+        desc = 'Nice bag\n{"id": 123, "price_min": 100}\n"variants": [{"option1": "S"}]'
+        out = clean_source_description(desc)
+        self.assertIn("Nice bag", out)
+        self.assertNotIn("price_min", out)
+        self.assertNotIn("variants", out)
+
+    def test_strips_sku_and_season_lines(self):
+        from app.utils.listing_helpers import clean_source_description
+        out = clean_source_description("Elegant dress\nSku: AB123_456\nSeason: AW25")
+        self.assertIn("Elegant dress", out)
+        self.assertNotIn("AB123_456", out)
+        self.assertNotIn("AW25", out)
+
+    def test_composition_renamed_to_material(self):
+        from app.utils.listing_helpers import clean_source_description
+        out = clean_source_description("Composition: GENERAL 100% Calf Leather")
+        self.assertIn("Material:", out)
+        self.assertNotIn("Composition", out)
+
+    def test_empty_input(self):
+        from app.utils.listing_helpers import clean_source_description
+        self.assertEqual(clean_source_description(""), "")
+        self.assertEqual(clean_source_description(None), "")
+
+    def test_caps_at_six_lines(self):
+        from app.utils.listing_helpers import clean_source_description
+        desc = "\n".join(f"Line number {i}" for i in range(10))
+        out = clean_source_description(desc)
+        self.assertEqual(len(out.split("\n")), 6)
+
+
+class EvaluateListingReadinessTest(unittest.TestCase):
+    """evaluate_listing_readiness (出品前安全判定)。"""
+
+    def _product(self, **over):
+        base = {
+            "profit_jpy": "20000",
+            "expected_margin_pct": "20.0",
+            "image_url": "http://img/x.jpg",
+            "sku": "AB123_456",
+            "sizes": "36, 38",
+            "available_sizes": "38",
+        }
+        base.update(over)
+        return base
+
+    def test_good_product_is_ok(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, reasons = evaluate_listing_readiness(
+            self._product(), 100000, ["レディース", "バッグ"], "きれいな説明文",
+        )
+        self.assertEqual(verdict, "出品OK")
+
+    def test_low_profit_and_margin_is_ng(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, reasons = evaluate_listing_readiness(
+            self._product(profit_jpy="3000", expected_margin_pct="5.0"),
+            100000, ["cat"], "desc",
+        )
+        self.assertEqual(verdict, "NG")
+        self.assertTrue(any("利益基準未満" in r for r in reasons))
+
+    def test_missing_image_is_ng(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, _ = evaluate_listing_readiness(
+            self._product(image_url=""), 100000, ["cat"], "desc",
+        )
+        self.assertEqual(verdict, "NG")
+
+    def test_missing_category_is_ng(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, _ = evaluate_listing_readiness(self._product(), 100000, None, "desc")
+        self.assertEqual(verdict, "NG")
+
+    def test_no_stock_info_is_ng(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, _ = evaluate_listing_readiness(
+            self._product(sizes="", available_sizes=""), 100000, ["cat"], "desc",
+        )
+        self.assertEqual(verdict, "NG")
+
+    def test_json_fragment_in_description_is_ng(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, reasons = evaluate_listing_readiness(
+            self._product(), 100000, ["cat"], 'desc with "variants": [...]',
+        )
+        self.assertEqual(verdict, "NG")
+
+    def test_expensive_item_needs_review(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, _ = evaluate_listing_readiness(
+            self._product(profit_jpy="60000"), 350000, ["cat"], "desc",
+        )
+        self.assertEqual(verdict, "要確認")
+
+    def test_weak_sku_needs_review(self):
+        from app.utils.listing_helpers import evaluate_listing_readiness
+        verdict, _ = evaluate_listing_readiness(
+            self._product(sku=""), 100000, ["cat"], "desc",
+        )
+        self.assertEqual(verdict, "要確認")
+
+
+class BuymaTitleTrimTest(unittest.TestCase):
+    """_buyma_title_width / _trim_buyma_title (全角2/半角1 の幅計算)。"""
+
+    def test_width_counts_fullwidth_as_two(self):
+        from app.utils.listing_helpers import _buyma_title_width
+        self.assertEqual(_buyma_title_width("abc"), 3)
+        self.assertEqual(_buyma_title_width("あいう"), 6)
+        self.assertEqual(_buyma_title_width("【A】"), 5)
+
+    def test_short_title_unchanged(self):
+        from app.utils.listing_helpers import _trim_buyma_title
+        self.assertEqual(_trim_buyma_title("Short title"), "Short title")
+
+    def test_long_title_trimmed_with_ellipsis(self):
+        from app.utils.listing_helpers import _trim_buyma_title, _buyma_title_width
+        long_title = "【BRUNELLO CUCINELLI】 Embellished Cashmere Sweater With Long Description"
+        out = _trim_buyma_title(long_title, 60)
+        self.assertTrue(out.endswith("..."))
+        self.assertLessEqual(_buyma_title_width(out), 60)
+
+    def test_fullwidth_title_trimmed_within_width(self):
+        from app.utils.listing_helpers import _trim_buyma_title, _buyma_title_width
+        out = _trim_buyma_title("あ" * 50, 60)
+        self.assertLessEqual(_buyma_title_width(out), 60)
+        self.assertTrue(out.endswith("..."))
+
+
 if __name__ == "__main__":
     unittest.main()

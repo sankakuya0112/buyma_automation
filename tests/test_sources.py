@@ -13,6 +13,7 @@ from app.core.pricing import PricingParams
 from app.core.sources import (
     BaseSource,
     BasebluSource,
+    ItalistSource,
     REGISTERED_SOURCES,
     get_source,
 )
@@ -177,6 +178,49 @@ class TestRealCostModel(unittest.TestCase):
         r = calculate_pricing(PricingParams(source_price=100.0, currency="EUR"))
         self.assertEqual(r.purchase_fx_fee_jpy, 0.0)
         self.assertEqual(r.domestic_shipping_jpy, 0.0)
+
+
+class TestItalistSource(unittest.TestCase):
+    """ItalistSource (Phase 2d 統合) のメタデータと実コスト設定。"""
+
+    def setUp(self):
+        self.s = ItalistSource()
+
+    def test_metadata(self):
+        self.assertEqual(self.s.name, "italist")
+        self.assertEqual(self.s.currency, "USD")
+        self.assertEqual(self.s.country, "IT")
+        self.assertEqual(self.s.landed_cost_basis, "DDP")
+
+    def test_vat_refund_is_zero(self):
+        """DDP 表示価格は既に VAT 抜き輸出価格。16.7% 還付を適用すると
+        原価を 16.7% 過小評価する (赤字出品リスク) ため 0 固定。"""
+        self.assertEqual(self.s.vat_refund_rate, 0.0)
+        params = self.s.get_pricing_params(sale_price=500.0, category="dress")
+        self.assertEqual(params.vat_refund_rate, 0.0)
+
+    def test_ddp_skips_customs_in_pricing(self):
+        from app.core.pricing import calculate_pricing
+        params = self.s.get_pricing_params(sale_price=500.0, category="dress")
+        r = calculate_pricing(params)
+        self.assertEqual(r.customs_jpy, 0.0)
+        self.assertEqual(r.consumption_tax_jpy, 0.0)
+        self.assertEqual(r.vat_refund_jpy, 0.0)
+
+    def test_fx_fee_applies_to_usd(self):
+        params = self.s.get_pricing_params(sale_price=500.0)
+        self.assertEqual(params.purchase_fx_fee_rate, 0.022)
+
+    def test_shipping_falls_back_to_weight_model(self):
+        """送料体系が未確定のため shipping_cost_local は None (重量フォールバック)。"""
+        self.assertIsNone(self.s.shipping_cost_local(500.0))
+        params = self.s.get_pricing_params(sale_price=500.0, category="bag")
+        self.assertIsNone(params.shipping_jpy)
+
+    def test_registered_in_factory(self):
+        self.assertIn("italist", REGISTERED_SOURCES)
+        self.assertIsInstance(get_source("italist"), ItalistSource)
+        self.assertIsInstance(get_source("ITALIST"), ItalistSource)
 
 
 if __name__ == "__main__":

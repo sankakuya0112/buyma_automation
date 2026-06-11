@@ -134,12 +134,17 @@ set_sku の直前) に配置する。
 `set_region()` で `_find_section_selects()` を使いセクション内の Select を取得。
 
 **罠 (2026-06-10 実走で確定)**: 発送地の都道府県 select は「国内」radio
-クリック後に**遅延描画**される。radio 直後の即時探索では section 内に
-select が存在せず空振りする。対策は 3 段構え:
-1. section 見出しを scrollIntoView + 実ホイールで視界に入れる
-2. select の出現を最大 6 秒ポーリング (`_find_section_selects` を再実行)
-3. 最終手段: 都道府県名はページ内で一意なので全域の select を走査して
-   直接選択 (`_select_label_anywhere`)
+クリック後に**遅延描画**される。さらに radio 自体に 2 つの罠がある:
+1. **radio の JS click() では React state が更新されない** (§3 と同じ)。
+   「国内」をクリックしたつもりでも内部は海外のままで、海外用エリア select
+   (ビーチ/リゾート/北米/...) が render され続ける
+2. 前方一致だと `'国内'` が `'国内海外'` コンテナに誤マッチする
+対策: `_click_section_radio` は radio input を**完全一致**で特定して
+data 属性タグ付け → Playwright native click → `_radio_checked` で検証。
+都道府県 select は radio 成功後に出現を最大 6 秒ポーリング
+(section scrollIntoView + 実ホイール併用)。
+⚠️ 全域 select 走査のフォールバックは**禁止** (2026-06-10 に 62 スキャン ×
+179 リトライでページ状態を乱し、買付地まで壊した実績がある)。
 なお発送地が未設定でも**下書き保存は通る** (本公開時に必須になる想定)。
 
 ### 13. 下書き保存ボタンは Playwright クリック必須

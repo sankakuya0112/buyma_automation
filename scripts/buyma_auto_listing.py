@@ -746,32 +746,42 @@ def set_category(page, path):
     )
     selector_union = ", ".join(OPTION_SELECTORS)
 
-    for idx, label in enumerate(path):
-        # ドロップダウンを開く
+    def _pick_option(idx, label):
+        """sels[idx] を開いて label の option をクリックする。
+
+        option の探索は開いた select 自身のサブツリーを優先する。
+        2026-06-10 実走の「パンツ > パンツ」422 のように親階層と子階層が
+        同名の場合、ページ全域検索だと別階層のメニューに誤爆し得るため。
+        """
         opened = page.evaluate(f"""(function(){{
             var sels = document.querySelectorAll('.Select, .bmm-c-select');
             if (!sels[{idx}]) return 'no_select';
             var ctrl = sels[{idx}].querySelector('.Select-control, .bmm-c-select__control');
             if (!ctrl) ctrl = sels[{idx}];
-            // mousedown で開くケースが多い
             ctrl.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
             ctrl.click();
             return 'opened';
         }})()""")
         if opened == "no_select":
-            print(f"    ⚠️ カテゴリ{idx+1}: .Select[{idx}] 見つからず")
-            return False
+            return "no_select"
 
-        # メニュー描画待ち
+        # メニュー描画待ち (sels[idx] 配下を優先して確認)
         for _ in range(25):
             time.sleep(0.12)
-            ready = page.evaluate(f"document.querySelectorAll({json.dumps(selector_union)}).length > 0")
+            ready = page.evaluate(f"""(function(){{
+                var sels = document.querySelectorAll('.Select, .bmm-c-select');
+                var root = sels[{idx}];
+                if (root && root.querySelectorAll({json.dumps(selector_union)}).length > 0) return true;
+                return document.querySelectorAll({json.dumps(selector_union)}).length > 0;
+            }})()""")
             if ready:
                 break
 
-        # クリック
-        clicked = page.evaluate(f"""(function(){{
-            var opts = document.querySelectorAll({json.dumps(selector_union)});
+        return page.evaluate(f"""(function(){{
+            var sels = document.querySelectorAll('.Select, .bmm-c-select');
+            var root = sels[{idx}];
+            var scoped = root ? root.querySelectorAll({json.dumps(selector_union)}) : [];
+            var opts = scoped.length ? scoped : document.querySelectorAll({json.dumps(selector_union)});
             var target = {json.dumps(label)};
             for (var i = 0; i < opts.length; i++) {{
                 if (opts[i].textContent.trim() === target) {{
@@ -787,6 +797,27 @@ def set_category(page, path):
             }}
             return 'no_match';
         }})()""")
+
+    def _read_level_values():
+        """カテゴリ 3 階層の現在の表示値を返す (未選択は '')。"""
+        return page.evaluate("""(function(){
+            var sels = document.querySelectorAll('.Select, .bmm-c-select');
+            var vals = [];
+            for (var i = 0; i < 3; i++) {
+                if (!sels[i]) { vals.push(''); continue; }
+                var v = sels[i].querySelector('.Select-value-label, .bmm-c-select__value');
+                var t = v ? (v.textContent || '').trim() : '';
+                if (t === '選択してください') t = '';
+                vals.push(t);
+            }
+            return vals;
+        })()""")
+
+    for idx, label in enumerate(path):
+        clicked = _pick_option(idx, label)
+        if clicked == "no_select":
+            print(f"    ⚠️ カテゴリ{idx+1}: .Select[{idx}] 見つからず")
+            return False
         if clicked == "no_match":
             # 3階層目のみ: 区切り文字で分割してトークン単位で再検索する
             #    例 "シャツ・ブラウス" → "シャツ" / "ブラウス" を順番に試し、
@@ -798,24 +829,7 @@ def set_category(page, path):
                 alt_labels.append("その他")
             retry_success = False
             for alt in alt_labels:
-                retry = page.evaluate(f"""(function(){{
-                    var opts = document.querySelectorAll({json.dumps(selector_union)});
-                    var target = {json.dumps(alt)};
-                    for (var i = 0; i < opts.length; i++) {{
-                        if (opts[i].textContent.trim() === target) {{
-                            opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                            return 'exact';
-                        }}
-                    }}
-                    for (var i = 0; i < opts.length; i++) {{
-                        if (opts[i].textContent.trim().indexOf(target) !== -1) {{
-                            opts[i].dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                            return 'partial';
-                        }}
-                    }}
-                    return 'no_match';
-                }})()""")
-                if retry != "no_match":
+                if _pick_option(idx, alt) != "no_match":
                     retry_success = True
                     label = alt
                     break
@@ -837,6 +851,26 @@ def set_category(page, path):
                 print(f"    ⚠️ カテゴリ{idx+1} '{label}' 候補なし: {dump}")
                 return False
         time.sleep(0.6)
+
+    # 選択後の検証 & リペア (2026-06-10 の「パンツ > パンツ」422 対策)。
+    # 同名階層やメニュー誤爆で一部階層が placeholder のまま残るケースがあるため、
+    # 表示値を読み取り、未選択の階層だけ再選択する (最大 2 周)。
+    for repair_pass in range(2):
+        time.sleep(0.4)
+        values = _read_level_values()
+        unset = [i for i in range(len(path)) if not values[i]]
+        if not unset:
+            break
+        print(f"    🔧 カテゴリ未選択の階層をリペア (pass {repair_pass + 1}): "
+              f"levels={[i + 1 for i in unset]} 現在値={values}")
+        for i in unset:
+            _pick_option(i, path[i])
+            time.sleep(0.6)
+    else:
+        values = _read_level_values()
+        if any(not values[i] for i in range(len(path))):
+            print(f"    ⚠️ カテゴリ選択が不完全のまま: {values} (期待: {path})")
+            return False
 
     print(f"    📁 カテゴリ: {' > '.join(path)} → ✅")
     return True
@@ -1302,18 +1336,33 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             return False
 
     def _click_section_radio(section_title, label_text):
-        # section スコープでのみクリック（別セクション誤爆を避ける）
+        """section スコープ内のラジオを Playwright native click で選択する。
+
+        旧実装は JS の el.click() だったが、2026-06-10 実走で
+        「発送地=国内をクリックしたはずなのに海外用エリア select が
+        render されたまま」= React state が更新されていないことを確認
+        (CLAUDE.md §3 の罠と同じ)。さらに span 候補への前方一致だったため
+        '国内' が '国内海外' コンテナに誤マッチしていた。
+
+        新実装:
+          1. JS で section 範囲内の input[type=radio] を走査し、label テキスト
+             が完全一致するものに data 属性をタグ付け (_tag_variation_rows 方式)
+          2. Playwright locator でタグを本物クリック
+          3. _radio_checked で state 反映を検証、未反映なら force click で再試行
+        """
+        TAG = "data-bma-radio-target"
         try:
-            ok = page.evaluate(f"""(function(){{
+            found = page.evaluate(f"""(function(){{
                 var keyword = {json.dumps(section_title)};
                 var target = {json.dumps(label_text)};
+                document.querySelectorAll('[{TAG}]').forEach(function(el){{ el.removeAttribute('{TAG}'); }});
                 var titles = document.querySelectorAll('.bmm-c-summary__ttl, .bmm-c-ttl, h2, h3, h4, legend, dt');
                 var startIdx = -1;
                 for (var i = 0; i < titles.length; i++) {{
                     var t = (titles[i].textContent || '').trim();
                     if (t === keyword || t.indexOf(keyword) === 0) {{ startIdx = i; break; }}
                 }}
-                if (startIdx < 0) return false;
+                if (startIdx < 0) return 'no_title';
                 var startEl = titles[startIdx];
                 var endEl = titles[startIdx + 1] || null;
                 function inRange(el) {{
@@ -1321,39 +1370,42 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
                     var bef = !endEl || !!(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING);
                     return aft && bef;
                 }}
-
-                var cands = document.querySelectorAll('label, button, div.bmm-c-radio, span');
-                for (var j = 0; j < cands.length; j++) {{
-                    var el = cands[j];
-                    if (!inRange(el)) continue;
-                    var txt = (el.textContent || '').trim();
-                    if (txt === target || txt.indexOf(target) === 0) {{
-                        el.click();
-                        return true;
+                var radios = document.querySelectorAll('input[type="radio"]');
+                for (var j = 0; j < radios.length; j++) {{
+                    var r = radios[j];
+                    if (!inRange(r)) continue;
+                    var lb = r.closest('label')
+                        || (r.id ? document.querySelector('label[for="' + r.id + '"]') : null)
+                        || r.parentElement;
+                    var txt = (lb && lb.textContent) ? lb.textContent.trim() : '';
+                    if (txt === target) {{
+                        (lb || r).setAttribute('{TAG}', '1');
+                        (lb || r).scrollIntoView({{block: 'center'}});
+                        return 'tagged';
                     }}
                 }}
-                return false;
+                return 'no_radio';
             }})()""")
-            if ok:
+            if found != "tagged":
+                print(f"       [_click_section_radio:{section_title}] {label_text}: {found}")
+                return False
+            page.locator(f"[{TAG}]").first.click(timeout=3000)
+            time.sleep(0.4)
+            if _radio_checked(section_title, label_text):
                 return True
+            # 1 回だけ force click で再試行 (overlay 等でクリックが吸われるケース)
+            page.locator(f"[{TAG}]").first.click(timeout=3000, force=True)
+            time.sleep(0.4)
+            checked = _radio_checked(section_title, label_text)
+            if not checked:
+                print(f"       [_click_section_radio:{section_title}] {label_text}: クリック後も checked にならず")
+            return checked
         except Exception as e:
-            print(f"       [_click_section_radio:{section_title}] js 例外: {e}")
+            print(f"       [_click_section_radio:{section_title}] 例外: {e}")
         return False
 
-    def _select_label_anywhere(label, debug_name, max_scan=32):
-        try:
-            count = page.locator(EXT_QUERY).count()
-        except Exception:
-            count = 0
-        lim = min(max_scan, count)
-        for i in range(lim):
-            try:
-                dd = page.locator(EXT_QUERY).nth(i)
-                if _click_select_option(page, dd, label, debug_name=f"{debug_name}_scan{i}"):
-                    return i
-            except Exception:
-                pass
-        return None
+    # 注: _select_label_anywhere (全域 select 走査) は 2026-06-10 に撤去。
+    # 大量リトライでページ状態を乱す副作用が利益を上回った (HANDOFF 参照)。
 
     def _radio_checked(section_title, label_text):
         try:
@@ -1499,19 +1551,13 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
     if (not ship_ok) and (ship_idx is not None):
         ship_ok = _click_or_fallback(ship_idx, ship_prefecture, "発送地_都道府県_retry", legacy_query=json.dumps(EXT_QUERY))
 
-    # 最終フォールバック: セクション範囲特定に失敗しても、都道府県名は
-    # 都道府県 dropdown にしか出現しないため、ページ全域の select を走査して
-    # 直接選択する (_select_label_anywhere は発見時にクリックまで行う)。
-    if not ship_ok:
-        scan_idx = _select_label_anywhere(ship_prefecture, "発送地_都道府県_scan")
-        if scan_idx is not None:
-            ship_ok = True
-            ship_idx = scan_idx
-            results.append(f"発送地={ship_prefecture}(全域scan:{scan_idx})")
-
+    # 注: 旧実装にあった「全域 select 走査フォールバック」は撤去した。
+    # 2026-06-10 実走で 62 回スキャン × 179 回リトライを発生させ、ページ状態を
+    # 乱して item3 の買付地まで巻き添えで壊した。根本原因は radio の React
+    # state 未更新 (上の _click_section_radio native 化で対処) であり、
+    # 全域走査は症状を悪化させるだけだった。
     if ship_ok:
-        if not any(r.startswith("発送地=") for r in results):
-            results.append(f"発送地={ship_prefecture}")
+        results.append(f"発送地={ship_prefecture}")
     else:
         results.append(f"発送地_未設定(selects={sel2})")
 

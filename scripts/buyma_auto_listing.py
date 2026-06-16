@@ -1441,6 +1441,9 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             return False
 
     def _find_select_with_option(sel_indices, option_label, debug_name):
+        # 失敗時の診断用に、開いた各 select の先頭オプションを記録する。
+        # (sel_indices は範囲内の数件のみ。62 件スキャンのような暴走はしない)
+        seen = {}
         for idx in sel_indices[:8]:
             try:
                 dd = page.locator(EXT_QUERY).nth(idx)
@@ -1452,19 +1455,24 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
                 vals = []
                 for i in range(cnt):
                     vals.append((opts.nth(i).text_content() or '').strip())
+                seen[idx] = vals[:8]
                 try:
                     page.locator('body').click(timeout=1000)
                 except Exception:
                     pass
                 if any((v == option_label) or (option_label in v) for v in vals):
                     return idx
-            except Exception:
+            except Exception as e:
+                seen[idx] = f"<open失敗: {type(e).__name__}>"
                 try:
                     page.locator('body').click(timeout=800)
                 except Exception:
                     pass
                 continue
         print(f"       [_find_select_with_option:{debug_name}] '{option_label}' を含む select 不在: {sel_indices}")
+        # 各 select の中身を出す (次セッションでの真因特定用、CLAUDE.md §12 の罠)
+        for idx, vals in seen.items():
+            print(f"          [DIAG] select[{idx}] options(先頭): {vals}")
         return None
 
     # --- 買付地: 先に海外ラジオを押す ---
@@ -1560,6 +1568,36 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
         results.append(f"発送地={ship_prefecture}")
     else:
         results.append(f"発送地_未設定(selects={sel2})")
+        # 読み取りのみの全 select インベントリ (クリックしない = 安全)。
+        # 都道府県 select が「範囲外に描画」されているのか「そもそも native
+        # select でない (react-select で値ラベル='選択してください')」のかを
+        # 切り分ける。次セッションの発送地修正の決め手にする。
+        try:
+            inv = page.evaluate("""(function(){
+                var sels = document.querySelectorAll('.Select, .bmm-c-select, select, [role="combobox"]');
+                var out = [];
+                for (var i = 0; i < sels.length && i < 40; i++) {
+                    var s = sels[i];
+                    var lbl = s.querySelector('.Select-value-label, .bmm-c-select__value, .Select-placeholder, .bmm-c-select__placeholder');
+                    var val = lbl ? (lbl.textContent || '').trim() : (s.value || '');
+                    // native <select> なら option をいくつか読める (開かずに)
+                    var opts = '';
+                    if (s.tagName === 'SELECT') {
+                        var o = [];
+                        for (var k = 0; k < s.options.length && k < 6; k++) o.push(s.options[k].text.trim());
+                        opts = o.join('/');
+                    }
+                    var r = s.getBoundingClientRect();
+                    out.push(i + ':val=' + val.slice(0,16) + (opts ? ' opts=[' + opts + ']' : '') +
+                             ' tag=' + s.tagName + ' vis=' + (r.width>0 && r.height>0 ? 'Y':'N'));
+                }
+                return out;
+            })()""")
+            print(f"       [DIAG-発送地] 全 select インベントリ ({len(inv)}件、読取のみ):")
+            for line in inv:
+                print(f"          {line}")
+        except Exception as e:
+            print(f"       [DIAG-発送地] インベントリ取得失敗: {e}")
 
     # 最終整合チェック（逆転事故の防止）
     if not _radio_checked("買付地", "海外"):

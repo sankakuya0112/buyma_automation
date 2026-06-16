@@ -133,16 +133,19 @@ set_sku の直前) に配置する。
 
 `set_region()` で `_find_section_selects()` を使いセクション内の Select を取得。
 
-**罠 (2026-06-10 実走で確定)**: 発送地の都道府県 select は「国内」radio
-クリック後に**遅延描画**される。さらに radio 自体に 2 つの罠がある:
-1. **radio の JS click() では React state が更新されない** (§3 と同じ)。
-   「国内」をクリックしたつもりでも内部は海外のままで、海外用エリア select
-   (ビーチ/リゾート/北米/...) が render され続ける
+**罠 (2026-06-10/16 実走で確定)**: 発送地の都道府県 select は「国内」radio
+クリック後に**遅延描画**される。さらに radio 自体に罠がある:
+1. **radio は Playwright native click でも React state が更新されない**
+   (§3 と同型)。input.checked は true になるが controlled state は海外のまま
+   で、都道府県 select が一切 render されない (実測: 全 23 select に神奈川県皆無、
+   海外エリア select=ビーチ/リゾート/グアム が残り続ける)
 2. 前方一致だと `'国内'` が `'国内海外'` コンテナに誤マッチする
 対策: `_click_section_radio` は radio input を**完全一致**で特定して
-data 属性タグ付け → Playwright native click → `_radio_checked` で検証。
-都道府県 select は radio 成功後に出現を最大 6 秒ポーリング
-(section scrollIntoView + 実ホイール併用)。
+data 属性タグ付け → **native checked setter で .checked=true を入れ
+click/input/change を dispatch して React onChange を強制発火**
+(window.__si と同型) → 仕上げに Playwright native click(force) 併用 →
+`_radio_checked` で検証。都道府県 select は radio 成功後に出現を最大 6 秒
+ポーリング (section scrollIntoView + 実ホイール併用)。
 ⚠️ 全域 select 走査のフォールバックは**禁止** (2026-06-10 に 62 スキャン ×
 179 リトライでページ状態を乱し、買付地まで壊した実績がある)。
 なお発送地が未設定でも**下書き保存は通る** (本公開時に必須になる想定)。
@@ -196,6 +199,19 @@ brand_id が `null` なら出品時に CDN API で自動取得して上書き保
 title 中のキーワードで 3階層パス（parent > middle > leaf）を決定。
 キーワードにマッチしなければ product_type の default、それもなければ
 グローバル default を使う。
+
+⚠️ **第2階層 (middle) は BUYMA に実在する正式名でなければ保存 API が
+422 (cate_id: 第2カテゴリを選択してください) で弾く** (2026-06-10 実走で確定)。
+第3階層 (leaf) は `set_category` の部分一致 / その他 fallback があるため
+ある程度ズレても通るが、第2階層は fallback が無いので致命的。
+`data/categories.json` の `_tier2_valid` に出品フォームから実採取した
+第2階層名 (トップス/ボトムス/ワンピース・オールインワン/アウター/
+靴・シューズ/ブーツ/バッグ・カバン/財布・小物/アクセサリー/腕時計/
+アイウェア/帽子/ファッション雑貨・小物/...) を保存済み。
+`tests/test_categories_schema.py` が全マッピングの第2階層を CI で照合する。
+実カテゴリツリーの再採取は `scripts/harvest_buyma_categories.py` (Mac 専用)。
+**未採取の第3階層**: ブーツ配下 / 帽子配下 / トップス配下 / アクセサリー配下
+/ アイウェア配下 (leaf は推定値。必要なら harvest スクリプトで追加採取)。
 
 ---
 

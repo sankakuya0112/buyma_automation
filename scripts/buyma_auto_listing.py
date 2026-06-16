@@ -1336,19 +1336,20 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             return False
 
     def _click_section_radio(section_title, label_text):
-        """section スコープ内のラジオを Playwright native click で選択する。
+        """section スコープ内のラジオを選択し、React の onChange を強制発火する。
 
-        旧実装は JS の el.click() だったが、2026-06-10 実走で
-        「発送地=国内をクリックしたはずなのに海外用エリア select が
-        render されたまま」= React state が更新されていないことを確認
-        (CLAUDE.md §3 の罠と同じ)。さらに span 候補への前方一致だったため
-        '国内' が '国内海外' コンテナに誤マッチしていた。
+        2026-06-10/16 実走で確定: 「国内」ラジオを Playwright native click しても
+        input.checked は true になるが React の controlled state が更新されず、
+        都道府県 select が描画されない (発送地の全 23 select に神奈川県が皆無)。
+        CLAUDE.md §3 の「React は値の代入だけでは state を更新しない」罠が
+        radio input にも該当する。
 
-        新実装:
-          1. JS で section 範囲内の input[type=radio] を走査し、label テキスト
-             が完全一致するものに data 属性をタグ付け (_tag_variation_rows 方式)
-          2. Playwright locator でタグを本物クリック
-          3. _radio_checked で state 反映を検証、未反映なら force click で再試行
+        対策 (text 入力の window.__si と同型):
+          1. section 範囲内の radio input を label テキスト完全一致で特定しタグ付け
+          2. native checked setter で .checked=true を入れ、click/input/change を
+             dispatch して React の onChange を発火させる
+          3. 仕上げに Playwright native click (force) を実ジェスチャとして併用
+          4. _radio_checked で検証
         """
         TAG = "data-bma-radio-target"
         try:
@@ -1379,8 +1380,9 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
                         || r.parentElement;
                     var txt = (lb && lb.textContent) ? lb.textContent.trim() : '';
                     if (txt === target) {{
-                        (lb || r).setAttribute('{TAG}', '1');
-                        (lb || r).scrollIntoView({{block: 'center'}});
+                        // input 本体にタグ付け (label ではなく input を狙う)
+                        r.setAttribute('{TAG}', '1');
+                        if (lb && lb.scrollIntoView) lb.scrollIntoView({{block: 'center'}});
                         return 'tagged';
                     }}
                 }}
@@ -1389,17 +1391,32 @@ def set_region(page, purchase_country="イタリア", ship_prefecture="神奈川
             if found != "tagged":
                 print(f"       [_click_section_radio:{section_title}] {label_text}: {found}")
                 return False
-            page.locator(f"[{TAG}]").first.click(timeout=3000)
+
+            # React controlled radio に onChange を発火させる (window.__si と同型)
+            page.evaluate(f"""(function(){{
+                var r = document.querySelector('input[{TAG}]');
+                if (!r) return 'no_input';
+                var proto = window.HTMLInputElement.prototype;
+                var desc = Object.getOwnPropertyDescriptor(proto, 'checked');
+                if (desc && desc.set) desc.set.call(r, true); else r.checked = true;
+                r.dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
+                r.dispatchEvent(new Event('input', {{bubbles: true}}));
+                r.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return 'fired';
+            }})()""")
+            time.sleep(0.3)
+
+            # 実ジェスチャとしての Playwright click も併用 (hidden input なら force)
+            try:
+                page.locator(f"input[{TAG}]").first.click(timeout=2500, force=True)
+            except Exception:
+                pass
             time.sleep(0.4)
+
             if _radio_checked(section_title, label_text):
                 return True
-            # 1 回だけ force click で再試行 (overlay 等でクリックが吸われるケース)
-            page.locator(f"[{TAG}]").first.click(timeout=3000, force=True)
-            time.sleep(0.4)
-            checked = _radio_checked(section_title, label_text)
-            if not checked:
-                print(f"       [_click_section_radio:{section_title}] {label_text}: クリック後も checked にならず")
-            return checked
+            print(f"       [_click_section_radio:{section_title}] {label_text}: 発火後も checked にならず")
+            return False
         except Exception as e:
             print(f"       [_click_section_radio:{section_title}] 例外: {e}")
         return False

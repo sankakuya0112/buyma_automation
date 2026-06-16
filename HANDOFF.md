@@ -2,6 +2,36 @@
 
 ---
 
+## 🆕 2026-06-16 追記: 実カテゴリツリー採取 → categories.json 全面修正 + 発送地 React 発火
+
+### カテゴリ 422 の根治 (data 修正)
+Mac が `scripts/harvest_buyma_categories.py` で BUYMA 出品フォームの実カテゴリ
+ツリーを採取。**categories.json の第2階層が 23 箇所も実在しない名前**
+(小物/パンツ/スカート/デニム/ワンピース/シューズ) だったと判明。
+第2階層は fallback が無く 422 直撃するため致命的だった。
+- `data/categories.json` を実採取した第2階層名 (トップス/ボトムス/...) に全面修正。
+  `_tier2_valid` (検証済み第2階層リスト) と `_todo_harvest` (未採取 leaf) を追記
+- 50 マッピング全ての第2階層が実在名であることを検証済み
+- `tests/test_categories_schema.py` 新規: CI で第2階層を照合 (退行防止)
+- ⚠️ **未採取の第3階層** (ブーツ/帽子/トップス/アクセサリー/アイウェア配下) は
+  leaf を推定値で埋めた。set_category の その他 fallback で吸収される想定だが、
+  これらカテゴリの出品時は要確認。harvest スクリプトで追加採取可
+- ⚠️ `scripts/harvest_buyma_categories.py` は **Mac ローカルのみ**。
+  Mac 側で commit & push してリポジトリに入れること
+
+### 発送地ラジオの React state 強制発火 (code 修正)
+Mac の `[DIAG-発送地]` 全 select インベントリ (23件) で**神奈川県を含む select が
+皆無**、掴んでいた [18,19] は海外エリア (ビーチ/リゾート) と海外国 (グアム) と判明。
+= 「国内」radio を native click しても React controlled state が海外のままで
+都道府県 select が描画されていなかった (CLAUDE.md §3 の罠が radio に該当)。
+- `_click_section_radio` を **native checked setter + click/input/change dispatch**
+  で React onChange を強制発火する方式に変更 (window.__si と同型) + Playwright
+  click(force) 併用。買付地「海外」radio にも同経路が適用される
+- **次回 Mac 実走で「発送地=神奈川県」が出るか要検証**。まだ出なければ
+  [DIAG-発送地] が再度ダンプするので select 種別を再確認
+
+---
+
 ## 🆕 2026-06-10 追記3: 3件連続テストの診断と修正 (radio/カテゴリ/スキャン撤去)
 
 ### 3件連続テスト結果 (--from 2 --limit 3)

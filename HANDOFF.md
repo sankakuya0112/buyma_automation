@@ -1,4 +1,35 @@
-# 引き継ぎノート（2026-06-09 セッション終了時点 / 8回目更新）
+# 引き継ぎノート（2026-07-03 セッション終了時点 / 9回目更新）
+
+---
+
+## 🆕 2026-07-03 追記: 問題の再定義 — First Sale Sprint (closed-loop 化)
+
+**このセクションが現在の最優先事項。** 詳細: `docs/strategy/FIRST_SALE_SPRINT.md`
+
+### 何が起きたか
+「自動化の完成→公開」という暗黙の順序を廃止した。4.5 ヶ月で本公開 0 件・
+実測データ 0 のまま全係数が仮定値 (open-loop) だったため、
+**下書き=ツール / 公開=人間** の分業で今週から本公開し、フィードバック
+ループを閉じる方針に転換。残存ブロッカー (発送地/カテゴリleaf/publish未検証)
+はすべて「自動公開」しか阻まない = 人間公開なら今日開通している。
+
+### 新規実装 (サーバー側完結、354 テスト全 PASS)
+- `app/core/first_sale.py` — スプリント選定 + モデル予測 λ (純ロジック)
+- `app/core/funnel.py` — 出品リスト解析・スナップショット差分 (純ロジック)
+- `app/core/decision_gate.py` — 事前コミット判定基準 (Poisson 検定 + rule of three)
+- `scripts/first_sale_sprint.py` — 手順書 MD + マニフェスト生成 / --mark-published / --status
+- `scripts/track_listing_funnel.py` — (Mac) アクセス/ほしいもの/売切の実測採取
+- `scripts/decision_gate.py` — (どこでも) 週次判定 CLI
+- テスト 3 ファイル 36 ケース追加 (318 → 354)
+
+### Mac 実走チェックリスト (次セッション)
+1. `python3 scripts/first_sale_sprint.py` — 最新 profitable CSV からスプリント生成
+2. 手順書 (outputs/sprints/*.md) に従い、1 件ずつ 下書き(ツール)→仕上げ・公開(人間)
+   → `--mark-published ROW=ITEM_ID` で記録。公開間隔 5-15 分
+3. `python3 scripts/track_listing_funnel.py --debug-html` — 初回はダンプで
+   抽出パターン検証 (件数が合わなければ /tmp/buyma_funnel_debug.html をチャットへ)
+4. 2-3 日おきに funnel 採取、週 1 で `python3 scripts/decision_gate.py`
+5. ゲートが SCALE_UP を出すまで、新機能開発より公開数を優先する
 
 ---
 

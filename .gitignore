@@ -41,3 +41,8 @@ chromedriver.exe
 
 # BUYMA credentials (real values live only on the user's Mac)
 config.json
+
+# First Sale Sprint の計測状態 (Mac ローカルの実測値、環境ごとに異なる)
+data/first_sale_sprint.json
+data/funnel_history.json
+outputs/sprints/

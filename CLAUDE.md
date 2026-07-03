@@ -255,6 +255,19 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 - filter の CSV ソートはこの期待値順。係数は成約実績で較正する前提
 - 戦略の全体像: `docs/strategy/DEMAND_DISCOVERY.md`
 
+### 実売フィードバックループ (First Sale Sprint) は `app/core/first_sale.py` ほか
+- 方針: **下書き=ツール / 公開=人間**。自動公開の完成はスプリントの前提ではない
+- `app/core/first_sale.py` — スプリント選定 (`select_sprint_candidates`、
+  row_index は filter CSV のファイル順 = `--from N` に対応) + モデル予測 λ
+- `app/core/funnel.py` — 出品リスト HTML 解析・スナップショット差分 (純粋関数)
+- `app/core/decision_gate.py` — 撤退/継続/量産の事前コミット基準
+  (Poisson 検定 + rule of three)。**閾値変更はコミットメッセージに理由必須**
+- CLI: `scripts/first_sale_sprint.py` (生成/--mark-published/--status)、
+  `scripts/track_listing_funnel.py` (Mac、実測採取)、`scripts/decision_gate.py` (判定)
+- 計測状態 `data/first_sale_sprint.json` / `data/funnel_history.json` は
+  gitignore 済み (Mac ローカルの実測値)
+- 戦略と判定マトリクス: `docs/strategy/FIRST_SALE_SPRINT.md`
+
 ### 需要起点スカウトは `scripts/scout_demand.py` (Phase 2d)
 - モード1 (オフライン): market_cache → ブランド需要インデックス
   (data/demand_index.json)

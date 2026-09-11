@@ -106,39 +106,54 @@ B 群は条件が良い (VAT 控除・送料無料閾値) が取得手段の新�
 
 ## 6. Mac での検証手順 (A 群 3 サイト)
 
-サーバーからは接続できないため、以下は **Mac で** 実行する。1 サイト 5 分程度。
+**2026-09-11 更新**: この手順は `scripts/shopify_sales_to_csv.py --probe` として実装済み。
+候補 3 サイトは `data/sources.json` に `status: "unverified"` で登録してある。
+サーバーからは各サイトに接続できないため、以下は **Mac で** 実行する (1 サイト 5 分程度)。
 
 ```bash
 cd ~/buyma_automation
+git pull origin claude/charming-meitner-ot5l5v
 
-# 1) Shopify かどうか: JSON が返れば Shopify。403 / HTML が返れば非 Shopify か bot 対策あり
-curl -s -o /dev/null -w "%{http_code}\n" "https://antonioli.eu/collections/all/products.json?limit=1"
-curl -s "https://antonioli.eu/collections/all/products.json?limit=1" | head -c 400; echo
-curl -s "https://monnierparis.com/collections/all/products.json?limit=1" | head -c 400; echo
-curl -s "https://slamjam.com/collections/all/products.json?limit=1" | head -c 400; echo
+# 設定済みの仕入先を確認
+python3 scripts/shopify_sales_to_csv.py --list
 
-# 2) セール collection の handle を探す (JSON が返るサイトのみ)
-curl -s "https://antonioli.eu/collections.json?limit=250" | python3 -c "import sys,json; [print(c['handle']) for c in json.load(sys.stdin)['collections'] if 'sale' in c['handle'] or 'outlet' in c['handle']]"
+# ① 取得できるかを判定する (CSV は作らない)
+python3 scripts/shopify_sales_to_csv.py --source antonioli --probe
+python3 scripts/shopify_sales_to_csv.py --source monnierparis --probe
+python3 scripts/shopify_sales_to_csv.py --source slamjam --probe
 
-# 3) 通貨: Shopify Markets はロケール付き URL で通貨が変わることがある (JPY で返れば FX 手数料 0 扱いにできる)
-curl -s "https://antonioli.eu/en-jp/collections/all/products.json?limit=1" | python3 -c "import sys,json; p=json.load(sys.stdin)['products'][0]; print(p['title'], p['variants'][0]['price'], p['variants'][0].get('compare_at_price'))"
+# ② 取得できたら CSV を作って利益計算まで通す
+python3 scripts/shopify_sales_to_csv.py --source antonioli
+python3 scripts/filter_baseblu_profitable.py --source antonioli
 
-# 4) robots.txt に /collections や /products.json の Disallow が無いか
-curl -s https://antonioli.eu/robots.txt | head -40
-
-# 5) ブラウザでチェックアウト直前まで進め、日本宛の「関税込みか」「VAT が引かれているか」「送料」を確認
-#    (baseblu と同じ DDU + VAT 控除なら BasebluSource と同じ設定で組み込める)
+# ③ 全工程を仕入先指定で回す
+python3 scripts/run_autopilot.py --source antonioli
 ```
 
-**判定基準**
-- 1) で JSON が返り、2) でセール handle が見つかり、4) で Disallow なし → **組込み可 (易)**。
-  `app/core/sources/<name>.py` を BasebluSource を雛形に作り、取得スクリプトは italist 用を
-  URL / 商品 URL / メタ (通貨・DDP/DDU・VAT・送料) をパラメータ化して流用する
-  (提案: `scripts/shopify_sales_to_csv.py --source <name>` + `data/sources.json`)。
-- JSON が返らない → HTML 内の JSON-LD (`application/ld+json`) を確認。あれば **中**。
-- 403 / CAPTCHA → **難**。手動仕入れの比較先に回す。
+`--probe` が自動で判定すること:
 
----
+| 結果 | 意味 | 次の手 |
+|---|---|---|
+| ✅ 取得できました | Shopify の商品一覧が返った | ② に進む |
+| ⚠️ 割引情報が取れない | セール専用でない collection を見ている | 表示された候補 URL を `data/sources.json` に反映 |
+| ❌ このアドレスに一覧がありません (404) | collection 名が違う | 同上 (`/collections.json` から候補を自動表示) |
+| ❌ アクセスを拒否されました (403/429) | bot 対策あり | 自動取得は諦め、手動仕入れの比較先に回す |
+| ❌ JSON ではなく HTML が返りました | Shopify ではない | JSON-LD 解析の追加実装が必要 (B 群と同じ扱い) |
+
+### ③ 関税・VAT・送料の確定 (ここが最重要)
+
+`--probe` は **価格の意味までは判定できない**。ブラウザで日本宛にチェックアウト直前まで
+進め、次の 3 点を確認して `data/sources.json` を実測値に直すこと。
+
+| 確認すること | 直すフィールド | 判断 |
+|---|---|---|
+| 関税・輸入消費税が価格に含まれるか | `landed_cost_basis` | 含まれる → `DDP` / 到着時に払う → `DDU` |
+| 非 EU 向けに VAT が引かれているか | `vat_refund_rate` | 引かれている (表示が約 22% 安くなる) → `0.167` / 引かれていない → `0.0` |
+| 日本宛の送料と無料になる金額 | `shipping_flat_local` / `free_shipping_threshold_local` | 実測値。不明なら高めに置く |
+
+確認が済んだら `status` を `"verified"` に変え、`notes` に確認日と根拠を書く。
+**未検証のまま出品しないこと** (VAT を誤って還付扱いにすると原価を 16.7% 過小評価し、
+赤字で出品してしまう)。
 
 ## 7. 見送り理由の要約
 

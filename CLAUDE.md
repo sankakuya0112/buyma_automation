@@ -237,11 +237,32 @@ title 中のキーワードで 3階層パス（parent > middle > leaf）を決�
 - `BasebluSource`: name=baseblu / currency=EUR / country=IT / landed_cost_basis=DDU
 - `get_source(name)` factory: 未登録は baseblu に fallback (旧 CSV 透過処理)
 
-新仕入先 (Italist 等) の追加手順:
+**新仕入先の追加は原則コード不要** (2026-09-11):
+`data/sources.json` に 1 ブロック足すだけで `ConfigSource` として解決される。
+
+```bash
+python3 scripts/shopify_sales_to_csv.py --list                    # 設定済み一覧
+python3 scripts/shopify_sales_to_csv.py --source <名前> --probe   # 取得可否の確認 (Mac)
+python3 scripts/shopify_sales_to_csv.py --source <名前>           # CSV 生成
+python3 scripts/filter_baseblu_profitable.py --source <名前>      # 利益計算
+python3 scripts/run_autopilot.py --source <名前>                  # 全工程
+```
+
+- `get_source(name)` の解決順は **専用クラス → data/sources.json → baseblu fallback**
+- 設定が壊れていれば `ValueError` で止める (誤った原価で出品するより止める)
+- 未検証の仕入先は `status: "unverified"` + `landed_cost_basis: "DDU"` +
+  `vat_refund_rate: 0.0` (原価を高く見積もる安全側)。`tests/test_sources_config.py` が強制する
+- baseblu / italist のように専用クラスもある仕入先は、両方の値が一致していることを
+  テストが照合する (二重管理による VAT 二重控除事故の防止)
+
+サイト固有の処理 (商品ページ HTML の解析等) が要る場合だけ専用クラスを書く:
 1. `app/core/sources/<name>.py` に `class <Name>Source(BaseSource)` を作る
 2. `app/core/sources/__init__.py:REGISTERED_SOURCES` に登録
 3. `tests/test_sources.py` にメタデータ検証テストを追加
 4. `data/categories.json` / `brands.json` に必要なら拡張
+
+⚠️ **baseblu は専用の `scripts/baseblu_sales_to_csv.py` を使い続ける**
+(商品ページ HTML からの色抽出があり、汎用版は JSON のみ扱うため)。
 
 CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規約。
 `scripts/filter_baseblu_profitable.py` は `get_source(row.get('source_name'))` で
@@ -305,7 +326,7 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 
 ### テスト実行
 ```bash
-python3 -m unittest discover tests        # 全件 (現状 392 ケース)
+python3 -m unittest discover tests        # 全件 (現状 466 ケース)
 python3 -m unittest tests.test_pricing -v  # 個別ファイル
 ```
 

@@ -18,8 +18,8 @@ import run_autopilot as ap  # noqa: E402
 
 
 def _args(**kw) -> Namespace:
-    base = dict(skip_scrape=False, skip_market=False, market_limit=None, ai_limit=30, no_ai=False,
-                draft=0, weekly_review=False, test=False, dry_run=False)
+    base = dict(source="baseblu", skip_scrape=False, skip_market=False, market_limit=None,
+                ai_limit=30, no_ai=False, draft=0, weekly_review=False, test=False, dry_run=False)
     base.update(kw)
     return Namespace(**base)
 
@@ -56,6 +56,34 @@ class BuildStepsTest(unittest.TestCase):
         self.assertIn("--yes", draft["cmd"])
         self.assertTrue(any(s.get("resolver") == "weekly_review" for s in steps))
 
+    def test_baseblu_uses_dedicated_scraper(self):
+        """baseblu は商品ページ HTML から色を取る専用スクリプトを使い続ける。"""
+        steps = ap.build_steps(_args())
+        scrape = next(s for s in steps if s["name"].startswith("①"))
+        self.assertTrue(scrape["cmd"][1].endswith("baseblu_sales_to_csv.py"))
+        filt = next(s for s in steps if s["name"].startswith("②"))
+        self.assertEqual(filt["cmd"][-2:], ["--source", "baseblu"])
+
+    def test_other_source_uses_generic_scraper(self):
+        steps = ap.build_steps(_args(source="antonioli"))
+        scrape = next(s for s in steps if s["name"].startswith("①"))
+        self.assertTrue(scrape["cmd"][1].endswith("shopify_sales_to_csv.py"))
+        self.assertEqual(scrape["cmd"][-2:], ["--source", "antonioli"])
+        filt = next(s for s in steps if s["name"].startswith("②"))
+        self.assertEqual(filt["cmd"][-2:], ["--source", "antonioli"])
+
+    def test_market_filter_step_carries_source(self):
+        steps = ap.build_steps(_args(source="antonioli"))
+        market_step = next(s for s in steps if s.get("resolver") == "filter_with_market")
+        self.assertEqual(market_step["source"], "antonioli")
+
+    def test_missing_source_attribute_defaults_to_baseblu(self):
+        """古い呼び出し (source 属性なし) でも落ちない。"""
+        args = _args()
+        del args.source
+        scrape = next(s for s in ap.build_steps(args) if s["name"].startswith("①"))
+        self.assertTrue(scrape["cmd"][1].endswith("baseblu_sales_to_csv.py"))
+
     def test_ai_limit_and_market_limit_propagate(self):
         steps = ap.build_steps(_args(ai_limit=7, market_limit=5))
         enrich = next(s for s in steps if s["name"].startswith("⑤"))
@@ -65,6 +93,15 @@ class BuildStepsTest(unittest.TestCase):
 
 
 class MockAndSummaryTest(unittest.TestCase):
+    def test_mock_csv_uses_source_name(self):
+        tmp = Path(tempfile.mkdtemp())
+        with patch.object(ap, "REPORTS", tmp):
+            path = ap.write_mock_sales_csv(source="antonioli")
+        self.assertTrue(path.name.endswith("_antonioli_sales_products_sorted.csv"))
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertTrue(all(r["source_name"] == "antonioli" for r in rows))
+
     def test_mock_csv_matches_scraper_columns(self):
         tmp = Path(tempfile.mkdtemp()) / "mock.csv"
         ap.write_mock_sales_csv(tmp)

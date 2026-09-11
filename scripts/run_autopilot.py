@@ -88,11 +88,11 @@ def _latest(pattern: str) -> str | None:
     return files[-1] if files else None
 
 
-def write_mock_sales_csv(path: Path | None = None) -> Path:
-    """--test 用: baseblu_sales_to_csv.py の出力形式でモック CSV を書く。"""
+def write_mock_sales_csv(path: Path | None = None, source: str = "baseblu") -> Path:
+    """--test 用: 仕入れスクリプトの出力形式でモック CSV を書く。"""
     REPORTS.mkdir(parents=True, exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
-    path = path or (REPORTS / f"{date_str}_baseblu_sales_products_sorted.csv")
+    path = path or (REPORTS / f"{date_str}_{source}_sales_products_sorted.csv")
     fieldnames = [
         "title", "vendor", "product_type", "sku", "color", "sizes", "available_sizes", "season",
         "sale_price", "original_price", "discount_rate", "available",
@@ -104,7 +104,7 @@ def write_mock_sales_csv(path: Path | None = None) -> Path:
         w.writeheader()
         for r in MOCK_SALES_ROWS:
             row = dict(r)
-            row.setdefault("source_name", "baseblu")
+            row.setdefault("source_name", source)
             row.setdefault("currency", "EUR")
             row.setdefault("landed_cost_basis", "DDU")
             w.writerow(row)
@@ -117,17 +117,23 @@ def build_steps(args) -> list[dict]:
     各 step: {"name", "cmd" (list[str] | None), "required", "resolver"?, "note"?}
     """
     py = sys.executable or "python3"
+    source = (getattr(args, "source", "") or "baseblu").strip().lower()
     steps: list[dict] = []
 
     if args.test:
         steps.append({"name": "⓪ モック仕入れ CSV の生成 (--test)", "cmd": None,
-                      "resolver": "write_mock", "required": True})
+                      "resolver": "write_mock", "required": True, "source": source})
     elif not args.skip_scrape:
-        steps.append({"name": "① baseblu セール商品の取得", "required": True,
-                      "cmd": [py, str(SCRIPTS / "baseblu_sales_to_csv.py")]})
+        # baseblu は商品ページ HTML からの色抽出があるため専用スクリプトを使う。
+        # 他の仕入先は data/sources.json 設定ベースの汎用スクリプト。
+        if source == "baseblu":
+            scrape_cmd = [py, str(SCRIPTS / "baseblu_sales_to_csv.py")]
+        else:
+            scrape_cmd = [py, str(SCRIPTS / "shopify_sales_to_csv.py"), "--source", source]
+        steps.append({"name": f"① {source} セール商品の取得", "required": True, "cmd": scrape_cmd})
 
     steps.append({"name": "② 利益フィルタ (1回目・相場なし)", "required": True,
-                  "cmd": [py, str(SCRIPTS / "filter_baseblu_profitable.py")]})
+                  "cmd": [py, str(SCRIPTS / "filter_baseblu_profitable.py"), "--source", source]})
 
     if not args.skip_market and not args.test:
         market_cmd = [py, str(SCRIPTS / "fetch_buyma_market_prices.py"), "--csv", "latest"]
@@ -135,7 +141,7 @@ def build_steps(args) -> list[dict]:
             market_cmd += ["--limit", str(args.market_limit)]
         steps.append({"name": "③ BUYMA 相場の取得 (時間がかかります)", "cmd": market_cmd, "required": True})
         steps.append({"name": "④ 利益フィルタ (2回目・相場連動)", "cmd": None,
-                      "resolver": "filter_with_market", "required": True})
+                      "resolver": "filter_with_market", "required": True, "source": source})
 
     if not args.no_ai:
         enrich_cmd = [py, str(SCRIPTS / "ai_enrich_candidates.py"), "--limit", str(args.ai_limit)]
@@ -166,7 +172,8 @@ def resolve_dynamic_cmd(step: dict) -> list[str] | None:
         if not market_json:
             print("   ⚠️ 相場 JSON が見つからないためスキップします")
             return None
-        return [py, str(SCRIPTS / "filter_baseblu_profitable.py"), "--market", market_json]
+        return [py, str(SCRIPTS / "filter_baseblu_profitable.py"),
+                "--source", step.get("source", "baseblu"), "--market", market_json]
     return None
 
 
@@ -258,6 +265,9 @@ def run_weekly_review() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="仕入れ〜下書きまでの自動パイプライン")
+    parser.add_argument("--source", default="baseblu",
+                        help="仕入先 (既定 baseblu)。data/sources.json のキー名。"
+                             "一覧: python3 scripts/shopify_sales_to_csv.py --list")
     parser.add_argument("--skip-scrape", action="store_true", help="セール CSV の再取得を飛ばす")
     parser.add_argument("--skip-market", action="store_true", help="相場取得を飛ばす")
     parser.add_argument("--market-limit", type=int, help="相場取得の件数上限")
@@ -289,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 print("   $ (モック CSV を outputs/reports に生成)")
                 continue
-            path = write_mock_sales_csv()
+            path = write_mock_sales_csv(source=step.get("source", "baseblu"))
             print(f"   📄 {path}")
             continue
         if resolver == "weekly_review":

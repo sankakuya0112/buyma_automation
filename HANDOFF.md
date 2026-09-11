@@ -2,6 +2,51 @@
 
 ---
 
+## 🆕 2026-09-11 追記2: 仕入先の設定化 (sources.json + 汎用 Shopify 取得)
+
+ユーザー要望「安い仕入先の選定と確保」への対応。調査結果は
+`docs/strategy/SUPPLIER_CANDIDATES_2026-09.md`、実装は以下。
+
+### 追加したもの
+- `data/sources.json` — 仕入先の設定表 (URL / 通貨 / DDP・DDU / VAT / 送料 / 状態 / 根拠メモ)。
+  baseblu・italist に加え、調査で有望と判断した antonioli・monnierparis・slamjam を
+  **status=unverified** で登録済み (URL と関税条件は仮の値)
+- `app/core/sources/config_source.py` — 設定から `ConfigSource` を組み立てる層。
+  壊れた設定は ValueError で停止。`get_source()` の解決順は
+  **専用クラス → sources.json → baseblu fallback**
+- `scripts/shopify_sales_to_csv.py` — 汎用 Shopify 取得。`--list` / `--probe` /
+  `--url` / `--test` / `--limit` / `--output`。出力は
+  `outputs/reports/YYYY-MM-DD_<source>_sales_products_sorted.csv` で
+  `filter_baseblu_profitable.py --source <name>` にそのまま繋がる
+- `scripts/run_autopilot.py --source <name>` — 全工程を仕入先別に回せる。
+  baseblu だけは専用スクリプト (HTML 色抽出) を使う分岐を内蔵
+- テスト 392 → **466 ケース全 PASS** (設定検証・解決順・専用クラスとの整合・解析・CSV 列)
+
+### Mac 側で次にやること (これが「確保」の本番)
+```bash
+cd ~/buyma_automation && git pull origin claude/charming-meitner-ot5l5v
+python3 scripts/shopify_sales_to_csv.py --list
+python3 scripts/shopify_sales_to_csv.py --source antonioli --probe
+python3 scripts/shopify_sales_to_csv.py --source monnierparis --probe
+python3 scripts/shopify_sales_to_csv.py --source slamjam --probe
+```
+- `--probe` は products.json が返るかを判定し、collection 名が違えば
+  `/collections.json` から sale/outlet 系の候補を表示する
+- 取得できたら **ブラウザでチェックアウト直前まで進めて**「関税込みか」
+  「VAT が引かれているか」「送料」を確認し、`data/sources.json` の
+  `landed_cost_basis` / `vat_refund_rate` / `shipping_flat_local` を実測値に直して
+  `status` を `verified` にする
+- 403 / CAPTCHA が返るサイトは自動取得を諦め、手動仕入れの比較先に回す
+
+### 未対応 (次の候補)
+- 原価モデルの是正: **通関立替手数料 (DHL 等 ¥3,300 または関税の 2%) が未計上**、
+  **革靴の関税が 30%/1足¥4,300 との差** (調査レポート §5)。`app/core/pricing.py` に
+  `customs_handling_jpy` を足し、革靴の税率マスタを直す作業が残っている
+- B 群 (giglio / tizianafausti / julian-fashion + spinnaker) は非 Shopify のため
+  JSON-LD or HTML 解析の追加実装が必要
+
+---
+
 ## 🆕 2026-09-11 追記: AI オートパイロット (モデル使い分け + トークン節約)
 
 ユーザー要望: 「利益が出る商品の仕入れ → 収益計算 → 出品作業」を AI で自動化。

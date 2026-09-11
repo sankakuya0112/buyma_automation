@@ -2,6 +2,42 @@
 
 ---
 
+## 🆕 2026-09-11 追記: AI オートパイロット (モデル使い分け + トークン節約)
+
+ユーザー要望: 「利益が出る商品の仕入れ → 収益計算 → 出品作業」を AI で自動化。
+モデルを使い分けてトークンを節約すること。
+
+### 追加したもの
+- `app/ai/` — router (割り当て表) / client (キャッシュ・台帳・予算・オフライン退避) /
+  tasks (出品文=Haiku、カテゴリ=Haiku 番号回答、審査=Sonnet、診断=Sonnet、週次レビュー=Fable)
+- `scripts/run_autopilot.py` — 取得 → 利益 → 相場 → **AI 補強** → (任意) 下書き → 費用レポートを 1 コマンド。
+  `--test` でモック通し確認 (サーバーでも動く)、`--draft N`、`--weekly-review`、`--no-ai`
+- `scripts/ai_enrich_candidates.py` — filter 済み CSV の上位 N 件に `category_path` / `ai_title_ja` /
+  `ai_description_ja` / `ai_keywords` / `ai_color_ja` / `ai_verdict` / `ai_risk_flags` / `ai_reason` /
+  `ai_priority` 列を追加 (同じファイルを上書き)。`--dry-run` で費用概算
+- `scripts/ai_cost_report.py` / `scripts/ai_diagnose.py`
+- `scripts/buyma_auto_listing.py` — AI 列を優先使用 (`resolve_listing_category/title/color`、
+  `generate_description(desc_ja=)`)。`ai_verdict=skip` 除外、`hold` は要確認扱い。
+  **出品順を AI 優先度 → opportunity_score → 利益額に統一** (旧: 利益順に並べ直していた)
+- `docs/AI_MODEL_POLICY.md` — 原則・割り当て・費用目安 (≈¥45/週)・変更方法・制約
+- テスト 318 → 392 ケース (AI 層は SDK フェイクでオフライン検証)
+
+### Mac 側で次にやること
+1. `.env` に `ANTHROPIC_API_KEY=` を追加 (console.anthropic.com で発行。チャットに貼らない)
+2. `pip3 install -r requirements.txt` (anthropic 追加)
+3. `python3 scripts/run_autopilot.py --test` → 全工程完了を確認
+4. `python3 scripts/ai_enrich_candidates.py --dry-run` → 概算費用を見る
+5. `python3 scripts/run_autopilot.py` → 実データで AI 補強。CSV の ai_* 列を目視
+6. `python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 1` → 下書き 1 件で
+   AI タイトル/説明/カテゴリが BUYMA フォームに入るか確認 (カテゴリ 422 が出たら
+   categories.json の `_tier2_valid` を疑う)
+
+### 未検証 (サーバーからは API に到達できないため)
+- 実 API での structured outputs (Haiku 4.5 で `output_config.format` が通るか)。
+  通らない場合はクライアントが自動で「JSON のみ出力」指示に切り替える
+- Fable 5.1 の `fallbacks="default"` (beta `server-side-fallback-2026-07-01`)。
+  400 になる場合は `AI_MODEL_PREMIUM=claude-opus-5` で回避
+
 ## 🆕 2026-06-16 追記: 実カテゴリツリー採取 → categories.json 全面修正 + 発送地 React 発火
 
 ### カテゴリ 422 の根治 (data 修正)

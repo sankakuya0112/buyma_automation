@@ -288,9 +288,24 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 - 設定なしなら silent skip (開発環境で誤通知の心配なし)
 - `NOTIFY_DRY_RUN=1` で実送信せず stdout 出力
 
+### AI 補助層 (Claude API) は `app/ai/` (2026-09-11)
+- `app/ai/router.py`: タスク → 階層 (cheap/standard/premium) → モデル ID の**唯一の割り当て表**。
+  cheap=Haiku 4.5 (出品文・カテゴリ) / standard=Sonnet 5 (審査・診断) / premium=Fable 5.1 (週次レビュー)
+- `app/ai/client.py`: `AIClient.complete_json / complete_text`。**None を返す = AI なしで続行**。
+  SQLite キャッシュ (data/ai_cache.sqlite)・JSONL 台帳 (data/ai_usage.jsonl)・週間予算 (AI_WEEKLY_BUDGET_JPY)
+- `app/ai/tasks/`: listing_copy / category / judge / review / diagnose。**新しい AI 用途はここに追加し、
+  router.py に TaskPolicy を登録**する。scripts/ に直接 API 呼び出しを書かない
+- 入口: `scripts/run_autopilot.py` (全工程) / `scripts/ai_enrich_candidates.py` (補強のみ) /
+  `scripts/ai_cost_report.py` / `scripts/ai_diagnose.py`
+- 出品スクリプトは CSV の `category_path` / `ai_title_ja` / `ai_description_ja` / `ai_color_ja` / `ai_verdict`
+  を優先使用する (`resolve_listing_*`)。`ai_verdict=skip` は出品対象外、`hold` は `--include-review` 時のみ
+- ルール: (1) 決定論で決まることに AI を使わない (2) 量のタスクは cheap、判断は standard、
+  週 1 の戦略だけ premium (3) system prompt に日付・乱数を入れない (prompt cache が壊れる)
+  (4) API キーはチャットに出さない。詳細: `docs/AI_MODEL_POLICY.md`
+
 ### テスト実行
 ```bash
-python3 -m unittest discover tests        # 全件 (現状 211 ケース)
+python3 -m unittest discover tests        # 全件 (現状 392 ケース)
 python3 -m unittest tests.test_pricing -v  # 個別ファイル
 ```
 

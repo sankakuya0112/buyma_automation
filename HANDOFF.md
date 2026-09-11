@@ -2,6 +2,87 @@
 
 ---
 
+## 🆕 2026-09-11 追記2: 仕入先の設定化 (sources.json + 汎用 Shopify 取得)
+
+ユーザー要望「安い仕入先の選定と確保」への対応。調査結果は
+`docs/strategy/SUPPLIER_CANDIDATES_2026-09.md`、実装は以下。
+
+### 追加したもの
+- `data/sources.json` — 仕入先の設定表 (URL / 通貨 / DDP・DDU / VAT / 送料 / 状態 / 根拠メモ)。
+  baseblu・italist に加え、調査で有望と判断した antonioli・monnierparis・slamjam を
+  **status=unverified** で登録済み (URL と関税条件は仮の値)
+- `app/core/sources/config_source.py` — 設定から `ConfigSource` を組み立てる層。
+  壊れた設定は ValueError で停止。`get_source()` の解決順は
+  **専用クラス → sources.json → baseblu fallback**
+- `scripts/shopify_sales_to_csv.py` — 汎用 Shopify 取得。`--list` / `--probe` /
+  `--url` / `--test` / `--limit` / `--output`。出力は
+  `outputs/reports/YYYY-MM-DD_<source>_sales_products_sorted.csv` で
+  `filter_baseblu_profitable.py --source <name>` にそのまま繋がる
+- `scripts/run_autopilot.py --source <name>` — 全工程を仕入先別に回せる。
+  baseblu だけは専用スクリプト (HTML 色抽出) を使う分岐を内蔵
+- テスト 392 → **466 ケース全 PASS** (設定検証・解決順・専用クラスとの整合・解析・CSV 列)
+
+### Mac 側で次にやること (これが「確保」の本番)
+```bash
+cd ~/buyma_automation && git pull origin claude/charming-meitner-ot5l5v
+python3 scripts/shopify_sales_to_csv.py --list
+python3 scripts/shopify_sales_to_csv.py --source antonioli --probe
+python3 scripts/shopify_sales_to_csv.py --source monnierparis --probe
+python3 scripts/shopify_sales_to_csv.py --source slamjam --probe
+```
+- `--probe` は products.json が返るかを判定し、collection 名が違えば
+  `/collections.json` から sale/outlet 系の候補を表示する
+- 取得できたら **ブラウザでチェックアウト直前まで進めて**「関税込みか」
+  「VAT が引かれているか」「送料」を確認し、`data/sources.json` の
+  `landed_cost_basis` / `vat_refund_rate` / `shipping_flat_local` を実測値に直して
+  `status` を `verified` にする
+- 403 / CAPTCHA が返るサイトは自動取得を諦め、手動仕入れの比較先に回す
+
+### 未対応 (次の候補)
+- 原価モデルの是正: **通関立替手数料 (DHL 等 ¥3,300 または関税の 2%) が未計上**、
+  **革靴の関税が 30%/1足¥4,300 との差** (調査レポート §5)。`app/core/pricing.py` に
+  `customs_handling_jpy` を足し、革靴の税率マスタを直す作業が残っている
+- B 群 (giglio / tizianafausti / julian-fashion + spinnaker) は非 Shopify のため
+  JSON-LD or HTML 解析の追加実装が必要
+
+---
+
+## 🆕 2026-09-11 追記: AI オートパイロット (モデル使い分け + トークン節約)
+
+ユーザー要望: 「利益が出る商品の仕入れ → 収益計算 → 出品作業」を AI で自動化。
+モデルを使い分けてトークンを節約すること。
+
+### 追加したもの
+- `app/ai/` — router (割り当て表) / client (キャッシュ・台帳・予算・オフライン退避) /
+  tasks (出品文=Haiku、カテゴリ=Haiku 番号回答、審査=Sonnet、診断=Sonnet、週次レビュー=Fable)
+- `scripts/run_autopilot.py` — 取得 → 利益 → 相場 → **AI 補強** → (任意) 下書き → 費用レポートを 1 コマンド。
+  `--test` でモック通し確認 (サーバーでも動く)、`--draft N`、`--weekly-review`、`--no-ai`
+- `scripts/ai_enrich_candidates.py` — filter 済み CSV の上位 N 件に `category_path` / `ai_title_ja` /
+  `ai_description_ja` / `ai_keywords` / `ai_color_ja` / `ai_verdict` / `ai_risk_flags` / `ai_reason` /
+  `ai_priority` 列を追加 (同じファイルを上書き)。`--dry-run` で費用概算
+- `scripts/ai_cost_report.py` / `scripts/ai_diagnose.py`
+- `scripts/buyma_auto_listing.py` — AI 列を優先使用 (`resolve_listing_category/title/color`、
+  `generate_description(desc_ja=)`)。`ai_verdict=skip` 除外、`hold` は要確認扱い。
+  **出品順を AI 優先度 → opportunity_score → 利益額に統一** (旧: 利益順に並べ直していた)
+- `docs/AI_MODEL_POLICY.md` — 原則・割り当て・費用目安 (≈¥45/週)・変更方法・制約
+- テスト 318 → 392 ケース (AI 層は SDK フェイクでオフライン検証)
+
+### Mac 側で次にやること
+1. `.env` に `ANTHROPIC_API_KEY=` を追加 (console.anthropic.com で発行。チャットに貼らない)
+2. `pip3 install -r requirements.txt` (anthropic 追加)
+3. `python3 scripts/run_autopilot.py --test` → 全工程完了を確認
+4. `python3 scripts/ai_enrich_candidates.py --dry-run` → 概算費用を見る
+5. `python3 scripts/run_autopilot.py` → 実データで AI 補強。CSV の ai_* 列を目視
+6. `python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 1` → 下書き 1 件で
+   AI タイトル/説明/カテゴリが BUYMA フォームに入るか確認 (カテゴリ 422 が出たら
+   categories.json の `_tier2_valid` を疑う)
+
+### 未検証 (サーバーからは API に到達できないため)
+- 実 API での structured outputs (Haiku 4.5 で `output_config.format` が通るか)。
+  通らない場合はクライアントが自動で「JSON のみ出力」指示に切り替える
+- Fable 5.1 の `fallbacks="default"` (beta `server-side-fallback-2026-07-01`)。
+  400 になる場合は `AI_MODEL_PREMIUM=claude-opus-5` で回避
+
 ## 🆕 2026-06-16 追記: 実カテゴリツリー採取 → categories.json 全面修正 + 発送地 React 発火
 
 ### カテゴリ 422 の根治 (data 修正)

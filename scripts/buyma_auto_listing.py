@@ -419,17 +419,18 @@ def resolve_brand(vendor: str, brands_data: dict) -> tuple:
     return -1, safe
 
 
-def generate_description(title, vendor, sku, description_en, cat_label):
+def generate_description(title, vendor, sku, description_en, cat_label, desc_ja=None):
     """プロショッパー仕様の商品説明を生成
     - 仕入れ先名・現地価格は一切含めない
     - 仕入れ先の商品説明を和訳して掲載
     - 品番・素材・サイズ感などの情報を充実させる
+    - desc_ja (AI 生成の日本語説明) が渡されればそれを使い、無ければ和訳する
     """
     st = normalize_text(title)
     sv = normalize_text(vendor)
 
-    # 商品説明の和訳
-    desc_ja = translate_description(description_en)
+    # 商品説明の和訳 (AI 補強列があれば優先)
+    desc_ja = _strip_accents(desc_ja.strip()) if desc_ja and desc_ja.strip() else translate_description(description_en)
 
     lines = []
     lines.append(f"◆ {sv} / {st}")
@@ -499,6 +500,58 @@ def download_image(url, dest):
         f.write(r.content)
 
 
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _listing_sort_key(p: dict) -> tuple:
+    """出品順: AI 優先度 (1-5) → 期待値スコア → 利益額。"""
+    return (
+        _safe_int(p.get("ai_priority"), 0),
+        _safe_int(p.get("opportunity_score"), 0),
+        _safe_int(p.get("profit_jpy"), 0),
+    )
+
+
+def resolve_listing_category(product: dict, cat_data: dict) -> list:
+    """AI 補強列 category_path ("親 > 中 > 子") があれば検証して優先、無ければ辞書ルール。
+
+    第 2 階層が categories.json の _tier2_valid に無いものは 422 になるため採用しない。
+    """
+    raw = (product.get("category_path") or "").strip()
+    if raw:
+        parts = [x.strip() for x in raw.split(">")]
+        tier2_valid = set(cat_data.get("_tier2_valid") or [])
+        if len(parts) == 3 and all(parts) and (not tier2_valid or parts[1] in tier2_valid):
+            return parts
+    return get_category_path(product.get("title", ""), product.get("product_type", ""), cat_data)
+
+
+def resolve_listing_title(product: dict, cat_label: str = "") -> str:
+    """AI 生成タイトル (ai_title_ja) があれば BUYMA 幅に収めて優先、無ければ従来の生成。"""
+    ai_title = (product.get("ai_title_ja") or "").strip()
+    if ai_title:
+        return _trim_buyma_title(_strip_accents(ai_title), 60)
+    return generate_buyma_title(product.get("title", ""), product.get("vendor", ""),
+                                product.get("sku", ""), cat_label)
+
+
+def resolve_listing_color(product: dict) -> tuple:
+    """(系統色 日本語, 色名テキスト)。辞書で系統が決まらなければ AI の ai_color_ja を使う。"""
+    raw_color = (product.get("color") or "").strip()
+    first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
+    color_jp = translate_color_to_jp(first_color_en) if first_color_en else ""
+    ai_color = (product.get("ai_color_ja") or "").strip()
+    if ai_color and (not first_color_en or color_jp == "マルチカラー"):
+        color_jp = ai_color  # 辞書で系統が決まらない色名 (Parakeet 等) は AI の系統色を採用
+    if not color_jp:
+        color_jp = ai_color or "マルチカラー"
+    return color_jp, (first_color_en or color_jp)
+
+
 def load_products(max_price=None, min_profit=None):
     """
     利益商品 CSV から商品データを読み込む。
@@ -529,6 +582,7 @@ def load_products(max_price=None, min_profit=None):
     skipped_profit = 0
 
     skipped_action = 0
+    skipped_ai = 0
     with open(latest_csv, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             title = (row.get("title") or "").strip()
@@ -540,6 +594,11 @@ def load_products(max_price=None, min_profit=None):
             action = (row.get("action") or "list").strip().lower()
             if action == "skip":
                 skipped_action += 1
+                continue
+
+            # AI 審査 (ai_enrich_candidates.py) で skip = 規約/法令リスクありは出品対象外
+            if (row.get("ai_verdict") or "").strip().lower() == "skip":
+                skipped_ai += 1
                 continue
 
             # 最終売価: final_price_jpy があれば優先、無ければ selling_price_jpy (従来 target)
@@ -591,14 +650,28 @@ def load_products(max_price=None, min_profit=None):
                 "image_url": (row.get("image_url") or "").strip(),
                 "sub_images": (row.get("sub_images") or "").strip(),
                 "product_url": (row.get("product_url") or "").strip(),
+                "opportunity_score": (row.get("opportunity_score") or "").strip(),
+                # AI 補強列 (scripts/ai_enrich_candidates.py)。未実行なら空文字
+                "category_path": (row.get("category_path") or "").strip(),
+                "ai_title_ja": (row.get("ai_title_ja") or "").strip(),
+                "ai_description_ja": (row.get("ai_description_ja") or "").strip(),
+                "ai_keywords": (row.get("ai_keywords") or "").strip(),
+                "ai_color_ja": (row.get("ai_color_ja") or "").strip(),
+                "ai_verdict": (row.get("ai_verdict") or "").strip().lower(),
+                "ai_risk_flags": (row.get("ai_risk_flags") or "").strip(),
+                "ai_reason": (row.get("ai_reason") or "").strip(),
+                "ai_priority": (row.get("ai_priority") or "").strip(),
             })
 
-    # 利益降順ソート
-    products.sort(key=lambda p: int(p.get("profit_jpy", 0) or 0), reverse=True)
+    # 出品順 = AI 優先度 → 期待値 (opportunity_score) → 利益額 の降順。
+    # filter の CSV は期待値順だが、旧来は利益順に並べ直していた (docs との不整合) ため統一。
+    products.sort(key=_listing_sort_key, reverse=True)
 
     print(f"✅ 商品データ: {len(products)} 件")
     if skipped_action:
         print(f"   ⏭ 市場判定 skip: {skipped_action} 件 (赤字回避等)")
+    if skipped_ai:
+        print(f"   ⏭ AI 審査 skip: {skipped_ai} 件 (規約・法令リスク)")
     if skipped_price or skipped_profit:
         print(f"   スキップ: 価格上限超過 {skipped_price} 件 / 利益不足 {skipped_profit} 件")
     return products
@@ -2896,14 +2969,15 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     sub_imgs = product.get("sub_images", "")
     product_type = product.get("product_type", "")
 
-    cat_path = get_category_path(title, product_type, cat_data)
+    cat_path = resolve_listing_category(product, cat_data)
     cat_label = " > ".join(cat_path)
     safe_vendor = normalize_text(vendor)
     b_id, b_phonetic = resolve_brand(vendor, brands_data)
 
-    # v4: SEO最適化タイトル & プロ仕様商品説明
-    display_title = generate_buyma_title(title, vendor, sku, cat_label)
-    desc = generate_description(title, vendor, sku, desc_en, cat_label)
+    # v4: SEO最適化タイトル & プロ仕様商品説明 (AI 補強列があれば優先)
+    display_title = resolve_listing_title(product, cat_label)
+    desc = generate_description(title, vendor, sku, desc_en, cat_label,
+                                desc_ja=product.get("ai_description_ja") or None)
 
     readiness, readiness_reasons = evaluate_listing_readiness(product, price, cat_label, desc)
 
@@ -2912,6 +2986,9 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     if sku:
         print(f"     品番={sku}")
     print(f"     出品判定={readiness} / {readiness_reasons}")
+    if product.get("ai_verdict"):
+        print(f"     AI審査={product['ai_verdict']} 優先度={product.get('ai_priority') or '-'} "
+              f"{product.get('ai_risk_flags') or ''} {product.get('ai_reason') or ''}")
 
     # ページ遷移
     try:
@@ -2957,10 +3034,7 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
 
     # 10. 色: baseblu から抽出した英語 color を日本語にマップ（色の系統ドロップダウン用）
     #    色名テキストフィールドには原文（"Black" 等）をそのまま入れる
-    raw_color = (product.get("color") or "").strip()
-    first_color_en = raw_color.split(",")[0].strip() if raw_color else ""
-    color_jp = translate_color_to_jp(first_color_en)
-    color_label = first_color_en or color_jp  # テキスト欄用（英語優先、無ければ日本語）
+    color_jp, color_label = resolve_listing_color(product)  # テキスト欄は英語優先、無ければ日本語
     set_color(page, color_name=color_jp, color_label=color_label); human_delay(0.3, 0.6)
 
     # 11. サイズ・在庫（買付可）
@@ -3102,9 +3176,13 @@ def main():
         ready_products = []
         skipped_review = 0
         for p in products:
-            cat_label = " > ".join(get_category_path(p["title"], p.get("product_type", ""), cat_data))
-            desc = generate_description(p["title"], p["vendor"], p.get("sku", ""), p.get("description_en", ""), cat_label)
+            cat_label = " > ".join(resolve_listing_category(p, cat_data))
+            desc = generate_description(p["title"], p["vendor"], p.get("sku", ""), p.get("description_en", ""),
+                                        cat_label, desc_ja=p.get("ai_description_ja") or None)
             verdict, reasons = evaluate_listing_readiness(p, int(float(p.get("recommended_price") or 0)), cat_label, desc)
+            if verdict == "出品OK" and p.get("ai_verdict") == "hold":
+                # AI 審査で「人が確認」→ --include-review 指定時のみ対象
+                verdict, reasons = "要確認", [f"AI審査 hold: {p.get('ai_reason') or ''}".strip()]
             if verdict == "出品OK":
                 ready_products.append(p)
             else:

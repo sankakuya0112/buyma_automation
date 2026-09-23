@@ -24,6 +24,7 @@ import argparse
 import csv
 import glob
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +34,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.csv_writer import BuymaListingRow, join_images, write_buyma_csv
 from app.core.pricing import PricingParams, calculate_pricing
+from app.core.sources import get_source
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "reports"
 
@@ -189,6 +191,42 @@ def safe_float(value, default: float = 0.0) -> float:
 # メイン
 # ---------------------------------------------------------------------------
 
+def build_pricing_params(
+    row: dict,
+    source_price: float,
+    product_type: str,
+    title: str,
+    currency: str | None,
+    target_margin: float,
+    exchange_rate: float | None,
+) -> PricingParams:
+    """CSV 1 行から、仕入先レイヤ経由で PricingParams を組み立てる。
+
+    カード手数料・国内送料・通関手数料・VAT 還付率・DDP/DDU・固定国際送料は
+    get_pricing_params() でしか入らないので、PricingParams を直接作らないこと。
+    source_name 列が無い旧 CSV は get_source() が baseblu に fallback する。
+    """
+    source = get_source(row.get("source_name", ""))
+    params = source.get_pricing_params(
+        sale_price=source_price,
+        category=product_type,
+        title=title,
+    )
+
+    # CLI 指定は意図的な上書きとして残す。
+    overrides: dict = {"target_margin_pct": target_margin}
+    if currency:
+        overrides["currency"] = currency
+    if exchange_rate is not None:
+        overrides["exchange_rate"] = exchange_rate
+        # 国際送料 (円) は get_pricing_params() が既定レートで換算済み。
+        # 指定レートで換算し直して、送料だけ別レートになるズレを防ぐ。
+        shipping_local = source.shipping_cost_local(source_price)
+        if shipping_local is not None:
+            overrides["shipping_jpy"] = shipping_local * exchange_rate
+    return replace(params, **overrides)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="BUYMA 取込用 34 列 CSV を生成する",
@@ -220,8 +258,8 @@ def main() -> None:
     parser.add_argument(
         "--currency",
         type=str,
-        default="EUR",
-        help="仕入通貨（デフォルト EUR）",
+        default=None,
+        help="仕入通貨（省略時は仕入先の通貨。baseblu は EUR）",
     )
     parser.add_argument(
         "--target-margin",
@@ -283,11 +321,13 @@ def main() -> None:
             original_price = safe_float(row.get("original_price"))
 
             # 価格計算
-            params = PricingParams(
+            params = build_pricing_params(
+                row,
                 source_price=source_price,
+                product_type=product_type,
+                title=title,
                 currency=args.currency,
-                category=product_type,
-                target_margin_pct=args.target_margin,
+                target_margin=args.target_margin,
                 exchange_rate=args.exchange_rate,
             )
             result = calculate_pricing(params)
@@ -321,12 +361,15 @@ def main() -> None:
             # 内部メモ（購入者には見えない）
             memo = (
                 f"仕入れ元: BaseBlu\n"
-                f"仕入値: {source_price} {args.currency}\n"
+                f"仕入値: {source_price} {params.currency}\n"
                 f"URL: {product_url}\n"
-                f"為替: 1 {args.currency} = ¥{result.exchange_rate:.2f}\n"
+                f"為替: 1 {params.currency} = ¥{result.exchange_rate:.2f}\n"
                 f"送料(想定): ¥{int(result.shipping_jpy):,}\n"
                 f"関税(想定): ¥{int(result.customs_jpy):,}\n"
                 f"消費税(想定): ¥{int(result.consumption_tax_jpy):,}\n"
+                f"通関手数料(想定): ¥{int(result.customs_handling_jpy):,}\n"
+                f"海外決済手数料: ¥{int(result.purchase_fx_fee_jpy):,}\n"
+                f"国内送料: ¥{int(result.domestic_shipping_jpy):,}\n"
                 f"VAT還付: ¥{int(result.vat_refund_jpy):,}\n"
                 f"総原価: ¥{int(result.total_cost_jpy):,}\n"
                 f"販売価格: ¥{result.selling_price_jpy:,}\n"
@@ -361,7 +404,7 @@ def main() -> None:
                 item_duty="バイヤー負担なし",
                 item_memo=memo,
                 item_price=str(source_price),
-                item_currency=args.currency,
+                item_currency=params.currency,
                 item_no_cur_price=str(source_price),
                 item_deli_price=str(int(result.shipping_jpy)),
                 item_vatoff=str(int(result.vat_refund_jpy)),

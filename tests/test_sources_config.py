@@ -119,6 +119,12 @@ class ValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_source_config("example", dict(VALID_CONFIG, shipping_flat_local=-1))
 
+    def test_customs_handling_out_of_range_raises(self):
+        for field, bad in (("customs_handling_rate", 1.5), ("customs_handling_rate", -0.01),
+                           ("customs_handling_min_jpy", -1)):
+            with self.assertRaises(ValueError, msg=f"{field}={bad} が検出されない"):
+                validate_source_config("example", dict(VALID_CONFIG, **{field: bad}))
+
     def test_null_shipping_allowed(self):
         validate_source_config("example", dict(VALID_CONFIG, shipping_flat_local=None,
                                                free_shipping_threshold_local=None))
@@ -218,6 +224,20 @@ class ConfigSourceTest(unittest.TestCase):
         self.assertAlmostEqual(params.domestic_shipping_jpy, 1000.0)
         self.assertIsNotNone(params.shipping_jpy)   # 30 EUR を円換算した値
 
+    def test_customs_handling_defaults_when_omitted(self):
+        """省略時は DHL 日本の受取人払い (2,200 円 / 2%) を使う。"""
+        params = self.source.get_pricing_params(sale_price=200.0, category="bag")
+        self.assertEqual(params.customs_handling_min_jpy, 2200.0)
+        self.assertEqual(params.customs_handling_rate, 0.02)
+
+    def test_customs_handling_override(self):
+        s = ConfigSource("example", dict(VALID_CONFIG, customs_handling_min_jpy=0.0,
+                                         customs_handling_rate=0.0))
+        params = s.get_pricing_params(sale_price=200.0, category="bag", title="Leather tote")
+        self.assertEqual(params.customs_handling_min_jpy, 0.0)
+        self.assertEqual(params.customs_handling_rate, 0.0)
+        self.assertEqual(params.title, "Leather tote")
+
     def test_invalid_config_rejected_at_construction(self):
         with self.assertRaises(ValueError):
             ConfigSource("example", dict(VALID_CONFIG, landed_cost_basis="FOB"))
@@ -287,7 +307,8 @@ class RealConfigFileTest(unittest.TestCase):
             dedicated = cls()
             config_based = ConfigSource(name, cfg)
             for field in ("currency", "country", "landed_cost_basis",
-                          "vat_refund_rate", "purchase_fx_fee_rate", "domestic_shipping_jpy"):
+                          "vat_refund_rate", "purchase_fx_fee_rate", "domestic_shipping_jpy",
+                          "customs_handling_min_jpy", "customs_handling_rate"):
                 self.assertEqual(
                     getattr(dedicated, field), getattr(config_based, field),
                     f"{name}.{field} が app/core/sources/{name}.py と data/sources.json で食い違っています",

@@ -22,6 +22,8 @@ from app.core.pricing import (
     DEFAULT_EXCHANGE_RATES,
     DEFAULT_WEIGHT,
     HIGH_COMPETITION_THRESHOLD,
+    LEATHER_FOOTWEAR_DUTY_MIN_JPY,
+    LEATHER_FOOTWEAR_DUTY_RATE,
     LOW_COMPETITION_THRESHOLD,
     MarketStats,
     PAYMENT_COMMISSION_RATE,
@@ -30,6 +32,8 @@ from app.core.pricing import (
     UNRELIABLE_MARKET_COST_RATIO,
     calculate_pricing,
     decide_final_price,
+    is_footwear_category,
+    resolve_duty,
     resolve_duty_rate,
     resolve_exchange_rate,
     resolve_weight,
@@ -561,6 +565,114 @@ class TestDecideFinalPriceDDP(unittest.TestCase):
         self.assertEqual(d.action, "list")
         # DDP の breakeven は DDU より低い
         self.assertLess(d.breakeven_price_jpy, r_ddp.selling_price_jpy * 1.0)
+
+
+class TestLeatherFootwearDuty(unittest.TestCase):
+    """革靴の関税 = 30% または 1 足 4,300 円の高い方 (2026-09 修正)。
+
+    以前は product_type "FOOTWEAR" が関税表に当たらず、既定の 10% で計算されていた。
+    """
+
+    def _params(self, price, category="FOOTWEAR", title="", **kw):
+        kw.setdefault("exchange_rate", 160.0)
+        kw.setdefault("shipping_jpy", 0.0)
+        kw.setdefault("vat_refund_rate", 0.0)
+        return PricingParams(source_price=price, currency="EUR",
+                             category=category, title=title, **kw)
+
+    def test_expensive_leather_shoes_pay_30_percent(self):
+        r = calculate_pricing(self._params(1000.0, title="Leather loafers"))
+        self.assertEqual(r.duty_rate, LEATHER_FOOTWEAR_DUTY_RATE)
+        self.assertAlmostEqual(r.customs_jpy, 160_000 * 0.30, places=1)
+
+    def test_cheap_leather_shoes_pay_minimum_per_pair(self):
+        # 課税価格 8,000 円 × 30% = 2,400 円 < 最低 4,300 円
+        r = calculate_pricing(self._params(50.0, title="Leather sandals"))
+        self.assertAlmostEqual(r.customs_jpy, LEATHER_FOOTWEAR_DUTY_MIN_JPY, places=1)
+        self.assertEqual(r.duty_min_jpy, LEATHER_FOOTWEAR_DUTY_MIN_JPY)
+
+    def test_unknown_material_is_treated_as_leather(self):
+        """タイトルが無い靴は革扱い (原価を高く見積もる安全側)。"""
+        rate, min_jpy = resolve_duty("FOOTWEAR", "")
+        self.assertEqual((rate, min_jpy), (LEATHER_FOOTWEAR_DUTY_RATE, LEATHER_FOOTWEAR_DUTY_MIN_JPY))
+
+    def test_canvas_shoes_use_normal_rate(self):
+        rate, min_jpy = resolve_duty("FOOTWEAR", "Canvas low-top sneakers")
+        self.assertEqual(rate, resolve_duty_rate("FOOTWEAR"))
+        self.assertEqual(min_jpy, 0.0)
+
+    def test_leather_word_wins_over_textile_word(self):
+        rate, _ = resolve_duty("SHOES", "Leather and canvas sneakers")
+        self.assertEqual(rate, LEATHER_FOOTWEAR_DUTY_RATE)
+
+    def test_footwear_detected_from_various_product_types(self):
+        for category in ("FOOTWEAR", "Shoes", "Ankle Boots", "sneakers", "High Heels", "Lace-ups"):
+            self.assertTrue(is_footwear_category(category), category)
+
+    def test_word_match_avoids_false_positives(self):
+        for category in ("Bootcut Jeans", "Oxford Shirt", "BAGS", "KNITWEAR", ""):
+            self.assertFalse(is_footwear_category(category), category)
+
+    def test_non_footwear_is_unchanged(self):
+        self.assertEqual(resolve_duty("bag", "Leather tote"), (resolve_duty_rate("bag"), 0.0))
+
+    def test_explicit_duty_rate_is_respected(self):
+        r = calculate_pricing(self._params(1000.0, duty_rate=0.05))
+        self.assertEqual(r.duty_rate, 0.05)
+        self.assertEqual(r.duty_min_jpy, 0.0)
+        self.assertAlmostEqual(r.customs_jpy, 160_000 * 0.05, places=1)
+
+    def test_explicit_minimum_applies_with_explicit_rate(self):
+        r = calculate_pricing(self._params(10.0, duty_rate=0.05, duty_min_jpy=1000.0))
+        self.assertAlmostEqual(r.customs_jpy, 1000.0, places=1)
+
+    def test_ddp_has_no_duty_even_for_leather_shoes(self):
+        r = calculate_pricing(self._params(1000.0, landed_cost_basis="DDP"))
+        self.assertEqual(r.customs_jpy, 0.0)
+
+
+class TestCustomsHandlingFee(unittest.TestCase):
+    """通関の立替手数料 = max(2,200 円, 2% × (関税 + 輸入消費税))。DDU のみ。"""
+
+    def _params(self, price, **kw):
+        kw.setdefault("exchange_rate", 160.0)
+        kw.setdefault("shipping_jpy", 0.0)
+        kw.setdefault("vat_refund_rate", 0.0)
+        kw.setdefault("category", "bag")
+        return PricingParams(source_price=price, currency="EUR", **kw)
+
+    def _with_fee(self, price, **kw):
+        return self._params(price, customs_handling_min_jpy=2200.0,
+                            customs_handling_rate=0.02, **kw)
+
+    def test_default_params_have_no_fee(self):
+        """PricingParams 直接生成 (Source 非経由) は従来どおり手数料 0。"""
+        r = calculate_pricing(self._params(500.0))
+        self.assertEqual(r.customs_handling_jpy, 0.0)
+
+    def test_small_tax_uses_minimum_fee(self):
+        r = calculate_pricing(self._with_fee(100.0))
+        self.assertAlmostEqual(r.customs_handling_jpy, 2200.0, places=1)
+
+    def test_large_tax_uses_percentage(self):
+        r = calculate_pricing(self._with_fee(10_000.0))
+        expected = 0.02 * (r.customs_jpy + r.consumption_tax_jpy)
+        self.assertGreater(expected, 2200.0)
+        self.assertAlmostEqual(r.customs_handling_jpy, expected, delta=1.0)
+
+    def test_fee_is_included_in_total_cost(self):
+        r0 = calculate_pricing(self._params(500.0))
+        r1 = calculate_pricing(self._with_fee(500.0))
+        self.assertAlmostEqual(r1.total_cost_jpy - r0.total_cost_jpy, r1.customs_handling_jpy, places=1)
+        self.assertGreater(r1.selling_price_jpy, r0.selling_price_jpy)
+
+    def test_ddp_has_no_fee(self):
+        r = calculate_pricing(self._with_fee(500.0, landed_cost_basis="DDP"))
+        self.assertEqual(r.customs_handling_jpy, 0.0)
+
+    def test_no_fee_when_nothing_to_advance(self):
+        r = calculate_pricing(self._with_fee(500.0, duty_rate=0.0, consumption_tax_rate=0.0))
+        self.assertEqual(r.customs_handling_jpy, 0.0)
 
 
 if __name__ == "__main__":

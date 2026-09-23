@@ -135,10 +135,14 @@ def validate_source_config(name: str, cfg: dict) -> None:
     for field, default in (
         ("vat_refund_rate", 0.0),
         ("purchase_fx_fee_rate", 0.0),
+        ("customs_handling_rate", BaseSource.customs_handling_rate),
     ):
         _require_rate(name, cfg, field, default)
 
-    for field in ("shipping_flat_local", "free_shipping_threshold_local", "domestic_shipping_jpy"):
+    for field in (
+        "shipping_flat_local", "free_shipping_threshold_local", "domestic_shipping_jpy",
+        "customs_handling_min_jpy",
+    ):
         value = cfg.get(field)
         if value is None:
             continue
@@ -187,6 +191,14 @@ class ConfigSource(BaseSource):
         self.vat_refund_rate = _require_rate(self.name, config, "vat_refund_rate", 0.0)
         self.purchase_fx_fee_rate = _require_rate(self.name, config, "purchase_fx_fee_rate", 0.0)
         self.domestic_shipping_jpy = float(config.get("domestic_shipping_jpy") or 0.0)
+        # 省略時は BaseSource の既定値 (DHL 受取人払い 2,200 円 / 2%)
+        handling_min = config.get("customs_handling_min_jpy")
+        self.customs_handling_min_jpy = (
+            float(handling_min) if handling_min is not None else BaseSource.customs_handling_min_jpy
+        )
+        self.customs_handling_rate = _require_rate(
+            self.name, config, "customs_handling_rate", BaseSource.customs_handling_rate
+        )
         self.products_json_url = str(config["products_json_url"])
         self.product_url_template = str(config["product_url_template"])
         self.request_delay_sec = float(config.get("request_delay_sec") or 1.0)

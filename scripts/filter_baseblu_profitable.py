@@ -220,6 +220,7 @@ def main():
             params = source.get_pricing_params(
                 sale_price=source_price,
                 category=product_type,
+                title=title,
             )
             result = calculate_pricing(params)
 
@@ -312,6 +313,7 @@ def main():
                 "customs_jpy": round(result.customs_jpy),
                 "duty_rate": result.duty_rate,
                 "consumption_tax_jpy": round(result.consumption_tax_jpy),
+                "customs_handling_jpy": round(result.customs_handling_jpy),
                 "total_cost_jpy": round(result.total_cost_jpy),
                 "selling_price_jpy": result.selling_price_jpy,   # target price (25%)
                 "buyma_commission_jpy": round(result.buyma_commission_jpy),
@@ -364,7 +366,7 @@ def main():
         "sale_price_eur", "original_price_eur", "discount_rate",
         "exchange_rate", "source_price_jpy", "vat_refund_jpy",
         "shipping_jpy", "customs_jpy", "duty_rate",
-        "consumption_tax_jpy", "total_cost_jpy",
+        "consumption_tax_jpy", "customs_handling_jpy", "total_cost_jpy",
         "selling_price_jpy", "buyma_commission_jpy",
         "payment_commission_jpy", "profit_jpy", "margin_pct",
         # Phase 2a

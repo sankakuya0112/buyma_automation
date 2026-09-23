@@ -172,6 +172,22 @@ class TestRealCostModel(unittest.TestCase):
         r1 = calculate_pricing(with_ship)
         self.assertAlmostEqual(r1.total_cost_jpy - r0.total_cost_jpy, 1000.0, places=1)
 
+    def test_params_carry_customs_handling_fee_and_title(self):
+        params = BasebluSource().get_pricing_params(
+            sale_price=500.0, category="FOOTWEAR", title="Leather loafers",
+        )
+        self.assertEqual(params.customs_handling_min_jpy, 2200.0)
+        self.assertEqual(params.customs_handling_rate, 0.02)
+        self.assertEqual(params.title, "Leather loafers")
+
+    def test_baseblu_leather_shoes_include_duty_and_handling_fee(self):
+        from app.core.pricing import LEATHER_FOOTWEAR_DUTY_RATE, calculate_pricing
+        r = calculate_pricing(BasebluSource().get_pricing_params(
+            sale_price=600.0, category="FOOTWEAR", title="Leather loafers",
+        ))
+        self.assertEqual(r.duty_rate, LEATHER_FOOTWEAR_DUTY_RATE)
+        self.assertGreaterEqual(r.customs_handling_jpy, 2200.0)
+
     def test_defaults_remain_backward_compatible(self):
         """PricingParams 直接生成 (Source 非経由) では追加コストゼロ。"""
         from app.core.pricing import calculate_pricing, PricingParams
@@ -206,6 +222,15 @@ class TestItalistSource(unittest.TestCase):
         self.assertEqual(r.customs_jpy, 0.0)
         self.assertEqual(r.consumption_tax_jpy, 0.0)
         self.assertEqual(r.vat_refund_jpy, 0.0)
+
+    def test_ddp_has_no_customs_handling_fee(self):
+        """DDP は配送業者の立替が発生しないので、革靴でも手数料 0。"""
+        from app.core.pricing import calculate_pricing
+        r = calculate_pricing(self.s.get_pricing_params(
+            sale_price=500.0, category="FOOTWEAR", title="Leather loafers",
+        ))
+        self.assertEqual(r.customs_jpy, 0.0)
+        self.assertEqual(r.customs_handling_jpy, 0.0)
 
     def test_fx_fee_applies_to_usd(self):
         params = self.s.get_pricing_params(sale_price=500.0)

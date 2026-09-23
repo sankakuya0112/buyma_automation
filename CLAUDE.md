@@ -254,6 +254,11 @@ python3 scripts/run_autopilot.py --source <名前>                  # 全工程
   `vat_refund_rate: 0.0` (原価を高く見積もる安全側)。`tests/test_sources_config.py` が強制する
 - baseblu / italist のように専用クラスもある仕入先は、両方の値が一致していることを
   テストが照合する (二重管理による VAT 二重控除事故の防止)
+- **原価に入る項目 (2026-09-23)**: 仕入値 − VAT 還付 + 国際送料 + 関税 + 輸入消費税 +
+  **通関立替手数料** (DDU のみ、既定 max(¥2,200, 2%)) + 海外決済手数料 + 国内送料 + 振込手数料。
+  **革靴の関税は 30% または 1 足 ¥4,300** (`resolve_duty`)。素材不明の靴は革扱い。
+  いずれも `source.get_pricing_params(..., title=...)` 経由でのみ入るので、
+  `PricingParams` を直接作るスクリプトを増やさないこと
 
 サイト固有の処理 (商品ページ HTML の解析等) が要る場合だけ専用クラスを書く:
 1. `app/core/sources/<name>.py` に `class <Name>Source(BaseSource)` を作る
@@ -326,7 +331,7 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 
 ### テスト実行
 ```bash
-python3 -m unittest discover tests        # 全件 (現状 466 ケース)
+python3 -m unittest discover tests        # 全件 (現状 489 ケース)
 python3 -m unittest tests.test_pricing -v  # 個別ファイル
 ```
 

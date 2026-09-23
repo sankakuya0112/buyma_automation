@@ -19,6 +19,8 @@
     "vat_refund_rate": "EU VAT が控除された輸出価格なら 0.0。控除前の店頭価格が表示されるなら 0.167。不明なら 0.0 (安全側)",
     "purchase_fx_fee_rate": "海外カード決済の事務手数料。Wise/Revolut なら 0.0、通常のクレカなら 0.022",
     "domestic_shipping_jpy": "国内発送費 (出品者→購入者)",
+    "customs_handling_min_jpy": "(任意) 通関の立替手数料の最低額 (円)。省略時 2200 = DHL 日本の受取人払い。DDU のときだけ掛かる",
+    "customs_handling_rate": "(任意) 通関の立替手数料の率 (関税+輸入消費税に対して)。省略時 0.02。最低額との高い方を計上",
     "shipping_flat_local": "日本向け国際送料 (現地通貨)。null なら重量ベース推定にフォールバック (低額品で過小評価するので非推奨)",
     "free_shipping_threshold_local": "送料無料になる購入金額 (現地通貨)。無いなら null",
     "request_delay_sec": "ページ取得の間隔 (秒)。相手サーバーに負荷をかけないこと",

@@ -92,13 +92,18 @@ B 群は条件が良い (VAT 控除・送料無料閾値) が取得手段の新�
 
 | 項目 | 調査結果 (snippet-based) | 現行 | 対応 |
 |---|---|---|---|
-| 通関立替手数料 (DDU 仕入れ) | DHL 等: **1 件 ¥3,300 または関税等の 2% の高い方** | **未計上** | `PricingParams` に `customs_handling_jpy` を追加し、DDU の Source では ¥3,300 を既定にする。baseblu にも該当 |
-| 革靴の関税 | **30% または 1 足 ¥4,300 の高い方** (少額免税対象外)。EU 原産は EPA 無税の対象外 | boots 17% / loafers・pumps 17% / shoes 10% | 革製アッパーの靴 (boots / loafers / pumps / heels) を 30%・最低 ¥4,300 に。sneakers (布・合成) は 8% のまま |
+| 通関立替手数料 (DDU 仕入れ) | DHL 日本 2026 (受取人払い・アカウントなし): **1 件 税込 ¥2,200 または立替額の 2% の高い方** | ✅ **対応済み (2026-09-23)** | `PricingParams.customs_handling_min_jpy / customs_handling_rate` を追加。`BaseSource` の既定値 (¥2,200 / 2%) を DDU の仕入先 (baseblu 含む) に注入。DDP は 0。`sources.json` で仕入先ごとに上書き可 |
+| 革靴の関税 | **30% または 1 足 ¥4,300 の高い方** (関税割当の枠外税率。少額免税対象外)。EU 原産の EPA 税率は原産地申告が必要で自動適用されない | ✅ **対応済み (2026-09-23)**。以前は product_type "FOOTWEAR" が税率表に当たらず **既定 10%** で計算されていた | `resolve_duty(category, title)` を追加。靴カテゴリは 30%・最低 ¥4,300。タイトルに canvas / knit / mesh / nylon 等があり革を示す語が無い靴だけ従来税率。**素材不明の靴は革扱い** (安全側) |
 | 革バッグの関税 | 10〜20% 前後 (品目差) | 8% | 実インボイスで検証してから調整 (現行 8% は過小の可能性) |
 | 輸入消費税 | 10%、(商品 + 送料 + 保険) に課税 | 10% | 課税ベースに送料が含まれているか確認 |
 | 課税ベース | 個人輸入は「小売価格 × 0.6」、商業輸入は全額 | 不明 | 転売目的は商業扱いになり得る。税務は専門家確認 (要注意事項として記録) |
 | 海外決済手数料 | 通常カード 2〜3% → Wise / Revolut で ≈0% | 2.2% | Wise/Revolut を使うなら Source の `purchase_fx_fee_rate` を 0 に |
 | CITES 素材 | ワニ・パイソン・象革は個人輸入でも許可が必要 | judge タスクの `restricted_material` で skip | 維持 |
+
+> **訂正 (2026-09-23)**: 初版で立替手数料を「¥3,300」と書いたのは誤り。¥3,300 は DHL の
+> 「現地税金元払い」(発送人が日本の関税を払う) の料金で、受取人払い (DDU 仕入れの通常ケース) は
+> **税込 ¥2,200 または立替額の 2%** (受取人が DHL アカウントを持つ場合は ¥2,530)。
+> 出典: DHL 日本「サービス&料金ガイド 2026」(https://www.dhl.com/discover/content/dam/japan/download-files/service/service_and_rate_guide_jp_ja_2026.pdf、検索結果で確認)。
 
 出典: live-commerce.com (立替手数料), hi-japan.com/leather-shoes, hunade.com/kawagutsu-zeiritsu, hunade.com/trade-tools/personal-import-tax, koyano-cpa.gr.jp/nobiyo-kaikei/column/5618/, hunade.com/leather-cites-judgement, revolut.com/ja-JP/blog
 

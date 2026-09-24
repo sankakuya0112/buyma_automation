@@ -32,7 +32,6 @@ run_weekly.py — 週次パイプラインを 1 コマンドで実行するラ�
 from __future__ import annotations
 
 import argparse
-import glob
 import subprocess
 import sys
 from datetime import datetime
@@ -43,9 +42,9 @@ SCRIPTS = PROJECT_ROOT / "scripts"
 REPORTS = PROJECT_ROOT / "outputs" / "reports"
 
 
-def _latest(pattern: str) -> str | None:
-    files = sorted(glob.glob(str(REPORTS / pattern)))
-    return files[-1] if files else None
+def _latest(kind: str, source: str | None = "baseblu") -> str | None:
+    """outputs/reports の最新レポート。run_weekly は baseblu 専用パイプラインなので既定は baseblu。"""
+    return latest_report(kind, source=source, reports_dir=REPORTS)
 
 
 def _today_file(pattern: str) -> str | None:
@@ -113,7 +112,7 @@ def resolve_dynamic_cmd(step: dict) -> list[str] | None:
     """実行時にしか決まらないコマンドを解決する。"""
     py = sys.executable or "python3"
     if step.get("resolver") == "filter_with_market":
-        market_json = _latest("*_market_prices.json")
+        market_json = _latest("market_prices.json", source=None)
         if not market_json:
             print("   ⚠️ 相場 JSON が見つからないためスキップします")
             return None
@@ -185,7 +184,7 @@ def main():
         print(f"⚠️ 完了 (失敗した任意工程: {', '.join(failed)})")
     else:
         print("✅ 全工程完了！")
-    final_csv = _latest("*_baseblu_profitable_products.csv")
+    final_csv = _latest("profitable_products.csv")
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順): {final_csv}")
     print()

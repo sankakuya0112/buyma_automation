@@ -49,12 +49,14 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "reports"
 INVENTORY_PATH = PROJECT_ROOT / "data" / "inventory_status.json"
 PRICE_HISTORY_PATH = PROJECT_ROOT / "data" / "price_history.json"
 
 RESULTS_GLOB = str(OUTPUT_DIR / "*_auto_listing_results.csv")
-PROFITABLE_GLOB = str(OUTPUT_DIR / "*_baseblu_profitable_products.csv")
+
+from app.utils.reports import latest_report  # noqa: E402
 
 
 def parse_date(s):
@@ -79,11 +81,11 @@ def load_results(from_date=None, to_date=None) -> list[dict]:
     return rows
 
 
-def latest_profitable_rows() -> list[dict]:
-    files = sorted(glob.glob(PROFITABLE_GLOB))
-    if not files:
+def latest_profitable_rows(source: str | None = None) -> list[dict]:
+    path = latest_report("profitable_products.csv", source=source, reports_dir=OUTPUT_DIR)
+    if not path:
         return []
-    with open(files[-1], encoding="utf-8-sig") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 

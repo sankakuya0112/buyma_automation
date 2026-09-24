@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import json
 import subprocess
 import sys
@@ -47,6 +46,8 @@ SCRIPTS = PROJECT_ROOT / "scripts"
 REPORTS = PROJECT_ROOT / "outputs" / "reports"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.utils.reports import latest_report  # noqa: E402
 
 # --test 用のモック仕入れデータ (baseblu_sales_to_csv.py の出力と同じ列)
 MOCK_SALES_ROWS = [
@@ -83,9 +84,9 @@ MOCK_SALES_ROWS = [
 ]
 
 
-def _latest(pattern: str) -> str | None:
-    files = sorted(glob.glob(str(REPORTS / pattern)))
-    return files[-1] if files else None
+def _latest(kind: str, source: str | None = None) -> str | None:
+    """outputs/reports の最新レポート (kind 例: "profitable_products.csv")。source で仕入先を絞る。"""
+    return latest_report(kind, source=source, reports_dir=REPORTS)
 
 
 def write_mock_sales_csv(path: Path | None = None, source: str = "baseblu") -> Path:
@@ -136,7 +137,8 @@ def build_steps(args) -> list[dict]:
                   "cmd": [py, str(SCRIPTS / "filter_baseblu_profitable.py"), "--source", source]})
 
     if not args.skip_market and not args.test:
-        market_cmd = [py, str(SCRIPTS / "fetch_buyma_market_prices.py"), "--csv", "latest"]
+        # --source を渡さないと fetch 側が別の仕入先の表を選び得る (同日に複数仕入先を回した場合など)
+        market_cmd = [py, str(SCRIPTS / "fetch_buyma_market_prices.py"), "--csv", "latest", "--source", source]
         if args.market_limit:
             market_cmd += ["--limit", str(args.market_limit)]
         steps.append({"name": "③ BUYMA 相場の取得 (時間がかかります)", "cmd": market_cmd, "required": True})
@@ -168,7 +170,7 @@ def build_steps(args) -> list[dict]:
 def resolve_dynamic_cmd(step: dict) -> list[str] | None:
     py = sys.executable or "python3"
     if step.get("resolver") == "filter_with_market":
-        market_json = _latest("*_market_prices.json")
+        market_json = _latest("market_prices.json")
         if not market_json:
             print("   ⚠️ 相場 JSON が見つからないためスキップします")
             return None
@@ -177,11 +179,11 @@ def resolve_dynamic_cmd(step: dict) -> list[str] | None:
     return None
 
 
-def summarize_pipeline() -> dict:
+def summarize_pipeline(source: str | None = None) -> dict:
     """週次レビューに渡す集計値 (生データは渡さない)。"""
     out: dict = {}
-    sales = _latest("*_sales_products_sorted.csv")
-    prof = _latest("*_profitable_products.csv")
+    sales = _latest("sales_products_sorted.csv", source)
+    prof = _latest("profitable_products.csv", source)
     if sales:
         with open(sales, newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
@@ -219,7 +221,7 @@ def summarize_pipeline() -> dict:
             b = r.get("vendor") or "?"
             brands[b] = brands.get(b, 0) + 1
         out["top_brands"] = dict(sorted(brands.items(), key=lambda kv: -kv[1])[:8])
-    results = _latest("*_auto_listing_results.csv")
+    results = _latest("auto_listing_results.csv")
     if results:
         with open(results, newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
@@ -230,7 +232,7 @@ def summarize_pipeline() -> dict:
     return out
 
 
-def run_weekly_review() -> bool:
+def run_weekly_review(source: str | None = None) -> bool:
     from app.ai.client import get_ai_client
     from app.ai.tasks.review import build_review_payload, weekly_review
 
@@ -247,7 +249,7 @@ def run_weekly_review() -> bool:
         except Exception:
             funnel = None
     payload = build_review_payload(
-        pipeline=summarize_pipeline(), funnel=funnel,
+        pipeline=summarize_pipeline(source), funnel=funnel,
         ai_usage=client.ledger.summarize(7),
     )
     memo = weekly_review(payload, client)
@@ -306,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 print("   $ (集計値を Fable 5.1 に渡して週次レビューを生成)")
                 continue
-            if not run_weekly_review():
+            if not run_weekly_review(args.source):
                 failed.append(step["name"])
             continue
         if step["cmd"] is None and args.dry_run:
@@ -336,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("=" * 60)
     print(f"⚠️ 完了 (失敗した任意工程: {', '.join(failed)})" if failed else "✅ 全工程完了！")
-    final_csv = _latest("*_profitable_products.csv")
+    final_csv = _latest("profitable_products.csv", args.source)
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順・AI 列付き): {final_csv}")
     if not args.draft:

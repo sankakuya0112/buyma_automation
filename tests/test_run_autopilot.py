@@ -91,6 +91,13 @@ class BuildStepsTest(unittest.TestCase):
         market = next(s for s in steps if s["name"].startswith("③"))
         self.assertEqual(market["cmd"][-1], "5")
 
+    def test_market_step_carries_source(self):
+        """③ 相場取得は仕入先を渡す (渡さないと別仕入先の profitable CSV を読み得る)。"""
+        steps = ap.build_steps(_args(source="antonioli", market_limit=5))
+        market = next(s for s in steps if s["name"].startswith("③"))
+        self.assertEqual(market["cmd"][market["cmd"].index("--source") + 1], "antonioli")
+        self.assertEqual(market["cmd"][market["cmd"].index("--csv") + 1], "latest")
+
 
 class MockAndSummaryTest(unittest.TestCase):
     def test_mock_csv_uses_source_name(self):

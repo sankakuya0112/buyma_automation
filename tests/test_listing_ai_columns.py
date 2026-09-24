@@ -108,5 +108,12 @@ class LoadProductsTest(unittest.TestCase):
         self.assertEqual(products[1]["ai_verdict"], "")
 
 
+class ResultFieldnamesTest(unittest.TestCase):
+    def test_script_uses_shared_result_fieldnames(self):
+        from app.utils import listing_helpers
+        self.assertEqual(list(bal.RESULT_FIELDNAMES), list(listing_helpers.RESULT_FIELDNAMES))
+        self.assertIn("product_url", bal.RESULT_FIELDNAMES)
+
+
 if __name__ == "__main__":
     unittest.main()

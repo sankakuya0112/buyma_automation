@@ -141,7 +141,13 @@ def save_history(data: dict):
 
 
 def load_listing_records() -> list[dict]:
+    """出品記録 CSV を全部読み、item_id でユニーク化して返す (最新 CSV の行を優先)。
+
+    仕入先 URL (product_url) からハンドルを取れない行は価格追従できないので除外し、
+    件数だけ 1 回表示する (2026-09-24 以前の旧形式 CSV には product_url 列が無い)。
+    """
     recs = {}
+    legacy = 0
     for path in sorted(glob.glob(str(RESULTS_GLOB))):
         with open(path, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
@@ -149,7 +155,12 @@ def load_listing_records() -> list[dict]:
                     continue
                 if not row.get("item_id"):
                     continue
+                if not extract_handle(row.get("product_url") or ""):
+                    legacy += 1
+                    continue
                 recs[row["item_id"]] = row
+    if legacy:
+        print(f"ℹ️ 仕入先 URL の無い旧形式の出品記録 {legacy} 件は対象外 (product_url 列が無い CSV)")
     return list(recs.values())
 
 

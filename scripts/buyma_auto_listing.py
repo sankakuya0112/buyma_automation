@@ -67,6 +67,7 @@ except Exception:
 # 純粋関数は app.utils.listing_helpers に切り出し済み (Phase 2c+)
 from app.utils.listing_helpers import (
     COLOR_JA_MAP,
+    RESULT_FIELDNAMES,
     _ALPHA_SIZE_TO_JP,
     _EU_SHOE_TO_JP_CM,
     _IT_SIZE_RANGES,
@@ -74,6 +75,7 @@ from app.utils.listing_helpers import (
     _map_footwear_to_jp_cm,
     _strip_accents,
     _trim_buyma_title,
+    build_result_row,
     classify_size_category,
     clean_source_description,
     evaluate_listing_readiness,
@@ -3257,12 +3259,12 @@ def main():
                 print(f"  🔁 retry {attempt}/2 (status={status})")
                 time.sleep(random.uniform(5, 10))
 
-            results.append({
-                "status": status, "item_id": item_id or "",
-                "title": product["title"], "vendor": product["vendor"],
-                "price": product["recommended_price"],
-                "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            # 列は app.utils.listing_helpers.RESULT_FIELDNAMES が唯一の定義。
+            # product_url が無いと check_inventory / update_listed_prices が仕入先を辿れない
+            results.append(build_result_row(
+                product, status, item_id,
+                processed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ))
 
             # 連続失敗の通知 (status が retriable 系で 2 回 retry も失敗した時のみ)
             # silent skip 設定: SLACK_WEBHOOK_URL / SMTP_HOST 未設定なら何も送られない
@@ -3319,7 +3321,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     result_path = os.path.join(OUTPUT_DIR, f"{datetime.now():%Y-%m-%d}_auto_listing_results.csv")
     with open(result_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=["status","item_id","title","vendor","price","processed_at"])
+        w = csv.DictWriter(f, fieldnames=list(RESULT_FIELDNAMES), extrasaction="ignore")
         w.writeheader(); w.writerows(results)
 
     pub = sum(1 for r in results if r["status"]=="published")

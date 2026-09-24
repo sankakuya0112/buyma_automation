@@ -58,6 +58,7 @@ from app.core.pricing import (
     PricingParams, calculate_pricing,
     MarketStats, decide_final_price,
 )
+from app.core.sources import get_source
 
 HISTORY_PATH = PROJECT_ROOT / "data" / "price_history.json"
 RESULTS_GLOB = PROJECT_ROOT / "outputs" / "reports" / "*_auto_listing_results.csv"
@@ -106,6 +107,22 @@ def fetch_current_source_price(handle: str) -> dict:
         "product_type": product.get("product_type", ""),
         "title": product.get("title", ""),
     }
+
+
+def build_pricing_params(latest: dict) -> PricingParams:
+    """最新の baseblu 価格から、仕入先レイヤ経由で PricingParams を組み立てる。
+
+    カード手数料・国内送料・通関手数料・固定国際送料は get_pricing_params() でしか
+    入らないので、PricingParams を直接作らないこと。
+    仕入先は source_name 列ではなく baseblu 固定: 最新価格は baseblu の商品 JSON
+    からしか取っていないため (fetch_current_source_price)、価格とコスト体系を揃える。
+    title は baseblu の英語タイトル (靴の革/布判定のキーワードが英語のため)。
+    """
+    return get_source("baseblu").get_pricing_params(
+        sale_price=latest["price_eur"],
+        category=latest.get("product_type", "") or "",
+        title=latest.get("title", "") or "",
+    )
 
 
 def load_history() -> dict:
@@ -348,11 +365,7 @@ def run(dry_run: bool, threshold: int, throttle: float, limit):
             time.sleep(throttle)
             continue
 
-        params = PricingParams(
-            source_price=latest["price_eur"],
-            currency="EUR",
-            category=latest.get("product_type", ""),
-        )
+        params = build_pricing_params(latest)
         result = calculate_pricing(params)
         decision = decide_final_price(result)
 

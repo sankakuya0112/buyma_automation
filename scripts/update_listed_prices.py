@@ -21,10 +21,12 @@ Phase 2-3: 「価格追従」。仕入先 (baseblu) の値下げに追従でき�
 データソース:
     1. 出品記録: outputs/reports/*_auto_listing_results.csv (item_id, product_url)
     2. 最新仕入値: baseblu Shopify API の /products/{handle}.json 現在価格
-    3. (任意) 市場相場: data/market_cache/*.json
+    3. (任意) 市場相場: outputs/reports/*_market_prices.json
+       (--market で指定。省略時は最新を自動選択、無ければ相場なしで判定)
 
     1 から handle を抽出 → 2 で最新価格取得 → pricing.calculate_pricing で
-    最新原価を計算 → decide_final_price で新売価を算出 → 現売価との差分を表示。
+    最新原価を計算 → decide_final_price(market, category=product_type) で
+    新売価を算出 → 現売価との差分を表示。
 
 状態管理:
     data/price_history.json - 過去の価格更新履歴
@@ -59,6 +61,9 @@ from app.core.pricing import (
     MarketStats, decide_final_price,
 )
 from app.core.sources import get_source
+from app.utils.reports import latest_report
+# scripts/ は上で sys.path に入れてあるので、filter の相場 lookup をそのまま再利用する
+from filter_baseblu_profitable import get_market_stats, load_market_data
 
 HISTORY_PATH = PROJECT_ROOT / "data" / "price_history.json"
 RESULTS_GLOB = PROJECT_ROOT / "outputs" / "reports" / "*_auto_listing_results.csv"
@@ -123,6 +128,30 @@ def build_pricing_params(latest: dict) -> PricingParams:
         category=latest.get("product_type", "") or "",
         title=latest.get("title", "") or "",
     )
+
+
+def decide_for_record(record: dict, latest: dict, market_data: dict | None = None):
+    """出品記録 1 件を「最新仕入値 + 相場 + カテゴリ別の最低利益」で再評価する (Playwright 非依存)。
+
+    filter_baseblu_profitable.py と同じ形で decide_final_price を呼ぶ。
+    2026-09-24 以前は相場もカテゴリも渡しておらず、競合が多い商品を高いまま、
+    靴・服の最低利益 (¥10,000) を無視して判定していた。
+
+    market_data は fetch_buyma_market_prices.py の JSON ({} なら no_market_data)。
+    旧形式の出品記録には sku / source_name 列が無いので、その場合は vendor|title で相場を引く。
+    戻り値は (PricingResult, FinalPriceDecision)。
+    """
+    result = calculate_pricing(build_pricing_params(latest))
+    market = get_market_stats(
+        market_data or {},
+        record.get("vendor", ""),
+        record.get("title", ""),
+        sku=record.get("sku", ""),
+        source_name=record.get("source_name", ""),
+    )
+    category = latest.get("product_type", "") or record.get("product_type", "") or ""
+    decision = decide_final_price(result, market=market, category=category)
+    return result, decision
 
 
 def load_history() -> dict:
@@ -337,10 +366,12 @@ def update_listing_price(page, item_id: str, new_price: int, dump: bool = True) 
     return False
 
 
-def run(dry_run: bool, threshold: int, throttle: float, limit):
+def run(dry_run: bool, threshold: int, throttle: float, limit, market_data: dict | None = None):
     print("=" * 50)
     print(f"💰 価格追従 {'(ドライラン)' if dry_run else '(実行モード)'}")
     print("=" * 50)
+    if not market_data:
+        print("  ℹ️ 相場データなし: 競合を見ずに目標価格で判定します (--market で指定可)")
 
     records = load_listing_records()
     if limit:
@@ -376,13 +407,11 @@ def run(dry_run: bool, threshold: int, throttle: float, limit):
             time.sleep(throttle)
             continue
 
-        params = build_pricing_params(latest)
-        result = calculate_pricing(params)
-        decision = decide_final_price(result)
+        result, decision = decide_for_record(r, latest, market_data)
 
         if decision.action == "skip":
             summary["skip"] += 1
-            print(f"  [{i}/{len(records)}] {item_id} ⚠️ 赤字化、要停止検討 (reason={decision.reason})")
+            print(f"  [{i}/{len(records)}] {item_id} ⚠️ 出品継続が難しい判定、要停止検討 (reason={decision.reason})")
             time.sleep(throttle)
             continue
 
@@ -402,6 +431,9 @@ def run(dry_run: bool, threshold: int, throttle: float, limit):
             "target_price_jpy": result.selling_price_jpy,
             "final_price_jpy": new_price,
             "current_listed_price_jpy": old_price,
+            "decision_reason": decision.reason,
+            "market_median_jpy": decision.market_median_jpy,
+            "market_sample_count": decision.market_sample_count,
         }
         time.sleep(throttle)
 
@@ -461,7 +493,16 @@ def run(dry_run: bool, threshold: int, throttle: float, limit):
         browser.close()
 
 
-def main():
+def resolve_market_path(market_arg: str | None) -> str | None:
+    """--market の解決。省略時は最新の *_market_prices.json、'' や存在しないパスなら None (相場なし)。"""
+    if market_arg is None:
+        return latest_report("market_prices.json")
+    if market_arg and os.path.exists(market_arg):
+        return market_arg
+    return None
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="出品中商品の価格追従")
     parser.add_argument("--dry-run", action="store_true", help="差分検出のみ (default)")
     parser.add_argument("--execute", action="store_true", help="BUYMA で価格を実際に更新")
@@ -469,8 +510,14 @@ def main():
                         help="更新候補とする価格差分 (円、default 3000)")
     parser.add_argument("--throttle", type=float, default=0.8)
     parser.add_argument("--limit", type=int)
-    args = parser.parse_args()
-    run(dry_run=not args.execute, threshold=args.threshold, throttle=args.throttle, limit=args.limit)
+    parser.add_argument("--market", help="相場 JSON (fetch_buyma_market_prices.py の出力)。"
+                        "省略時は outputs/reports の最新 *_market_prices.json、'' で相場なし")
+    args = parser.parse_args(argv)
+    market_path = resolve_market_path(args.market)
+    if market_path:
+        print(f"📈 相場: {market_path}")
+    run(dry_run=not args.execute, threshold=args.threshold, throttle=args.throttle, limit=args.limit,
+        market_data=load_market_data(market_path))
 
 
 if __name__ == "__main__":

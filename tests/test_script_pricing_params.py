@@ -78,6 +78,49 @@ class UpdateListedPricesParamsTest(unittest.TestCase):
         self.assertEqual(params.category, "")
 
 
+class UpdateListedPricesDecisionTest(unittest.TestCase):
+    """価格追従の判定 (2026-09-24: 相場もカテゴリも渡さず decide_final_price(result) だけだった)。"""
+
+    RECORD = {"vendor": "GUCCI", "title": "Leather Tote Bag"}
+    LATEST = {"price_eur": 200.0, "product_type": "Bags", "title": "Leather Tote Bag"}
+
+    def test_category_floor_reaches_decision(self):
+        _, bags = update_listed_prices.decide_for_record(self.RECORD, self.LATEST, {})
+        _, shoes = update_listed_prices.decide_for_record(
+            self.RECORD, {**self.LATEST, "product_type": "FOOTWEAR", "title": "Canvas Sneakers"}, {})
+        self.assertEqual(bags.floor_profit_jpy, 8000)      # BAGS: max(¥8,000, 6%)
+        self.assertEqual(shoes.floor_profit_jpy, 10000)    # FOOTWEAR: max(¥10,000, 8%)
+        self.assertEqual(bags.reason, "no_market_data")
+
+    def test_market_data_changes_the_price(self):
+        market = {"GUCCI|leather tote bag": {"sample_count": 12, "median_jpy": 95000, "min_jpy": 90000,
+                                              "max_jpy": 120000, "brand_match_confidence": 1.0}}
+        result, decision = update_listed_prices.decide_for_record(self.RECORD, self.LATEST, market)
+        self.assertEqual(decision.reason, "price_leader")           # 競合 12 件 → 最安値の 3% 下
+        self.assertEqual(decision.final_price_jpy, 87300)
+        self.assertNotEqual(decision.final_price_jpy, result.selling_price_jpy)
+        self.assertEqual(decision.market_sample_count, 12)
+        self.assertEqual(decision.market_median_jpy, 95000)
+
+    def test_cheap_market_yields_skip_not_loss(self):
+        market = {"GUCCI|leather tote bag": {"sample_count": 12, "median_jpy": 50000, "min_jpy": 40000,
+                                              "max_jpy": 60000, "brand_match_confidence": 1.0}}
+        _, decision = update_listed_prices.decide_for_record(self.RECORD, self.LATEST, market)
+        self.assertEqual(decision.action, "skip")
+        self.assertEqual(decision.reason, "high_competition")
+
+    def test_resolve_market_path(self):
+        import tempfile
+        tmp = Path(tempfile.mkdtemp())
+        existing = tmp / "2026-09-24_market_prices.json"
+        existing.write_text("{}", encoding="utf-8")
+        self.assertEqual(update_listed_prices.resolve_market_path(str(existing)), str(existing))
+        self.assertIsNone(update_listed_prices.resolve_market_path(""))
+        self.assertIsNone(update_listed_prices.resolve_market_path(str(tmp / "missing.json")))
+        auto = update_listed_prices.resolve_market_path(None)
+        self.assertTrue(auto is None or auto.endswith("_market_prices.json"))
+
+
 class GenerateBuymaCsvParamsTest(unittest.TestCase):
     def _build(self, row=None, **kw):
         args = dict(

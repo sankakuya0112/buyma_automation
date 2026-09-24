@@ -37,6 +37,12 @@ class BaseSource(ABC):
     purchase_fx_fee_rate: float = 0.022
     # 国内発送費 (出品者→購入者)。宅急便コンパクト〜宅急便 60-80 サイズ想定。
     domestic_shipping_jpy: float = 1000.0
+    # 通関の立替手数料 = max(最低額, 率 × (関税 + 輸入消費税))。DDU 仕入れのときだけ掛かる
+    # (DDP は関税 0 なので自動的に 0)。DHL 日本 2026 料金表・受取人払い (アカウントなし):
+    # 税込 2,200 円 または 立替額の 2% の高い方。
+    # ※ 3,300 円は「現地税金元払い (発送人払い)」の料金で、受取人払いには当たらない。
+    customs_handling_min_jpy: float = 2200.0
+    customs_handling_rate: float = 0.02
 
     @abstractmethod
     def fetch_products(self, limit: Optional[int] = None) -> Iterable[dict]:
@@ -62,11 +68,13 @@ class BaseSource(ABC):
         self,
         sale_price: float,
         category: str = "",
+        title: str = "",
     ) -> "PricingParams":
         """source の currency / landed_cost_basis / 実コストを反映した PricingParams を返す。
 
         filter スクリプトから「source_name 列 → BaseSource → PricingParams」の流れで
         landed_cost_basis ハードコードを解消するために使う。
+        title は靴が革か布かの判定 (関税率) に使う。
         """
         from app.core.pricing import PricingParams, resolve_exchange_rate
 
@@ -84,6 +92,9 @@ class BaseSource(ABC):
             shipping_jpy=shipping_jpy,
             purchase_fx_fee_rate=self.purchase_fx_fee_rate,
             domestic_shipping_jpy=self.domestic_shipping_jpy,
+            title=title,
+            customs_handling_min_jpy=self.customs_handling_min_jpy,
+            customs_handling_rate=self.customs_handling_rate,
         )
 
     def metadata_dict(self) -> dict:

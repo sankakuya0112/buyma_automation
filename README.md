@@ -2,6 +2,27 @@
 
 海外ECサイト（BaseBlu）のセール商品をBUYMAに自動出品するシステムです。
 
+> **2026-09 更新: AI オートパイロット**
+> 取得 → 利益計算 → 相場 → AI 補強 (出品文/カテゴリ/審査) → 下書き を 1 コマンドで回せます。
+> モデルは用途別に使い分け (Haiku / Sonnet / Fable)、同じ入力は二度課金しません。
+>
+> ```bash
+> python3 scripts/run_autopilot.py --test      # まずモックで通し確認
+> python3 scripts/run_autopilot.py             # 実データ (Mac で実行)
+> python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 3   # 上位 3 件を下書き
+> ```
+> 詳細と費用の目安: `docs/AI_MODEL_POLICY.md`
+>
+> **仕入先を増やす**: `data/sources.json` に設定を 1 ブロック足すだけで新しい
+> Shopify 系サイトを追加できます (コードを書く必要はありません)。
+>
+> ```bash
+> python3 scripts/shopify_sales_to_csv.py --list                  # 設定済み一覧
+> python3 scripts/shopify_sales_to_csv.py --source <名前> --probe # 取得できるか判定
+> python3 scripts/run_autopilot.py --source <名前>                # 全工程を実行
+> ```
+> 候補サイトの調査結果: `docs/strategy/SUPPLIER_CANDIDATES_2026-09.md`
+
 ---
 
 ## フォルダ構成

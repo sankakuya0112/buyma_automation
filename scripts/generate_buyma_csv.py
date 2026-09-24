@@ -3,7 +3,7 @@ scripts/generate_buyma_csv.py
 ==============================
 BaseBlu のスクレイプ済み CSV から BUYMA 取込用 34 列 CSV を生成する。
 
-PROFIT_FIRST フェーズ 1 の成果物：手動アップロードで売上を立てるための
+手動アップロードで売上を立てるための
 統合パイプライン。app.core.pricing で統一された利益計算と、
 app.core.csv_writer で PLUSELECT 準拠の 34 列形式を使う。
 

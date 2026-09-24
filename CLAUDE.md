@@ -7,11 +7,16 @@
 
 ## プロジェクト概要
 
-BUYMA 自動出品ツール。baseblu.com からセール商品をスクレイピングし、
-価格計算・翻訳を経て BUYMA に自動出品するパイプライン。
+BUYMA 出品支援ツール。海外 EC サイト (baseblu ほか、`data/sources.json` で追加可) の
+セール商品を取得し、原価計算・相場照合・AI 補強を経て BUYMA に**下書き**として登録する
+パイプライン。**公開は人が行う** (下書き = ツール / 公開 = 人間)。当面の目標は
+「まず 1 件売る」(`docs/strategy/FIRST_SALE_SPRINT.md`)。
 
-**メインスクリプト**: `scripts/buyma_auto_listing.py`  
-**ブランチ**: `claude/add-test-flag-HibqE`
+**全工程の入口**: `scripts/run_autopilot.py` (① 取得 → ② 利益 → ③ 相場 → ④ 相場連動 → ⑤ AI → ⑥ 下書き)  
+**下書き作成の本体**: `scripts/buyma_auto_listing.py` (工程 ⑥、3,000 行超・BUYMA 画面の罠対策の塊)  
+**本線ブランチ**: `claude/add-test-flag-HibqE`。セッションごとの作業ブランチから PR で取り込む  
+**旧世代コード**: 2026-09-24 に第 1 世代 (Selenium) と第 2 世代 (SQLite/SQLAlchemy の
+`run_pipeline.py` / `app/scouts|listing|governors|guard`) を削除済み。git 履歴には残っている
 
 ---
 
@@ -158,8 +163,14 @@ JS の `button.click()` では React ボタンが反応しないケース多数�
 ### 14. CSV パイプラインから渡るデータ構造
 
 ```
-baseblu_sales_to_csv.py → filter_baseblu_profitable.py → buyma_auto_listing.py
+baseblu_sales_to_csv.py (または shopify_sales_to_csv.py --source X)
+  → filter_baseblu_profitable.py            *_<source>_profitable_products.csv
+  → fetch_buyma_market_prices.py --source X  *_market_prices.json
+  → filter_baseblu_profitable.py --market …  (相場連動で再判定)
+  → ai_enrich_candidates.py --source X       (同じ CSV に ai_* / category_path 列を追加)
+  → buyma_auto_listing.py --csv … --source X (下書き保存 → *_auto_listing_results.csv)
 ```
+run_autopilot.py がこの順に呼ぶ。最新ファイルの解決は `app/utils/reports.latest_report`。
 
 - **SKU**: variant SKU から末尾 `_<option1 値>` を剥がして製品レベルに正規化。
   `description_en` に "Sku: XXX" と明記されている場合はそちらを優先
@@ -227,6 +238,12 @@ title 中のキーワードで 3階層パス（parent > middle > leaf）を決�
 - `translate_color_to_jp(color)` — 英語色 → BUYMA 系統ラベル
 - `normalize_size_for_buyma`, `classify_size_category`, `format_size_name_for_listing`
 - 定数: `COLOR_JA_MAP`, `_IT_SIZE_RANGES`, `_ALPHA_SIZE_TO_JP`, `_EU_SHOE_TO_JP_CM`
+
+- 出品結果 CSV の列定義 `RESULT_FIELDNAMES` と `build_result_row()` (2026-09-24。product_url が
+  無いと check_inventory / update_listed_prices が仕入先を辿れない)
+- `app/utils/reports.py`: `latest_report(kind, source=None, reports_dir=None)` —
+  outputs/reports の最新ファイル解決。**scripts/ に `glob("*_baseblu_…")` を書かない**
+  (2026-09-24 まで各所に baseblu 固定の glob があり、他仕入先や同日 2 仕入先で取り違えていた)
 
 `scripts/buyma_auto_listing.py` からはこれを import している。**新たに純粋な
 変換関数を書くときは scripts/ ではなく app/utils/ に配置**して `tests/test_listing_pure_functions.py`
@@ -344,7 +361,7 @@ CSV 列に `source_name` / `currency` / `landed_cost_basis` を出力する規�
 
 ### テスト実行
 ```bash
-python3 -m unittest discover tests        # 全件 (現状 535 ケース)
+python3 -m unittest discover tests        # 全件 (現状 528 ケース)
 python3 -m unittest tests.test_pricing -v  # 個別ファイル
 ```
 
@@ -357,7 +374,7 @@ CI (.github/workflows/test.yml) で push/PR 時に Python 3.11 + 3.12 マトリ�
 
 ### Claude Code サーバーでできること ✅
 - コードの編集・作成
-- DB 操作（SQLite）
+- SQLite (AI 応答キャッシュ data/ai_cache.sqlite のみ。業務データの DB は無い)
 - パッケージインストール（pip）
 - ロジックのテスト（モックデータ使用）
 - GitHub へのコミット・プッシュ
@@ -378,8 +395,8 @@ pypi.org・github.com 等の開発インフラのみ許可されている。
 cd ~/buyma_automation
 git pull origin claude/add-test-flag-HibqE
 pip3 install -r requirements.txt
-pip3 install playwright && playwright install chromium
-python3 scripts/run_pipeline.py --test
+python3 -m playwright install chromium
+python3 scripts/run_autopilot.py --test     # モック 5 件・ネット不要
 ```
 
 ---
@@ -387,7 +404,7 @@ python3 scripts/run_pipeline.py --test
 ## 失敗パターンと対策
 
 ### ❌ 失敗1: Claude Code サーバーから外部サイトにアクセスしようとした
-- **発生**: `python3 scripts/run_pipeline.py --test` を実行 → baseblu.com に接続できず失敗
+- **発生**: サーバー上で実データ取得 (当時の `run_pipeline.py --test`、現在なら `run_autopilot.py` の ①) を実行 → baseblu.com に接続できず失敗
 - **エラー**: `ProxyError: Tunnel connection failed: 403 Forbidden`
 - **原因**: Claude Code サーバーのネットワーク制限
 - **対策**: スクレイピング・出品はユーザーの Mac で実行するよう案内する。サーバーで実行しない
@@ -398,7 +415,7 @@ python3 scripts/run_pipeline.py --test
 - **対策**: サーバー上にある既存の Chromium を使用する
   - パス: `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`
   - `p.chromium.launch(executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome")`
-  - `config.chromium_executable_path` で管理している
+  - `app/core/config.py` の `chromium_executable_path` で管理している
 
 ### ❌ 失敗3: Mac から GitHub へ push しようとしてパスワード認証を求められた
 - **発生**: `git push` → GitHub ユーザー名・パスワードを求められた
@@ -428,19 +445,18 @@ python3 scripts/run_pipeline.py --test
 ## 成功パターン
 
 ### ✅ 成功1: モックデータを使ったパイプラインテスト
-- `python3 scripts/run_all.py --test` → 正常動作
-- モックデータ3件で価格計算・翻訳・CSV保存まで完走
+- `python3 scripts/run_autopilot.py --test` → 正常動作 (ネット・API キー不要)
+- モック 5 件で取得 → 利益計算 → (相場スキップ) → AI 補強 (キー無しならスキップ) まで完走
 
-### ✅ 成功2: SQLAlchemy DB の初期化・モデル定義
-- `app/core/models.py` の8テーブル定義が正常動作
-- `init_db()` で SQLite DB を初期化できることを確認済み
+### ✅ 成功2: 全件テストの緑を保つ運用
+- `python3 -m unittest discover -s tests` を commit 前に必ず実行 (CI は 3.11 / 3.12)
 
 ### ✅ 成功3: 全モジュールのインポート確認
 - `app/` 以下の全モジュールが正常にインポートできることを確認済み
 
 ### ✅ 成功4: 既存 Chromium を使った Playwright 起動
 - `/opt/pw-browsers/chromium-1194/chrome-linux/chrome` で Playwright が動作することを確認
-- `executable_path` を `config.chromium_executable_path` で管理
+- `executable_path` を `app/core/config.py` の `chromium_executable_path` で管理
 
 ### ✅ 成功5: ファイル内容をチャットに貼り付けてもらう方法
 - GitHub push ができない場合でも、ファイル内容をチャットに貼り付けてもらうことで対応できた
@@ -501,7 +517,9 @@ python3 scripts/run_pipeline.py --test
 
 ---
 
-## 利益最優先の実装指示書
+## 当面の方針: まず 1 件売る
 
-ルートディレクトリの `PROFIT_FIRST_INSTRUCTIONS.md` に、利益を最優先とした
-フェーズ別タスク一覧・実装方針・運用ルールを記載済み。新規実装時はここを参照。
+`docs/strategy/FIRST_SALE_SPRINT.md` が現行の方針書。「ツールの完成」より
+「公開して実売のフィードバックを得る」を優先する (公開数 > 新機能開発)。
+判定基準は `app/core/decision_gate.py` に事前コミット済み。
+(旧 `PROFIT_FIRST_INSTRUCTIONS.md` は 2026-09-24 に削除。方針はこちらが引き継ぐ)

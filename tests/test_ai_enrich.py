@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -132,6 +133,18 @@ class EnrichTest(unittest.TestCase):
             w.writerows(_rows())
         self.assertEqual(enrich_mod.main(["--input", str(tmp), "--dry-run", "--limit", "1"]), 0)
         self.assertEqual(enrich_mod.main(["--input", "/nonexistent.csv"]), 1)
+
+
+class LatestCsvTest(unittest.TestCase):
+    def test_latest_profitable_csv_honours_source(self):
+        tmp = Path(tempfile.mkdtemp())
+        for name in ("2026-01-01_baseblu_profitable_products.csv", "2026-01-01_antonioli_profitable_products.csv"):
+            (tmp / name).write_text("title\n", encoding="utf-8")
+        with patch.object(enrich_mod, "OUTPUT_DIR", tmp):
+            self.assertTrue(enrich_mod.latest_profitable_csv("antonioli").endswith("_antonioli_profitable_products.csv"))
+            self.assertTrue(enrich_mod.latest_profitable_csv("baseblu").endswith("_baseblu_profitable_products.csv"))
+            self.assertIsNone(enrich_mod.latest_profitable_csv("slamjam"))
+            self.assertEqual(enrich_mod.main(["--source", "slamjam", "--dry-run"]), 1)
 
 
 if __name__ == "__main__":

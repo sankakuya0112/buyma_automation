@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -140,6 +141,36 @@ DEFAULT_DUTY_RATES: dict[str, float] = {
 }
 DEFAULT_DUTY_RATE = 0.10  # マスタに無いカテゴリのフォールバック
 
+# 革靴 (甲が革の靴) の関税: 「30% または 1 足 4,300 円の高い方」(関税割当の枠外税率)。
+# 個人・小口輸入はこの税率になる。EU 産は日EU EPA で下がる余地があるが、原産地申告書類が
+# 必要で自動では適用されないため、安全側でこの税率を使う (2026-09 確認)。
+# 出典: https://hunade.com/kawagutsu-zeiritsu
+#       https://www.meti.go.jp/policy/external_economy/trade_control/03_import/01_kanwari/kanwari_qa.html
+LEATHER_FOOTWEAR_DUTY_RATE = 0.30
+LEATHER_FOOTWEAR_DUTY_MIN_JPY = 4300.0
+
+# 靴かどうかの判定 (category = 仕入先の product_type 等に対して単語単位で一致)。
+# 単語単位にするのは "Bootcut Jeans" (boot) などの誤判定を避けるため。
+# "oxford" は Oxford シャツと衝突するので入れない。
+FOOTWEAR_CATEGORY_KEYWORDS: tuple[str, ...] = (
+    "footwear", "shoe", "boot", "bootie", "sneaker", "trainer", "loafer", "pump",
+    "sandal", "mule", "heel", "slipper", "espadrille", "moccasin",
+    "derby", "derbies", "ballerina", "ballet flat", "slingback", "clog", "lace-up",
+)
+_FOOTWEAR_CATEGORY_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in FOOTWEAR_CATEGORY_KEYWORDS) + r")s?\b"
+)
+# 布・ゴム製を示す語 (タイトル + category に対して部分一致)。
+# 革を示す語が 1 つでもあれば革靴扱い (例: "leather and canvas sneakers")。
+NON_LEATHER_FOOTWEAR_KEYWORDS: tuple[str, ...] = (
+    "canvas", "knit", "mesh", "nylon", "fabric", "textile", "satin",
+    "silk", "cotton", "denim", "raffia", "rubber", "pvc", "neoprene",
+)
+LEATHER_KEYWORDS: tuple[str, ...] = (
+    "leather", "suede", "calfskin", "nappa", "lambskin", "patent",
+    "nubuck", "kidskin", "goatskin", "shearling",
+)
+
 
 # ---------------------------------------------------------------------------
 # データクラス
@@ -174,6 +205,14 @@ class PricingParams:
     # 国内発送費 (BUYMA 出品者→購入者、送料込み出品が前提)。
     # default 0.0 で後方互換。Source.get_pricing_params() が実値を注入する。
     domestic_shipping_jpy: float = 0.0
+    # 商品名 (靴が革か布かの判定に使う)。空なら靴は革扱い (安全側)。
+    title: str = ""
+    # 1 点あたりの最低関税額 (革靴の 4,300 円など)。None → resolve_duty() から推定。
+    duty_min_jpy: Optional[float] = None
+    # 通関の立替手数料 = max(最低額, 率 × (関税 + 輸入消費税))。DDU のときだけ掛かる。
+    # default 0 で後方互換。Source.get_pricing_params() が実値を注入する。
+    customs_handling_min_jpy: float = 0.0
+    customs_handling_rate: float = 0.0
 
 
 @dataclass
@@ -202,6 +241,8 @@ class PricingResult:
     landed_cost_basis: str = "DDU"                  # "DDU" or "DDP"
     purchase_fx_fee_jpy: float = 0.0                # 海外決済手数料 (円)
     domestic_shipping_jpy: float = 0.0              # 国内発送費 (円)
+    customs_handling_jpy: float = 0.0               # 通関の立替手数料 (円)
+    duty_min_jpy: float = 0.0                       # 適用した 1 点あたり最低関税額 (円)
 
     def is_profitable(self, min_profit_jpy: float = 3000.0) -> bool:
         """利益額が閾値を超えているか。"""
@@ -505,6 +546,33 @@ def resolve_duty_rate(
     return DEFAULT_DUTY_RATE
 
 
+def is_footwear_category(category: str) -> bool:
+    """category (product_type 等) が靴を指すか。"""
+    return bool(_FOOTWEAR_CATEGORY_RE.search((category or "").lower()))
+
+
+def is_non_leather_footwear(category: str, title: str = "") -> bool:
+    """布・ゴム製の靴と判断できるか。革を示す語が 1 つでもあれば False。
+
+    判断材料が無い (タイトル空など) 場合も False = 革扱い (原価を高く見積もる安全側)。
+    """
+    text = f"{category or ''} {title or ''}".lower()
+    if any(k in text for k in LEATHER_KEYWORDS):
+        return False
+    return any(k in text for k in NON_LEATHER_FOOTWEAR_KEYWORDS)
+
+
+def resolve_duty(category: str, title: str = "") -> tuple[float, float]:
+    """(関税率, 1 点あたり最低関税額 円) を返す。
+
+    - 革靴 (靴カテゴリで布製と判断できないもの) → 30% / 最低 4,300 円
+    - それ以外 → resolve_duty_rate() の税率 / 最低額 0
+    """
+    if is_footwear_category(category) and not is_non_leather_footwear(category, title):
+        return LEATHER_FOOTWEAR_DUTY_RATE, LEATHER_FOOTWEAR_DUTY_MIN_JPY
+    return resolve_duty_rate(category), 0.0
+
+
 def resolve_weight(
     category: str,
     weights: dict[str, float] = DEFAULT_WEIGHT_KG,
@@ -551,9 +619,10 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     計算フロー:
         1. VAT 還付後の仕入値（円）= source × exchange × (1 - vat_refund)
         2. 国際送料（円）       = 重量 × 単価 または指定値
-        3. 輸入関税（円）       = (仕入値 + 送料) × 関税率
+        3. 輸入関税（円）       = max((仕入値 + 送料) × 関税率, 最低関税額)
         4. 輸入消費税（円）     = (仕入値 + 送料 + 関税) × 10%
-        5. 総仕入原価（円）     = 仕入値 + 送料 + 関税 + 消費税
+        4b. 通関立替手数料（円）= max(最低額, 率 × (関税 + 消費税))  ※DDU のみ
+        5. 総仕入原価（円）     = 仕入値 + 送料 + 関税 + 消費税 + 立替手数料 + 諸経費
         6. 売価（円）           = 原価 × (1 + 目標利益率) / (1 - 手数料率合計)
                                   → 100 円単位に切り上げ
         7. 実利益（円）         = 売価 - 手数料 - 原価
@@ -568,7 +637,13 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         ValueError: 手数料合計が 99% 以上
     """
     exchange_rate = params.exchange_rate or resolve_exchange_rate(params.currency)
-    duty_rate = params.duty_rate if params.duty_rate is not None else resolve_duty_rate(params.category)
+    if params.duty_rate is not None:
+        # 明示指定された税率は尊重する。最低額は明示された場合のみ
+        duty_rate = params.duty_rate
+        duty_min_jpy = float(params.duty_min_jpy or 0.0)
+    else:
+        duty_rate, auto_min = resolve_duty(params.category, params.title)
+        duty_min_jpy = float(params.duty_min_jpy) if params.duty_min_jpy is not None else auto_min
     weight_kg = params.weight_kg if params.weight_kg is not None else resolve_weight(params.category)
     shipping_jpy = (
         params.shipping_jpy
@@ -597,16 +672,25 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     #             二重計上を防ぐためゼロ扱い
     # DDU の場合: 日本到着時に別途課税されるため通常通り計算
     basis = (params.landed_cost_basis or "DDU").upper()
+    customs_handling_jpy = 0.0
     if basis == "DDP":
         customs_jpy = 0.0
         consumption_tax_jpy = 0.0
     else:
-        customs_jpy = (net_source_jpy + shipping_jpy) * duty_rate
+        customs_jpy = max((net_source_jpy + shipping_jpy) * duty_rate, duty_min_jpy)
         consumption_tax_jpy = (net_source_jpy + shipping_jpy + customs_jpy) * params.consumption_tax_rate
+        # 4b. 通関の立替手数料 (配送業者が関税・消費税を立て替えた分に掛かる)
+        taxes_jpy = customs_jpy + consumption_tax_jpy
+        if taxes_jpy > 0 and (params.customs_handling_min_jpy > 0 or params.customs_handling_rate > 0):
+            customs_handling_jpy = max(
+                params.customs_handling_min_jpy,
+                taxes_jpy * params.customs_handling_rate,
+            )
 
     # 5. 総原価 (振込手数料も原価に含める: BUYMA → ショッパー入金時に差し引かれる)
     total_cost_jpy = (
         net_source_jpy + shipping_jpy + customs_jpy + consumption_tax_jpy
+        + customs_handling_jpy
         + purchase_fx_fee_jpy + params.domestic_shipping_jpy
         + BANK_TRANSFER_FEE_JPY
     )
@@ -647,4 +731,6 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         landed_cost_basis=basis,
         purchase_fx_fee_jpy=round(purchase_fx_fee_jpy, 2),
         domestic_shipping_jpy=round(params.domestic_shipping_jpy, 2),
+        customs_handling_jpy=round(customs_handling_jpy, 2),
+        duty_min_jpy=round(duty_min_jpy, 2),
     )

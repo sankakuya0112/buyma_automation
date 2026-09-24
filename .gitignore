@@ -41,3 +41,7 @@ chromedriver.exe
 
 # BUYMA credentials (real values live only on the user's Mac)
 config.json
+
+# AI 応答キャッシュ・使用量台帳 (Mac ローカルの実績。共有しない)
+data/ai_cache.sqlite
+data/ai_usage.jsonl

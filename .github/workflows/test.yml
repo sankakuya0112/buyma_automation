@@ -31,7 +31,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # 軽量な依存のみ install。playwright のブラウザは不要 (テストは playwright 非使用)
-          pip install requests sqlalchemy python-dotenv
+          pip install requests sqlalchemy python-dotenv anthropic
 
       - name: Run unittest discover
         run: |

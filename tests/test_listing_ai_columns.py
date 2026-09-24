@@ -107,6 +107,37 @@ class LoadProductsTest(unittest.TestCase):
         self.assertEqual(a["category_path"], "レディースファッション > バッグ・カバン > ハンドバッグ")
         self.assertEqual(products[1]["ai_verdict"], "")
 
+    def _write_profitable(self, path: Path, title: str) -> None:
+        fields = ["title", "vendor", "final_price_jpy", "selling_price_jpy", "expected_profit_jpy", "profit_jpy",
+                  "total_cost_jpy", "sale_price_eur", "action", "opportunity_score"]
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerow({"title": title, "vendor": "GUCCI", "final_price_jpy": "100000", "selling_price_jpy": "100000",
+                        "expected_profit_jpy": "20000", "profit_jpy": "20000", "total_cost_jpy": "70000",
+                        "sale_price_eur": "300", "action": "list", "opportunity_score": "500"})
+
+    def test_load_products_respects_source_and_explicit_csv(self):
+        """同日に 2 仕入先の表があっても、--source / --csv で読む表が決まる。"""
+        tmp = Path(tempfile.mkdtemp())
+        self._write_profitable(tmp / "2026-01-01_baseblu_profitable_products.csv", "From baseblu")
+        self._write_profitable(tmp / "2026-01-01_italist_profitable_products.csv", "From italist")
+        with patch.object(bal, "OUTPUT_DIR", str(tmp)):
+            self.assertEqual([p["title"] for p in bal.load_products(source="baseblu")], ["From baseblu"])
+            self.assertEqual([p["title"] for p in bal.load_products(source="italist")], ["From italist"])
+            explicit = str(tmp / "2026-01-01_baseblu_profitable_products.csv")
+            self.assertEqual([p["title"] for p in bal.load_products(csv_path=explicit, source="italist")],
+                             ["From baseblu"])
+            with self.assertRaises(SystemExit):
+                bal.load_products(source="slamjam")
+
+
+class ResultFieldnamesTest(unittest.TestCase):
+    def test_script_uses_shared_result_fieldnames(self):
+        from app.utils import listing_helpers
+        self.assertEqual(list(bal.RESULT_FIELDNAMES), list(listing_helpers.RESULT_FIELDNAMES))
+        self.assertIn("product_url", bal.RESULT_FIELDNAMES)
+
 
 if __name__ == "__main__":
     unittest.main()

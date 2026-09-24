@@ -1,5 +1,10 @@
 # PHASE3: Ranker（商品ランキング・戦略決定）
 
+> ⚠️ **2026-04 時点の設計書 (歴史的資料)。** ここで前提にしている第 2 世代コード
+> (`app/scouts` / `app/guard` / `app/core/models.py` / `scripts/run_pipeline.py` など) は 2026-09-24 に削除済み。
+> 現行の実装と使い方は `README.md`、作業状況は `HANDOFF.md` を参照。
+
+
 ## 概要
 
 利益計算後、商品を3つの "Lane"（レーン）に分類し、出品戦略を決定します：

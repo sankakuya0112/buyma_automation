@@ -1,5 +1,10 @@
 # PHASE5: Scout 拡張（新規仕入れ先サイト統合）
 
+> ⚠️ **2026-04 時点の設計書 (歴史的資料)。** ここで前提にしている第 2 世代コード
+> (`app/scouts` / `app/guard` / `app/core/models.py` / `scripts/run_pipeline.py` など) は 2026-09-24 に削除済み。
+> 現行の実装と使い方は `README.md`、作業状況は `HANDOFF.md` を参照。
+
+
 ## 概要
 
 PHASE1 で構築した `BaseScraper` 抽象基底クラスを活用して、新規の仕入れ先サイトを順次追加します。

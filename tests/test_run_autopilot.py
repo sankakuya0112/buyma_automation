@@ -91,6 +91,36 @@ class BuildStepsTest(unittest.TestCase):
         market = next(s for s in steps if s["name"].startswith("③"))
         self.assertEqual(market["cmd"][-1], "5")
 
+    def test_enrich_and_draft_steps_carry_source(self):
+        """⑤⑥ は仕入先を渡す (同じ日に 2 仕入先を回すと名前順で後ろの表を読んでいた)。"""
+        steps = ap.build_steps(_args(source="antonioli", draft=2, skip_scrape=True, skip_market=True))
+        enrich = next(s for s in steps if s["name"].startswith("⑤"))
+        self.assertEqual(enrich["cmd"][enrich["cmd"].index("--source") + 1], "antonioli")
+        self.assertEqual(enrich["cmd"][-1], "30")          # --limit は末尾のまま
+        self.assertEqual(enrich["input_flag"], "--input")
+        draft = next(s for s in steps if s["name"].startswith("⑥"))
+        self.assertEqual(draft["cmd"][draft["cmd"].index("--source") + 1], "antonioli")
+        self.assertEqual(draft["input_flag"], "--csv")
+        self.assertIn("--yes", draft["cmd"])
+
+    def test_input_csv_args_passes_this_runs_csv(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "2026-09-24_baseblu_profitable_products.csv").write_text("vendor\n", encoding="utf-8")
+        (tmp / "2026-09-24_antonioli_profitable_products.csv").write_text("vendor\n", encoding="utf-8")
+        with patch.object(ap, "REPORTS", tmp):
+            args = ap.input_csv_args({"input_flag": "--input", "source": "antonioli"})
+            self.assertEqual(args[0], "--input")
+            self.assertTrue(args[1].endswith("_antonioli_profitable_products.csv"))
+            self.assertEqual(ap.input_csv_args({"input_flag": "--csv", "source": "slamjam"}), [])
+            self.assertEqual(ap.input_csv_args({"cmd": ["x"]}), [])
+
+    def test_market_step_carries_source(self):
+        """③ 相場取得は仕入先を渡す (渡さないと別仕入先の profitable CSV を読み得る)。"""
+        steps = ap.build_steps(_args(source="antonioli", market_limit=5))
+        market = next(s for s in steps if s["name"].startswith("③"))
+        self.assertEqual(market["cmd"][market["cmd"].index("--source") + 1], "antonioli")
+        self.assertEqual(market["cmd"][market["cmd"].index("--csv") + 1], "latest")
+
 
 class MockAndSummaryTest(unittest.TestCase):
     def test_mock_csv_uses_source_name(self):

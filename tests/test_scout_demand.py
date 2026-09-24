@@ -184,5 +184,15 @@ class WishExtractionTest(unittest.TestCase):
         self.assertEqual(stats["wish_max"], 0)
 
 
+class LatestSalesCsvTest(unittest.TestCase):
+    def test_latest_sales_csv_honours_source(self):
+        tmp = Path(tempfile.mkdtemp())
+        for name in ("2026-09-24_baseblu_sales_products_sorted.csv", "2026-09-24_antonioli_sales_products_sorted.csv"):
+            (tmp / name).write_text("title\n", encoding="utf-8")
+        self.assertTrue(scout_demand.latest_sales_csv("baseblu", tmp).endswith("_baseblu_sales_products_sorted.csv"))
+        self.assertTrue(scout_demand.latest_sales_csv("antonioli", tmp).endswith("_antonioli_sales_products_sorted.csv"))
+        self.assertIsNone(scout_demand.latest_sales_csv("slamjam", tmp))
+
+
 if __name__ == "__main__":
     unittest.main()

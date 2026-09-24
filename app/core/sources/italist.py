@@ -31,5 +31,6 @@ class ItalistSource(BaseSource):
 
     def fetch_products(self, limit: Optional[int] = None) -> Iterable[dict]:
         raise NotImplementedError(
-            "ItalistSource.fetch_products は scripts/italist_sales_to_csv.py を使用してください。"
+            "ItalistSource.fetch_products は未実装。"
+            "scripts/shopify_sales_to_csv.py --source italist を使用してください。"
         )

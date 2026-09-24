@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import os
 import statistics
 import sys
 from datetime import datetime
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs", "reports")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "outputs", "reports")
+
+from app.utils.reports import latest_report  # noqa: E402
 
 
 def _fmt_yen(n):
@@ -48,12 +51,9 @@ def _fmt_pct(n):
         return "?"
 
 
-def _latest_profitable_csv():
-    pattern = os.path.join(OUTPUT_DIR, "*_baseblu_profitable_products.csv")
-    files = sorted(glob.glob(pattern))
-    if not files:
-        return None
-    return files[-1]
+def _latest_profitable_csv(source=None):
+    """最新の profitable CSV (source で仕入先を絞る。省略時は全仕入先の最新)。"""
+    return latest_report("profitable_products.csv", source=source, reports_dir=OUTPUT_DIR)
 
 
 LEGACY_COLUMN_MAP = {
@@ -266,6 +266,7 @@ def save_audit_csv(rows, out_path):
 def main():
     parser = argparse.ArgumentParser(description="baseblu profitable CSV の価格内訳監査")
     parser.add_argument("--csv-path", help="対象 CSV (省略時は最新を自動選択)")
+    parser.add_argument("--source", help="仕入先名 (最新 CSV の自動選択をその仕入先に絞る)")
     parser.add_argument("--top", type=int, help="利益順上位 N 件のみ表示")
     parser.add_argument("--summary", action="store_true", help="サマリのみ表示")
     parser.add_argument("--csv", action="store_true", help="監査 CSV を別ファイルに出力")
@@ -273,7 +274,7 @@ def main():
                         help="この利益率未満を警告表示 (default: 10%%)")
     args = parser.parse_args()
 
-    csv_path = args.csv_path or _latest_profitable_csv()
+    csv_path = args.csv_path or _latest_profitable_csv(args.source)
     if not csv_path or not os.path.exists(csv_path):
         print("❌ profitable CSV が見つかりません。先に filter_baseblu_profitable.py を実行してください。")
         sys.exit(1)

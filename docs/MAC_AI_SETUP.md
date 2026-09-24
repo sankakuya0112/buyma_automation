@@ -46,7 +46,7 @@ Claude Code は Web 版だけでなく、**Mac 上で動くデスクトップア
 ターミナルで `cd ~/buyma_automation && claude` のあと、日本語で頼む:
 
 ```
-git pull してから、週次パイプライン (scripts/run_weekly.py) を実行して。
+git pull してから、オートパイロット (scripts/run_autopilot.py) を実行して。
 エラーが出たら原因を診断して、直せるものは直して再実行して。
 終わったら結果のサマリを教えて。
 ```
@@ -64,7 +64,8 @@ git pull してから、週次パイプライン (scripts/run_weekly.py) を実�
 
 | やりたいこと | Claude への頼み方 |
 |---|---|
-| 週次サイクル一式 | 「run_weekly.py を実行して。エラーは診断して」 |
+| 全工程一式 | 「run_autopilot.py を実行して。エラーは診断して」 |
+| 下書き 1 件 | 「run_autopilot.py --skip-scrape --skip-market --draft 1 を実行して」 |
 | 出品テスト 1 件 | 「下書きモードで 1 件だけ出品テストして (--draft --limit 1 --hold)」 |
 | 在庫チェック | 「check_inventory.py を dry-run で実行して、売切れ商品を教えて」 |
 | 修正を取り込む | 「git pull origin claude/add-test-flag-HibqE を実行して」 |
@@ -99,7 +100,8 @@ AI も介さず、Mac が自動で定期実行する方法。タイプ作業ゼ�
 
 ```bash
 # 毎週月曜 9:00 に週次パイプラインを自動実行する例 (crontab -e で追記)
-0 9 * * 1 cd ~/buyma_automation && /usr/bin/python3 scripts/run_weekly.py >> logs/weekly.log 2>&1
+0 9 * * 1 cd ~/buyma_automation && python3 scripts/run_autopilot.py >> logs/weekly.log 2>&1
+# ※ /usr/bin/python3 (システム Python) には pip3 で入れたパッケージが無いことがある。`which python3` の方を使う
 ```
 
 エラー通知は実装済みの notifier (Slack / メール) が拾います
@@ -107,14 +109,15 @@ AI も介さず、Mac が自動で定期実行する方法。タイプ作業ゼ�
 
 ---
 
-## 手入力が必要な場合の保険: run_weekly.py
+## 手入力が必要な場合の保険: run_autopilot.py
 
 AI を使わない日でも、覚えるコマンドは 1 つだけです:
 
 ```bash
-cd ~/buyma_automation && python3 scripts/run_weekly.py
+cd ~/buyma_automation && python3 scripts/run_autopilot.py            # 取得 → 利益 → 相場 → AI 補強
+cd ~/buyma_automation && python3 scripts/run_autopilot.py --no-ai    # AI を使わない場合
 ```
 
-これで「セール取得 → 利益フィルタ → 相場取得 → 相場連動フィルタ →
-需要分析」まで全部、正しい順序で自動実行されます。失敗した工程は
-コマンドとエラーが表示されるので、それを Claude に貼れば診断できます。
+失敗した工程はコマンドとエラーが表示されるので、それを Claude に貼れば診断できます。
+下書きは `--skip-scrape --skip-market --draft N` を付けて別に実行し、公開は BUYMA 管理画面で人が行います。
+(`scripts/run_weekly.py` は AI・下書きなしの旧版で、`--no-ai` とほぼ同じです)

@@ -17,13 +17,15 @@ CSV の color 列が空になっている商品について、
 
 import argparse
 import csv
-import glob
 import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.utils.reports import latest_report  # noqa: E402
 
 from baseblu_sales_to_csv import (  # noqa: E402
     _extract_color,
@@ -159,11 +161,10 @@ def main():
         return
 
     # 最新 CSV から対象行を選ぶ
-    candidates = sorted(glob.glob("outputs/reports/*_baseblu_profitable_products.csv"))
-    if not candidates:
+    csv_path = latest_report("profitable_products.csv", source="baseblu")
+    if not csv_path:
         print("[ERROR] outputs/reports/*_baseblu_profitable_products.csv が見つからない")
         return
-    csv_path = candidates[-1]
     print(f"[CSV] {csv_path}")
     row = pick_row(csv_path, index=args.index)
     if not row:

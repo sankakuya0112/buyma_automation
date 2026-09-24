@@ -1,5 +1,9 @@
 # プロジェクト現状地図（PROJECT_STATUS）
 
+> ⚠️ **2026-04-16 時点の記録 (歴史的資料)。** 現状は `README.md` (使い方) と `HANDOFF.md` (作業状況) を
+> 参照してください。ここに出てくる `run_pipeline.py` / `run_all.py` / `app/scouts` / `app/core/models.py` /
+> `extension/` / `PROFIT_FIRST_INSTRUCTIONS.md` は 2026-09-24 に削除済みです。
+
 最終更新: 2026-04-16（ブランチ `claude/add-test-flag-HibqE`）
 
 このドキュメントは「今このコードベースで何が動き、何が動かず、何が抜けているか」を
@@ -174,10 +178,9 @@ Mac 上で:
 
 ```bash
 # 1 件だけ下書き保存（公開しない）でテスト
-python3 scripts/buyma_auto_listing.py --draft --test
+python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 1
 
-# 成功したら複数件・実公開
-python3 scripts/buyma_auto_listing.py --from 1
+# 公開は BUYMA 管理画面で人が行う (自動公開はしない。2026-07 の方針)
 ```
 
 注意:

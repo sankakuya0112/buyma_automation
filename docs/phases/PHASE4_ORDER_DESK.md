@@ -1,5 +1,10 @@
 # PHASE4: Order Desk（受注管理・買付フロー）
 
+> ⚠️ **2026-04 時点の設計書 (歴史的資料)。** ここで前提にしている第 2 世代コード
+> (`app/scouts` / `app/guard` / `app/core/models.py` / `scripts/run_pipeline.py` など) は 2026-09-24 に削除済み。
+> 現行の実装と使い方は `README.md`、作業状況は `HANDOFF.md` を参照。
+
+
 ## 概要
 
 BUYMA で注文が入った際の一連の処理を自動化します。ただし **購入の最終承認は必ず人間が行います**。

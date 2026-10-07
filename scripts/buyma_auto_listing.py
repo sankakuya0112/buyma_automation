@@ -4,8 +4,9 @@ buyma_auto_listing.py (v4.2 — 2026-04 プロショッパー仕様)
 BUYMAへの自動出品スクリプト（統合版）
 
 ⚠️ 2026-10-07 以降: BUYMA の利用規約は許可のない外部プログラム・自動出品ツールを禁止している
-   ため、このスクリプトは既定で動かない。正規ルートは公式「一括出品 (CSV)」:
-       python3 scripts/generate_bulk_upload.py --limit 3   → https://www.buyma.com/my/sell/bulk/
+   ため、このスクリプトは既定で動かない。既定の手順は出品シートを見て本人が手入力 (2026-10-08〜):
+       python3 scripts/generate_listing_sheet.py --limit 3 → https://www.buyma.com/my/sell/new?tab=b
+   (一括出品 CSV generate_bulk_upload.py は一括出品編集の権限があるアカウントのみ。自動化は公式 API の承認後)
    どうしても旧ブラウザ下書きを使う場合だけ BUYMA_ALLOW_BROWSER_AUTOMATION=1 を本人が設定する。
    本公開 (--publish) と確認スキップ (--yes) は廃止。保存は常に下書き。
    自動操作の検知回避設定 (AutomationControlled 無効化・UA 偽装) も削除した。
@@ -569,7 +570,7 @@ def resolve_listing_color(product: dict) -> tuple:
     return color_jp, (first_color_en or color_jp)
 
 
-def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
+def load_products(max_price=None, min_profit=None, csv_path=None, source=None, sort=True):
     """
     利益商品 CSV から商品データを読み込む。
 
@@ -585,6 +586,7 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
         csv_path: 明示的な CSV パス（run_autopilot が ②/④ で書いた表を渡す）。"latest" は自動選択。
         source: 仕入先名。自動選択を *_<source>_profitable_products.csv に絞る
                 （同じ日に複数の仕入先を回したとき別の表を読まないため）。
+        sort: False ならファイルの行順のまま返す (候補選定済みの表を順位どおりに使うとき)。
     """
     if csv_path and csv_path.lower() != "latest" and os.path.exists(csv_path):
         latest_csv = csv_path
@@ -664,6 +666,7 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
                 "decision_reason": row.get("decision_reason") or "no_market_data",
                 "sku": (row.get("sku") or "").strip(),
                 "product_type": (row.get("product_type") or "").strip(),
+                "gender": (row.get("gender") or "").strip().lower(),
                 "color": (row.get("color") or "").strip(),
                 "sizes": (row.get("sizes") or "").strip(),
                 # 列が無い旧 CSV は None (listing_sizes が全サイズに落とす)、空文字は「出せるサイズ無し」
@@ -690,7 +693,8 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
 
     # 出品順 = AI 優先度 → 期待値 (opportunity_score) → 利益額 の降順。
     # filter の CSV は期待値順だが、旧来は利益順に並べ直していた (docs との不整合) ため統一。
-    products.sort(key=_listing_sort_key, reverse=True)
+    if sort:
+        products.sort(key=_listing_sort_key, reverse=True)
 
     print(f"✅ 商品データ: {len(products)} 件")
     if skipped_action:

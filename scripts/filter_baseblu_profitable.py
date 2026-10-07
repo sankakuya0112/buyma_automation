@@ -307,6 +307,7 @@ def main():
                 "title": title,
                 "vendor": vendor,
                 "product_type": product_type,
+                "gender": row.get("gender", ""),
                 "sku": row.get("sku", ""),
                 "color": row.get("color", ""),
                 "sizes": row.get("sizes", ""),
@@ -375,7 +376,7 @@ def main():
     output_path = os.path.join(OUTPUT_DIR, f"{date_str}_{source_name}_profitable_products.csv")
 
     fieldnames = [
-        "title", "vendor", "product_type", "sku",
+        "title", "vendor", "product_type", "gender", "sku",
         "color", "sizes", "available_sizes", "priced_out_sizes", "season",
         "sale_price_eur", "original_price_eur", "discount_rate",
         "exchange_rate", "source_price_jpy", "vat_refund_jpy",

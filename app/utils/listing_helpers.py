@@ -167,6 +167,109 @@ def map_size_to_jp_reference(raw_size: str, product_type: str = "") -> str:
     return "指定なし"
 
 
+# メンズの IT サイズ → 参考日本サイズ (レディースの _IT_SIZE_RANGES とはずれる)
+_IT_MENS_SIZE_RANGES: list[tuple[int, int, str]] = [
+    (0, 45, "XS以下"),    # IT44 以下
+    (45, 47, "S"),         # IT46
+    (47, 49, "M"),         # IT48
+    (49, 51, "L"),         # IT50
+    (51, 53, "XL"),        # IT52
+    (53, 999, "XXL"),      # IT54+
+]
+# メンズシャツの襟サイズ (cm) → 参考日本サイズ
+_COLLAR_SIZE_RANGES: list[tuple[int, int, str]] = [
+    (0, 38, "XS以下"),    # 37 以下
+    (38, 39, "S"),         # 38
+    (39, 41, "M"),         # 39, 40
+    (41, 43, "L"),         # 41, 42
+    (43, 45, "XL"),        # 43, 44
+    (45, 999, "XXL"),      # 45+
+]
+
+
+def extract_gender(tags) -> str:
+    """Shopify の tags (list か カンマ区切り) から 'man' / 'woman' / 'unisex' / ''。
+
+    baseblu は 'gender:man' / 'gender:woman' / 'gender:unisex' を付けている (2026-10-08 確認)。
+    """
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+    for t in tags or []:
+        m = re.fullmatch(r"\s*gender\s*:\s*(man|men|woman|women|unisex)\s*", str(t), re.IGNORECASE)
+        if m:
+            g = m.group(1).lower()
+            return {"men": "man", "women": "woman"}.get(g, g)
+    return ""
+
+
+_NOT_JEANS_WORDS = ("jacket", "shirt", "skirt", "dress", "coat", "vest", "gilet", "top", "overshirt", "blouse")
+
+
+def is_waist_inch_size(raw_size: str, product_type: str, title: str) -> bool:
+    """ジーンズのウエスト (インチ) 表記か: 商品名に jean (ジャケット・シャツ等は除く) で 23〜34 の数値。
+
+    IT 表記 (36 以上) やデニムジャケットのサイズはウエストとみなさない。
+    """
+    s = (raw_size or "").strip()
+    t = (title or "").lower()
+    return ((product_type or "").strip().upper() == "CLOTHING" and "jean" in t
+            and not any(w in t for w in _NOT_JEANS_WORDS) and s.isdigit() and 23 <= int(s) <= 34)
+
+
+def is_collar_size_shirt(raw_size: str, product_type: str, title: str, gender: str = "man") -> bool:
+    """メンズシャツの襟サイズ表記 (37〜46 の数値) か。レディース・性別不明は襟サイズとみなさない。"""
+    if (gender or "").lower() != "man":
+        return False
+    s = (raw_size or "").strip()
+    return ((product_type or "").strip().upper() == "CLOTHING" and "shirt" in (title or "").lower()
+            and "t-shirt" not in (title or "").lower() and bool(re.fullmatch(r"(3[6-9]|4[0-6])(\.5)?", s)))
+
+
+def uses_collar_sizes(sizes, product_type: str, title: str, gender: str) -> bool:
+    """商品のサイズ一覧が襟サイズ表記か (メンズのシャツで、数値がすべて 36〜46、かつ奇数を含む)。
+
+    IT 表記の服のサイズは偶数 (44, 46, 48 …) なので、39 や 41 があれば襟サイズと判断する。
+    偶数だけ (例 44, 46) は IT 表記として扱う (襟 44cm と IT44 の区別がつかないため安全側)。
+    """
+    nums = []
+    for raw in sizes:
+        s = (raw or "").strip()
+        if not s.isdigit():
+            return False
+        nums.append(int(s))
+    return (bool(nums) and all(is_collar_size_shirt(str(n), product_type, title, gender) for n in nums)
+            and any(n % 2 for n in nums))
+
+
+def map_size_to_jp_reference_for(raw_size: str, product_type: str = "", gender: str = "", title: str = "",
+                                 collar: bool | None = None) -> str:
+    """性別を考慮した参考日本サイズ。gender が 'man' 以外は map_size_to_jp_reference と同じ。
+
+    デニムのウエスト (インチ) は換算が難しいので「指定なし」(ブランドのサイズ表で本人が選ぶ)。
+    """
+    pt = (product_type or "").strip().upper()
+    if is_waist_inch_size(raw_size, product_type, title):
+        return "指定なし"
+    if (gender or "").lower() != "man" or pt != "CLOTHING":
+        return map_size_to_jp_reference(raw_size, product_type)
+    s = (raw_size or "").strip().upper()
+    if not s:
+        return "指定なし"
+    if s in _ALPHA_SIZE_TO_JP:
+        return _ALPHA_SIZE_TO_JP[s]
+    m = re.match(r"(\d+)", s)
+    if not m:
+        return "指定なし"
+    n = int(m.group(1))
+    if collar is None:
+        collar = is_collar_size_shirt(raw_size, product_type, title, gender)
+    ranges = _COLLAR_SIZE_RANGES if collar else _IT_MENS_SIZE_RANGES
+    for lo, hi, label in ranges:
+        if lo <= n < hi:
+            return label
+    return "指定なし"
+
+
 def classify_size_category(product_type: str) -> str:
     """product_type からサイズセクションの扱いを決める。
 

@@ -400,6 +400,53 @@ def _profit_at_price(
     return selling_price_jpy - fees - fixed - total_cost_jpy
 
 
+def profit_at_price(
+    selling_price_jpy: int,
+    total_cost_jpy: float,
+    buyma_commission_rate: float = BUYMA_COMMISSION_RATE,
+    apply_fixed_fee: Optional[bool] = None,
+) -> dict:
+    """指定売価での手数料と純利益 (出品シート・候補選定の表示用)。
+
+    {"commission": 定率手数料, "fixed_fee": 定額成約手数料, "profit": 純利益}。
+    決済システム利用料は購入者負担 (PAYMENT_COMMISSION_RATE=0) なので含めない。
+    振込手数料は total_cost_jpy 側に入っている (calculate_pricing と同じ)。
+    """
+    commission = selling_price_jpy * buyma_commission_rate
+    fixed = buyma_fixed_fee_jpy(selling_price_jpy, apply_fixed_fee)
+    return {
+        "commission": commission,
+        "fixed_fee": fixed,
+        "profit": selling_price_jpy - commission - fixed - total_cost_jpy,
+    }
+
+
+def min_price_for_profit(
+    total_cost_jpy: float,
+    min_profit_jpy: float,
+    buyma_commission_rate: float = BUYMA_COMMISSION_RATE,
+    apply_fixed_fee: Optional[bool] = None,
+) -> int:
+    """純利益が min_profit_jpy 以上になる最低売価 (100 円単位)。
+
+    定額手数料は価格帯で階段状に増えるので、解いた価格の帯で解き直し、最後に
+    100 円ずつ上げて条件を満たすことを確認する (価格帯の境界での取りこぼし防止)。
+    """
+    if buyma_commission_rate >= 0.99:
+        raise ValueError(f"Commission rate too high: {buyma_commission_rate:.2%}")
+    fixed = 0.0
+    price = 0
+    for _ in range(6):
+        price = _round_up_100((total_cost_jpy + min_profit_jpy + fixed) / (1 - buyma_commission_rate))
+        new_fixed = buyma_fixed_fee_jpy(price, apply_fixed_fee)
+        if new_fixed <= fixed:
+            break
+        fixed = new_fixed
+    while profit_at_price(price, total_cost_jpy, buyma_commission_rate, apply_fixed_fee)["profit"] < min_profit_jpy:
+        price += 100
+    return price
+
+
 def _resolve_floor_params(category: str) -> tuple[int, float]:
     """カテゴリから (絶対額, 売価比) を解決する。"""
     if not category:

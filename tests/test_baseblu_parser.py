@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -97,3 +98,23 @@ class PriceVariantSelectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GenderTagTest(unittest.TestCase):
+    """2026-10-08: tags の gender:man/woman を CSV に通す (メンズのカテゴリ・サイズ判定用)。"""
+
+    def _variants(self):
+        return [{"sku": "AB123_456_48", "option1": "48", "price": "300.0", "available": True}]
+
+    def test_gender_from_tags(self):
+        row = scraper.parse_product(_product(self._variants(), tags=["gender:man", "sale"]), fetch_details=False)
+        self.assertEqual(row["gender"], "man")
+
+    def test_gender_missing(self):
+        row = scraper.parse_product(_product(self._variants()), fetch_details=False)
+        self.assertEqual(row["gender"], "")
+
+    def test_cli_options(self):
+        with unittest.mock.patch.object(scraper, "fetch_all_products", return_value=[]) as fetch:
+            scraper.main(["--no-details", "--delay", "2", "--max-pages", "1"])
+        self.assertEqual(fetch.call_args.kwargs, {"delay_sec": 2.0, "max_pages": 1})

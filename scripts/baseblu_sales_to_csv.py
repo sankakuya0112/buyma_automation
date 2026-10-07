@@ -10,6 +10,9 @@ v3: 商品説明(body_html)・品番(sku)・全画像URLも取得するように
 
 使い方:
     python3 scripts/baseblu_sales_to_csv.py
+    # 一覧 JSON だけ取得 (商品ごとの詳細ページは取らない = リクエスト数が数ページ分だけ)。
+    # 候補を絞ってから select_listing_candidates.py --refresh で上位だけ詳細を取る
+    python3 scripts/baseblu_sales_to_csv.py --no-details --delay 2
 """
 
 import requests
@@ -26,6 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from app.utils.listing_helpers import extract_gender  # noqa: E402
 from app.utils.variant_select import all_sizes, select_listing_variants  # noqa: E402
 
 # ========== 設定 ==========
@@ -73,8 +77,12 @@ def strip_html(html_text):
     return text.strip()
 
 
-def fetch_all_products():
-    """全ページのセール商品を取得する（ページネーション対応）"""
+# 商品ごとの詳細 JSON / HTML 取得の間隔 (秒)。main() の --delay で上書き
+DETAIL_DELAY_SEC = 1.0
+
+
+def fetch_all_products(delay_sec: float = 0.0, max_pages: int = 0):
+    """全ページのセール商品を取得する（ページネーション対応）。delay_sec = ページ間の待ち秒"""
     all_products = []
     page = 1
     print("BaseBluからセール商品を取得中...")
@@ -96,7 +104,11 @@ def fetch_all_products():
 
         print(f"  → ページ {page}: {len(products)} 件取得")
         all_products.extend(products)
+        if max_pages and page >= max_pages:
+            break
         page += 1
+        if delay_sec > 0:
+            time.sleep(delay_sec)
 
     return all_products
 
@@ -460,7 +472,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
                 if detail_variants:
                     dv = detail_variants[0]
                     sku = _extract_sku_from_variant(dv.get("sku", ""), dv.get("option1", ""))
-        time.sleep(0.3)  # レート制限対策
+        time.sleep(DETAIL_DELAY_SEC)  # レート制限対策 (--delay で変更)
 
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
     # 色の軸がある商品は、出品する (基準価格の) バリアントの色を使う
@@ -488,7 +500,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
                 # option1 が無い商品の救済。サイズ別価格の商品では使わない
                 if sizes and not available_sizes and not priced_out_sizes:
                     available_sizes = sizes
-        time.sleep(0.3)  # レート制限対策
+        time.sleep(DETAIL_DELAY_SEC)  # レート制限対策 (--delay で変更)
 
     # description_en に "Sku: XXX" が明記されていれば、それを優先（variant SKU より正確）
     desc_sku = _extract_sku_from_description(description_en)
@@ -505,6 +517,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
         "title": title,
         "vendor": vendor,
         "product_type": product_type,
+        "gender": extract_gender(product.get("tags")),
         "sku": sku,
         "color": color,
         "sizes": sizes,
@@ -533,9 +546,11 @@ def save_to_csv(rows, output_path):
         "description_en", "image_url", "sub_images", "product_url",
         # Phase 2c 追加: 仕入先抽象化のメタ列
         "source_name", "currency", "landed_cost_basis",
+        # 2026-10-08: tags の gender:man/woman (カテゴリ・参考日本サイズの判定用)
+        "gender",
     ]
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -546,7 +561,17 @@ def save_to_csv(rows, output_path):
     print(f"   商品説明あり: {desc_count}件  品番あり: {sku_count}件")
 
 
-def main():
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="BaseBlu のセール商品を CSV に保存する (公開の products.json のみ)")
+    ap.add_argument("--no-details", action="store_true",
+                    help="商品ごとの詳細 JSON / HTML を取らない (一覧だけ。説明文・色の一部が空になる)")
+    ap.add_argument("--delay", type=float, default=1.0,
+                    help="仕入先へのリクエスト間の待ち秒 (一覧ページ・詳細とも、既定 1.0)")
+    ap.add_argument("--max-pages", type=int, default=0, help="一覧ページ数の上限 (0 = 全部)")
+    args = ap.parse_args(argv)
+    global DETAIL_DELAY_SEC
+    DETAIL_DELAY_SEC = max(args.delay, 0.3)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Phase 2c: BasebluSource のメタを CSV に注入する
@@ -556,15 +581,16 @@ def main():
     except Exception:
         source_meta = {"source_name": "baseblu", "currency": "EUR", "landed_cost_basis": "DDU"}
 
-    products = fetch_all_products()
+    products = fetch_all_products(delay_sec=args.delay, max_pages=args.max_pages)
     if not products:
         print("❌ 商品データを取得できませんでした。")
         return
 
-    print(f"\n📝 商品詳細を取得中（説明文・品番）...")
+    print("\n📝 一覧から変換中 (詳細ページは取得しない)..." if args.no_details
+          else "\n📝 商品詳細を取得中（説明文・品番）...")
     rows = []
     for i, p in enumerate(products, 1):
-        parsed = parse_product(p, fetch_details=True, source_meta=source_meta)
+        parsed = parse_product(p, fetch_details=not args.no_details, source_meta=source_meta)
         if parsed:
             rows.append(parsed)
         if i % 20 == 0:

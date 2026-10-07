@@ -217,7 +217,7 @@ class CsvTest(unittest.TestCase):
         """filter_baseblu_profitable.py が読む列がすべて揃っていること。"""
         required = {
             "title", "vendor", "product_type", "sku", "color", "sizes", "available_sizes",
-            "season", "sale_price", "original_price", "discount_rate", "available",
+            "priced_out_sizes", "season", "sale_price", "original_price", "discount_rate", "available",
             "description_en", "image_url", "sub_images", "product_url",
             "source_name", "currency", "landed_cost_basis",
         }

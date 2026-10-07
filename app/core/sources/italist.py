@@ -20,10 +20,8 @@ class ItalistSource(BaseSource):
     # 日本向けの関税込み表示を前提に DDP として計算（二重課税を避ける）。
     landed_cost_basis = "DDP"
 
-    # Italist の日本向け表示価格は既に EU VAT 抜きの輸出価格 (DDP)。
-    # BaseSource デフォルトの 16.7% 還付を適用すると原価を 16.7% 過小評価し
-    # 赤字出品リスクになるため 0 に固定する。
-    vat_refund_rate = 0.0
+    # Italist の日本向け表示価格は既に EU VAT 抜きの輸出価格 (DDP) → 控除しない。
+    vat_treatment = "none"
 
     # 国際送料は要検証 (無料キャンペーン/定額の時期がある)。確定するまでは
     # shipping_cost_local 未実装 = calculate_pricing の重量ベース推定に

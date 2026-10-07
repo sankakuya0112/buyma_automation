@@ -553,6 +553,9 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
             "url": ..., "sample_count": N, "median_jpy": ..., ...
         }
     """
+    # 関数を直接呼ばれても止める (CLI の入口だけでは不十分)
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 検索ページの相場取得 (fetch_buyma_market_prices)")
     url = build_search_url(brand, keyword)
 
     own_browser = False
@@ -562,10 +565,6 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
             locale="ja-JP",
         )
         page = ctx.new_page()
@@ -681,6 +680,8 @@ def resolve_csv_path(csv_arg: str, source: str | None = None, reports_dir=None) 
 
 
 def main():
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="BUYMA 市場価格スクレイパー")
     parser.add_argument("--brand", help="単発: ブランド名")
     parser.add_argument("--keyword", help="単発: 商品キーワード")
@@ -694,6 +695,11 @@ def main():
     parser.add_argument("--debug-html", action="store_true",
                         help="取得した HTML を /tmp/buyma_market_debug.html に保存 (単発モード時)")
     args = parser.parse_args()
+
+    if not args.no_fetch:
+        # BUYMA の検索ページをブラウザで読みに行くため、既定では止める (キャッシュ集計 --no-fetch は可)
+        from app.utils.automation_guard import require_browser_automation
+        require_browser_automation("BUYMA 検索ページの相場取得 (fetch_buyma_market_prices)")
 
     # 単発モード (--brand 必須、--keyword or --sku のどちらか以上)
     if args.brand and (args.keyword or args.sku):
@@ -730,10 +736,6 @@ def main():
                 browser = pw.chromium.launch(headless=True)
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 800},
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                    ),
                     locale="ja-JP",
                 )
                 page = ctx.new_page()
@@ -796,10 +798,6 @@ def main():
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
             locale="ja-JP",
         )
         page = ctx.new_page()

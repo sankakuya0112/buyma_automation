@@ -3,6 +3,13 @@ buyma_auto_listing.py (v4.2 — 2026-04 プロショッパー仕様)
 ==========================================================
 BUYMAへの自動出品スクリプト（統合版）
 
+⚠️ 2026-10-07 以降: BUYMA の利用規約は許可のない外部プログラム・自動出品ツールを禁止している
+   ため、このスクリプトは既定で動かない。正規ルートは公式「一括出品 (CSV)」:
+       python3 scripts/generate_bulk_upload.py --limit 3   → https://www.buyma.com/my/sell/bulk/
+   どうしても旧ブラウザ下書きを使う場合だけ BUYMA_ALLOW_BROWSER_AUTOMATION=1 を本人が設定する。
+   本公開 (--publish) と確認スキップ (--yes) は廃止。保存は常に下書き。
+   自動操作の検知回避設定 (AutomationControlled 無効化・UA 偽装) も削除した。
+
 【v4.2 の変更】
   - pricing.py 統合: filter_baseblu_profitable.py の新カラム名（selling_price_jpy /
     profit_jpy / sale_price_eur）に対応。*_pricing_analysis.csv への依存を削除。
@@ -24,8 +31,7 @@ BUYMAへの自動出品スクリプト（統合版）
   - SEO最適化: タイトルにブランド名・品番・カテゴリを含める
 
 【使い方】
-  python3 scripts/buyma_auto_listing.py                       # 全件・直接公開
-  python3 scripts/buyma_auto_listing.py --draft               # 下書き保存のみ
+  BUYMA_ALLOW_BROWSER_AUTOMATION=1 python3 scripts/buyma_auto_listing.py   # 下書き保存のみ (以下同様)
   python3 scripts/buyma_auto_listing.py --test                # 1件テスト
   python3 scripts/buyma_auto_listing.py --limit 5             # 先頭5件だけ処理
   python3 scripts/buyma_auto_listing.py --from 3 --limit 5    # 3番目から5件
@@ -64,6 +70,8 @@ try:
 except Exception:
     _translate_description_advanced = None
 
+from app.utils.automation_guard import require_browser_automation
+
 # 純粋関数は app.utils.listing_helpers に切り出し済み (Phase 2c+)
 from app.utils.reports import latest_report
 from app.utils.listing_helpers import (
@@ -76,11 +84,13 @@ from app.utils.listing_helpers import (
     _map_footwear_to_jp_cm,
     _strip_accents,
     _trim_buyma_title,
+    append_result_rows,
     build_result_row,
     classify_size_category,
     clean_source_description,
     evaluate_listing_readiness,
     format_size_name_for_listing,
+    listing_sizes,
     map_size_to_jp_reference,
     normalize_size_for_buyma,
     translate_color_to_jp,
@@ -89,8 +99,12 @@ from app.utils.listing_helpers import (
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 except ImportError:
-    print("pip install playwright requests --break-system-packages && playwright install chromium")
-    sys.exit(1)
+    # 一括出品 CSV (generate_bulk_upload.py) は本モジュールの純粋関数だけ使うので、
+    # Playwright が無くても import できるようにする。ブラウザ実行時だけ main() で止める。
+    sync_playwright = None
+
+    class PWTimeout(Exception):
+        pass
 
 # ========== パス設定 ==========
 BASE_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -319,7 +333,7 @@ def save_progress(data):
 
 # status 分類: resume で「再試行すべき」扱いにする status
 #   これらの status は進捗に「失敗」として記録し、--resume で再処理する。
-RETRIABLE_STATUSES = {"error", "timeout", "save_failed", "publish_failed"}
+RETRIABLE_STATUSES = {"error", "timeout", "save_failed", "publish_failed"}  # publish_failed は旧記録の互換
 # status 分類: スキップすべき status（一時的失敗でない恒久的スキップ）
 PERMANENT_SKIP_STATUSES = {"brand_not_found"}
 # status 分類: 成功
@@ -652,7 +666,10 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
                 "product_type": (row.get("product_type") or "").strip(),
                 "color": (row.get("color") or "").strip(),
                 "sizes": (row.get("sizes") or "").strip(),
-                "available_sizes": (row.get("available_sizes") or "").strip(),
+                # 列が無い旧 CSV は None (listing_sizes が全サイズに落とす)、空文字は「出せるサイズ無し」
+                "available_sizes": (row["available_sizes"].strip()
+                                    if row.get("available_sizes") is not None else None),
+                "priced_out_sizes": (row.get("priced_out_sizes") or "").strip(),
                 "season": (row.get("season") or "").strip(),
                 "description_en": (row.get("description_en") or "").strip(),
                 "image_url": (row.get("image_url") or "").strip(),
@@ -688,6 +705,7 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
 # ========== Playwright操作関数 ==========
 
 def login(page, email, password):
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     # まず出品ページへ。storage_state が有効ならここでログイン済み判定できる。
     page.goto(BUYMA_LISTING_URL, wait_until="domcontentloaded", timeout=60000)
     human_delay(1.2, 2.0)
@@ -2631,82 +2649,6 @@ def set_purchase_memo(page, product):
     print(f"    📝 メモ: {results}")
 
 
-def publish_product(page):
-    captured_urls = []
-    vr = {"status": None}
-    def on_resp(r):
-        captured_urls.append((r.url, r.status))
-        if "validation" in r.url:
-            vr["status"] = r.status
-    page.on("response", on_resp)
-
-    # ボタンテキスト・disabled状態を列挙してデバッグ
-    btns = page.evaluate("""Array.from(document.querySelectorAll('button')).map(function(b){return {text:b.textContent.trim(), disabled:b.disabled, classes:b.className}}).filter(function(b){return b.text.length>0})""")
-    print(f"    🔍 ボタン一覧: {btns}")
-
-    # ネイティブクリックでReactイベントを確実に発火
-    confirm_btn = page.locator("button", has_text="入力内容を確認する").first
-    if confirm_btn.count() == 0:
-        page.remove_listener("response", on_resp)
-        print("    ❌ 確認ボタンなし"); return False
-    confirm_btn.click()
-
-    # 確認画面への遷移 or API レスポンスを待つ（最大15秒）
-    for _ in range(30):
-        time.sleep(0.5)
-        cur_url = page.url
-        if vr["status"] is not None: break
-        if "confirm" in cur_url or "preview" in cur_url or "check" in cur_url: break
-    page.remove_listener("response", on_resp)
-
-    # デバッグ: キャプチャした全URLを出力
-    print(f"    🌐 APIレスポンス({len(captured_urls)}件): {[(u.split('?')[0][-60:], s) for u, s in captured_urls[-10:]]}")
-    print(f"    📍 現在URL: {page.url[-80:]}")
-    # スクリーンショット保存
-    import os as _os
-    ss_path = _os.path.join(_os.path.dirname(__file__), "..", "outputs", "reports", "debug_publish_click.png")
-    page.screenshot(path=ss_path, full_page=False)
-    print(f"    📸 スクリーンショット: {ss_path}")
-    # フロントエンドのバリデーションエラーを取得（より広いセレクタ）
-    errors = page.evaluate("""Array.from(document.querySelectorAll('[class*="error"],[class*="Error"],[class*="invalid"],[class*="warning"]')).map(function(e){return e.textContent.trim()}).filter(function(t){return t.length>2 && t.length<300}).slice(0,10)""")
-    if errors:
-        print(f"    ❗ UIエラー: {errors}")
-
-    if vr["status"] is not None and vr["status"] != 200:
-        print(f"    ❌ バリデーション失敗 (status={vr['status']})"); return False
-    if vr["status"] == 200:
-        print("    ✅ バリデーションOK (API)")
-    else:
-        print("    ✅ 確認画面へ遷移（APIなし形式）")
-    human_delay(0.5, 1.0)
-
-    # 「注意事項に同意して公開する」ボタンをネイティブクリック
-    pub_btns = page.locator("button", has_text="公開する")
-    count = pub_btns.count()
-    print(f"    🔍 公開ボタン候補: {count}件")
-    if count == 0:
-        print("    ❌ 公開するボタンなし"); return False
-    # クリック前SS
-    import os as _os2
-    ss_before = _os2.path.join(_os2.path.dirname(__file__), "..", "outputs", "reports", "debug_before_pubclick.png")
-    page.screenshot(path=ss_before, full_page=False)
-    pub_btns.first.click()
-    # URL が sell/new から離れるまで最大60秒待つ（APIレスポンスに時間がかかる）
-    for _ in range(120):
-        time.sleep(0.5)
-        cur = page.url
-        if "sell/new" not in cur: break
-    url_after = page.url
-    print(f"    📍 公開後URL: {url_after[-80:]}")
-    # 「出品が完了しました」ページのURL or ページテキストで判定
-    completed_page = page.evaluate("""document.body.innerText.includes('出品が完了しました') || document.body.innerText.includes('出品完了')""")
-    if completed_page or "sell/new" not in url_after:
-        print("    🎉 出品公開完了！"); return True
-    ss2 = _os2.path.join(_os2.path.dirname(__file__), "..", "outputs", "reports", "debug_after_publish.png")
-    page.screenshot(path=ss2, full_page=False)
-    print(f"    ⚠️ 公開後もsell/newのまま"); return False
-
-
 def _clear_customs_checkbox(page):
     """関税負担チェックを外す（保存422 duty_attributes の回避用）。"""
     return page.evaluate("""(function(){
@@ -2733,6 +2675,7 @@ def save_draft(page, _retried=False):
     JS の .click() では反応しないため Playwright のネイティブクリックを使う。
     成功時は /my/sell/{item_id}/edit?tab=b に遷移する。
     """
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     import re
     url_before = page.url
 
@@ -2968,6 +2911,7 @@ def save_draft(page, _retried=False):
 # ========== 1商品の処理 ==========
 
 def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=None):
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     title   = product["title"]
     vendor  = product["vendor"]
     price   = int(product["recommended_price"])
@@ -3051,8 +2995,9 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     set_size_and_stock(
         page,
         product_type=product_type,
-        available_sizes_csv=(product.get("available_sizes") or "").strip(),
-        fallback_sizes_csv=(product.get("sizes") or "").strip(),
+        # 基準価格で出せる在庫ありサイズだけ (listing_sizes が高いサイズへの落ち込みを防ぐ)
+        available_sizes_csv=listing_sizes(product),
+        fallback_sizes_csv="",
         stock_qty_per_size=1,
     ); human_delay(0.5, 1.0)
 
@@ -3084,28 +3029,40 @@ def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=
     identify_memo = "/".join(identify_parts)
     set_sku(page, sku, identify_memo=identify_memo); human_delay(0.5, 1.0)
 
-    # 保存 or 公開
-    if draft_mode:
-        item_id = save_draft(page)
-        return ("draft", item_id) if item_id else ("save_failed", None)
-
-    ok = publish_product(page)
-    return ("published", "published") if ok else ("publish_failed", None)
+    # 保存は常に下書き (本公開は 2026-10 に廃止。公開は本人が BUYMA の画面で行う)
+    item_id = save_draft(page)
+    return ("draft", item_id) if item_id else ("save_failed", None)
 
 
 # ========== メイン ==========
 
+def check_cli_policy(args: list[str]) -> None:
+    """起動前の方針チェック (純粋に近い関数。違反なら SystemExit(2))。
+
+    - --publish: BUYMA への本公開は常に拒否 (refuse_buyma_write)
+    - --yes: 確認スキップは廃止 (受け付けない)
+    - それ以外: BUYMA_ALLOW_BROWSER_AUTOMATION=1 が無ければ停止
+    """
+    from app.utils.automation_guard import refuse_buyma_write, require_browser_automation
+
+    if "--publish" in args:
+        refuse_buyma_write("BUYMA への本公開 (buyma_auto_listing --publish)")
+    if "--yes" in args:
+        print("❌ --yes (確認スキップ) は廃止しました。保存は常に下書きです。", file=sys.stderr)
+        sys.exit(2)
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
+
+
 def main():
     args = sys.argv[1:]
+    check_cli_policy(args)
+    if sync_playwright is None:
+        print("pip install playwright requests --break-system-packages && playwright install chromium")
+        sys.exit(1)
     test_mode   = "--test"   in args
     resume_mode = "--resume" in args
-    draft_mode  = "--draft"  in args
-    publish_mode = "--publish" in args
-    # 安全策: 明示的に --publish を指定しない限り draft 扱い
-    if not draft_mode and not publish_mode:
-        draft_mode = True
+    draft_mode  = True   # 常に下書き (--draft は互換のため受け付けるだけ)
     hold_mode   = "--hold"   in args
-    skip_confirm = "--yes" in args
     start_from  = 1
     limit_count = None
     max_price = None
@@ -3159,23 +3116,8 @@ def main():
     window_h = _read_int_arg("--window-h", window_h)
 
     print("=" * 50)
-    mode_label = "下書き" if draft_mode else "🚨 本公開"
-    print(f"🛒 BUYMA自動出品 v4.2 ({mode_label}{'・テスト' if test_mode else ''})")
+    print(f"🛒 BUYMA自動出品 v4.3 (下書きのみ{'・テスト' if test_mode else ''})")
     print("=" * 50)
-
-    # 本公開モードの安全確認 (--yes でスキップ可)
-    if publish_mode and not skip_confirm:
-        n = limit_count or "全件"
-        print("⚠️ 本公開モードです。実際に BUYMA 上で公開されます。")
-        print(f"   対象: {start_from} 番目から {n} 件")
-        print("   この操作は取り消せません。続行するには 'YES' と入力してください。")
-        try:
-            answer = input("   > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer != "YES":
-            print("❌ 中止しました")
-            sys.exit(0)
     if max_price:
         print(f"   フィルタ: 販売価格 ≤ ¥{max_price:,}")
     if min_profit:
@@ -3235,7 +3177,8 @@ def main():
 
     results = []
     with sync_playwright() as pw:
-        launch_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox", f"--window-size={window_w},{window_h}"]
+        # 自動操作の検知を避ける設定 (AutomationControlled 無効化・UA 偽装) は 2026-10 に削除
+        launch_args = [f"--window-size={window_w},{window_h}"]
         if window_x is not None and window_y is not None:
             launch_args.append(f"--window-position={window_x},{window_y}")
 
@@ -3243,7 +3186,6 @@ def main():
 
         context_kwargs = dict(
             viewport=None,
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="ja-JP",
             timezone_id="Asia/Tokyo",
         )
@@ -3286,7 +3228,7 @@ def main():
 
             # 連続失敗の通知 (status が retriable 系で 2 回 retry も失敗した時のみ)
             # silent skip 設定: SLACK_WEBHOOK_URL / SMTP_HOST 未設定なら何も送られない
-            if status in ("error", "timeout", "publish_failed"):
+            if status in ("error", "timeout", "save_failed"):
                 try:
                     from app.utils.notifier import notify
                     notify(
@@ -3316,7 +3258,7 @@ def main():
                     progress["failed_titles"].append(title)
             save_progress(progress)
 
-            print(f"  → {status}" + (f" (ID: {item_id})" if item_id and item_id != "published" else ""))
+            print(f"  → {status}" + (f" (ID: {item_id})" if item_id else ""))
             if i < total:
                 wait = random.uniform(8, 15)
                 print(f"  ⏳ {wait:.0f}秒待機...")
@@ -3335,37 +3277,32 @@ def main():
 
         browser.close()
 
-    # 結果CSV
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # 結果CSV (同じ日の既存結果に追記。上書きすると前の回の item_id が消える)
     result_path = os.path.join(OUTPUT_DIR, f"{datetime.now():%Y-%m-%d}_auto_listing_results.csv")
-    with open(result_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=list(RESULT_FIELDNAMES), extrasaction="ignore")
-        w.writeheader(); w.writerows(results)
+    append_result_rows(result_path, results)
 
-    pub = sum(1 for r in results if r["status"]=="published")
     dra = sum(1 for r in results if r["status"]=="draft")
     skip = sum(1 for r in results if r["status"]=="brand_not_found")
-    fail = len(results) - pub - dra - skip
+    fail = len(results) - dra - skip
     print(f"\n{'='*50}")
-    print(f"✅ 公開:{pub} 下書き:{dra} スキップ:{skip} 失敗:{fail}")
-    print(f"📄 {result_path}")
+    print(f"✅ 下書き:{dra} スキップ:{skip} 失敗:{fail}")
+    print(f"📄 {result_path} (追記)")
 
-    # バッチ完了通知 (失敗率 30% 超 or 公開モードなら必ず送る)
+    # バッチ完了通知 (失敗率 30% 超のとき)
     failure_rate = fail / len(results) if results else 0
-    should_notify = (failure_rate > 0.3) or (publish_mode and (pub + dra) > 0)
-    if should_notify:
+    if failure_rate > 0.3:
         try:
             from app.utils.notifier import notify
-            level = "error" if failure_rate > 0.3 else "success"
             notify(
-                level,
-                f"BUYMA 出品バッチ完了 (mode={'publish' if publish_mode else 'draft'})",
-                f"対象 {len(results)} 件 → 公開:{pub} 下書き:{dra} スキップ:{skip} 失敗:{fail}\n"
+                "error",
+                "BUYMA 下書きバッチ完了 (失敗多め)",
+                f"対象 {len(results)} 件 → 下書き:{dra} スキップ:{skip} 失敗:{fail}\n"
                 f"失敗率: {failure_rate*100:.1f}%\n"
                 f"CSV: {result_path}"
             )
         except Exception as notify_exc:
             print(f"⚠️ 完了通知送信失敗 (無視): {notify_exc}")
+
 
 if __name__ == "__main__":
     main()

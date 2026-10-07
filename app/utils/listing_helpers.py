@@ -309,8 +309,7 @@ def evaluate_listing_readiness(product: dict, price_jpy: int, cat_label, descrip
     if not cat_label:
         blockers.append("カテゴリ未確定")
 
-    available = (product.get("available_sizes") or product.get("sizes") or "").strip()
-    if not available:
+    if not listing_sizes(product):
         blockers.append("在庫サイズ不明")
 
     bad_desc_tokens = ["variants", "price_min", "compare_at_price", "WELCOME_", "pim:", "レシート画像"]
@@ -352,12 +351,36 @@ def _trim_buyma_title(text: str, max_width: int = 60) -> str:
 
 # ========== 出品結果 CSV (outputs/reports/*_auto_listing_results.csv) ==========
 # 列定義の唯一の置き場。check_inventory / update_listed_prices は item_id + product_url
-# (仕入先ハンドル抽出) を、sales_report は processed_at / status / vendor / price / title を読む。
+# + source_name + listed_sizes (仕入先・サイズごとの在庫/価格確認) を、
+# sales_report は processed_at / status / vendor / price / title を読む。
 # 2026-09-24 以前の CSV には sku / product_type / product_url / source_name が無い (旧形式)。
+# 2026-10-07 に listed_sizes / listed_color を追加。
 RESULT_FIELDNAMES: tuple[str, ...] = (
     "status", "item_id", "title", "vendor", "price",
-    "sku", "product_type", "product_url", "source_name", "processed_at",
+    "sku", "product_type", "product_url", "source_name", "listed_sizes", "listed_color", "processed_at",
 )
+
+
+def listing_sizes(product: dict) -> str:
+    """出品するサイズ (カンマ区切り)。
+
+    在庫ありで基準価格のサイズ (available_sizes) をそのまま使う。空文字 = 「出せるサイズが無い」
+    (売切れ等) なので全サイズには落とさない。available_sizes 列そのものが無い旧形式の CSV
+    (値が None) のときだけ全サイズ (sizes) を使うが、基準価格より高いサイズ (priced_out_sizes)
+    がある商品では使わない (最安サイズの価格で高いサイズまで出品してしまうため)。
+    """
+    avail = product.get("available_sizes")
+    if avail is not None:
+        return str(avail).strip()
+    if (product.get("priced_out_sizes") or "").strip():
+        return ""
+    return (product.get("sizes") or "").strip()
+
+
+def normalize_item_id(item_id) -> str:
+    """BUYMA の商品 ID (数字) だけを残す。旧版は公開時に "published" という文字列を入れていた。"""
+    s = str(item_id or "").strip()
+    return s if s.isdigit() else ""
 
 
 def build_result_row(product: dict, status: str, item_id: str | None, processed_at: str) -> dict:
@@ -365,10 +388,11 @@ def build_result_row(product: dict, status: str, item_id: str | None, processed_
 
     product は buyma_auto_listing.load_products() が作る dict。
     キーは RESULT_FIELDNAMES と一致させる (tests/test_listing_pure_functions.py が照合)。
+    item_id は実 ID (数字) のときだけ記録する。
     """
     return {
         "status": status,
-        "item_id": item_id or "",
+        "item_id": normalize_item_id(item_id),
         "title": product.get("title", ""),
         "vendor": product.get("vendor", ""),
         "price": product.get("recommended_price", ""),
@@ -376,5 +400,32 @@ def build_result_row(product: dict, status: str, item_id: str | None, processed_
         "product_type": product.get("product_type", ""),
         "product_url": product.get("product_url", ""),
         "source_name": product.get("source_name", ""),
+        "listed_sizes": listing_sizes(product),
+        "listed_color": (product.get("color") or "").split(",")[0].strip(),
         "processed_at": processed_at,
     }
+
+
+def append_result_rows(path, rows: list[dict]) -> int:
+    """出品結果 CSV に行を **追記** する (同じ日に 2 回走っても前の結果を消さない)。
+
+    既存ファイルが旧形式 (列が少ない) でも、全行を RESULT_FIELDNAMES で書き直して列を揃える。
+    戻り値はファイル内の総行数。
+    """
+    import csv
+    import os
+
+    existing: list[dict] = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            existing = list(csv.DictReader(f))
+    all_rows = existing + list(rows)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=list(RESULT_FIELDNAMES), extrasaction="ignore")
+        w.writeheader()
+        for r in all_rows:
+            w.writerow({k: r.get(k, "") or "" for k in RESULT_FIELDNAMES})
+    os.replace(tmp, path)
+    return len(all_rows)

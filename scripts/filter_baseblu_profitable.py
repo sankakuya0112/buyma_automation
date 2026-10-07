@@ -147,6 +147,8 @@ def get_market_stats(market_data, vendor, title, sku="", source_name="") -> Mark
 
 
 def main():
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="仕入先 CSV 利益計算 + 市場連動価格フィルタ")
     parser.add_argument("--source", default="baseblu", help="仕入先名 (baseblu / italist など)")
     parser.add_argument("--market", help="市場価格 JSON (fetch_buyma_market_prices.py の出力)")
@@ -217,8 +219,15 @@ def main():
                 continue
 
             # Phase 2c: source_name 列があれば BaseSource 経由で PricingParams を組み立てる。
-            # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) に fallback する。
-            source = get_source(row.get("source_name", ""))
+            # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) とみなす。
+            # 未登録・disabled の仕入先は別の原価体系で計算しないよう除外する。
+            try:
+                source = get_source(row.get("source_name", ""))
+            except ValueError as exc:
+                print(f"   ⏭ {exc}: {title[:40]}")
+                skipped_count["parse_error"] += 1
+                skipped_count["total"] += 1
+                continue
             params = source.get_pricing_params(
                 sale_price=source_price,
                 category=product_type,
@@ -279,7 +288,9 @@ def main():
             signals = DemandSignals(
                 market_sample_count=decision.market_sample_count,
                 source_total_sizes=count_sizes(row.get("sizes", "")),
-                source_available_sizes=count_sizes(row.get("available_sizes", "")),
+                # 売れ行きシグナルは「在庫ありの全サイズ」で数える (高いサイズも在庫は在庫)
+                source_available_sizes=count_sizes(row.get("available_sizes", ""))
+                + count_sizes(row.get("priced_out_sizes", "")),
                 discount_rate=disc,
                 market_wish_total=int(market_data.get(
                     f"{vendor}|{keyword_from_sku(row.get('sku', '')) or keyword_from_title(title)}",
@@ -300,6 +311,7 @@ def main():
                 "color": row.get("color", ""),
                 "sizes": row.get("sizes", ""),
                 "available_sizes": row.get("available_sizes", ""),
+                "priced_out_sizes": row.get("priced_out_sizes", ""),
                 "season": row.get("season", ""),
                 "sale_price_eur": source_price,  # 後方互換カラム名。実通貨は source_name/currency を参照。
                 "original_price_eur": row.get("original_price", ""),
@@ -364,7 +376,7 @@ def main():
 
     fieldnames = [
         "title", "vendor", "product_type", "sku",
-        "color", "sizes", "available_sizes", "season",
+        "color", "sizes", "available_sizes", "priced_out_sizes", "season",
         "sale_price_eur", "original_price_eur", "discount_rate",
         "exchange_rate", "source_price_jpy", "vat_refund_jpy",
         "shipping_jpy", "customs_jpy", "duty_rate",

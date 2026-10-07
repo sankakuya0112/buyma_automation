@@ -41,7 +41,8 @@ VALID_CONFIG = {
     "currency": "EUR",
     "country": "IT",
     "landed_cost_basis": "DDU",
-    "vat_refund_rate": 0.167,
+    "vat_treatment": "deducted_at_checkout",
+    "local_vat_rate": 0.22,
     "purchase_fx_fee_rate": 0.022,
     "domestic_shipping_jpy": 1000.0,
     "shipping_flat_local": 30.0,
@@ -219,7 +220,7 @@ class ConfigSourceTest(unittest.TestCase):
         self.assertIsInstance(params, PricingParams)
         self.assertEqual(params.currency, "EUR")
         self.assertEqual(params.landed_cost_basis, "DDU")
-        self.assertAlmostEqual(params.vat_refund_rate, 0.167)
+        self.assertAlmostEqual(params.vat_refund_rate, 0.1803)  # 0.22 / 1.22
         self.assertAlmostEqual(params.purchase_fx_fee_rate, 0.022)
         self.assertAlmostEqual(params.domestic_shipping_jpy, 1000.0)
         self.assertIsNotNone(params.shipping_jpy)   # 30 EUR を円換算した値
@@ -260,10 +261,9 @@ class GetSourceResolutionTest(unittest.TestCase):
         self.assertIsInstance(s, ConfigSource)
         self.assertEqual(s.name, "antonioli")
 
-    def test_unknown_name_falls_back_to_baseblu(self):
-        s = get_source("totally_unknown_shop")
-        self.assertIsInstance(s, BasebluSource)
-        self.assertEqual(s.name, "baseblu")
+    def test_unknown_name_raises(self):
+        with self.assertRaises(ValueError):
+            get_source("totally_unknown_shop")
 
     def test_empty_name_falls_back_to_baseblu(self):
         self.assertEqual(get_source("").name, "baseblu")
@@ -307,7 +307,7 @@ class RealConfigFileTest(unittest.TestCase):
             dedicated = cls()
             config_based = ConfigSource(name, cfg)
             for field in ("currency", "country", "landed_cost_basis",
-                          "vat_refund_rate", "purchase_fx_fee_rate", "domestic_shipping_jpy",
+                          "vat_treatment", "vat_refund_rate", "purchase_fx_fee_rate", "domestic_shipping_jpy",
                           "customs_handling_min_jpy", "customs_handling_rate"):
                 self.assertEqual(
                     getattr(dedicated, field), getattr(config_based, field),
@@ -329,9 +329,10 @@ class RealConfigFileTest(unittest.TestCase):
             if str(cfg.get("status")).lower() != "unverified":
                 continue
             self.assertEqual(
-                float(cfg.get("vat_refund_rate", 0.0)), 0.0,
-                f"{name}: 未検証のうちは vat_refund_rate=0.0 にすること",
+                str(cfg.get("vat_treatment", "none")), "none",
+                f"{name}: 未検証のうちは vat_treatment=none (VAT 控除なし) にすること",
             )
+            self.assertNotIn("vat_refund_rate", cfg, f"{name}: vat_refund_rate は廃止 (vat_treatment を使う)")
 
     def test_every_entry_has_notes(self):
         for name, cfg in self.configs.items():

@@ -8,8 +8,9 @@ filter_baseblu_profitable.py の出力 CSV から期待値上位 N 件を選び�
 マニフェスト (data/first_sale_sprint.json) を生成する。
 
 戦略 (docs/strategy/FIRST_SALE_SPRINT.md 参照):
-    下書き = ツール (buyma_auto_listing.py --draft、実証済み)
-    公開   = 人間 (管理画面で仕上げてクリック。未検証の自動公開は使わない)
+    下書き = 公式の一括出品 CSV (generate_bulk_upload.py で zip を作り、本人がアップロード)
+    公開   = 人間 (管理画面で仕上げてクリック。自動公開は廃止)
+    ※ 2026-10-07 以降、BUYMA のブラウザ自動操作 (buyma_auto_listing.py) は規約上の理由で既定停止
 
 使い方 (Mac):
     # 1. スプリント生成 (最新の profitable CSV から上位 10 件)
@@ -106,14 +107,14 @@ def render_checklist(manifest: SprintManifest) -> str:
             "",
             "手順:",
             "",
-            f"- [ ] 下書き作成: `python3 scripts/buyma_auto_listing.py --draft "
-            f"--from {it.row_index} --limit 1`",
+            "- [ ] 下書き作成: `python3 scripts/generate_bulk_upload.py --limit N` の zip を "
+            "https://www.buyma.com/my/sell/bulk/ からアップロード (この商品が含まれていること)",
             "- [ ] BUYMA 管理画面で下書きを開き、以下を **人間が** 確認・修正:",
             "  - [ ] 発送地 = 国内 / 神奈川県 (自動設定は 2026-06-16 修正後まだ未検証)",
             f"  - [ ] カテゴリ第 3 階層が適切か ({it.product_type or 'type不明'} — "
             "推定 leaf のカテゴリは categories.json の _todo_harvest 参照)",
             "  - [ ] 画像 (メイン+サブ)・色・サイズ・価格の目視確認",
-            "- [ ] 「出品する」を人間がクリック (⚠️ --publish 自動公開は使わない)",
+            "- [ ] 「出品する」を人間がクリック (自動公開はしない)",
             f"- [ ] 記録: `python3 scripts/first_sale_sprint.py --mark-published "
             f"{it.row_index}=ITEM_ID`",
             "",

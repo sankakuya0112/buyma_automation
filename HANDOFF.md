@@ -1,4 +1,38 @@
-# 引き継ぎノート（2026-09-24 セッション終了時点 / 11回目更新）
+# 引き継ぎノート（2026-10-07 / 12回目更新）
+
+---
+
+## 🆕 2026-10-07: M0 — 利益計算の是正とブラウザ自動操作の停止 (PR: fix/profit-calc-and-safety)
+
+### 方針 (ユーザ承認済み)
+BUYMA の規約上のリスク (許可のない外部プログラム禁止) を避けるため、ブラウザ自動操作をやめて
+**公式の一括出品 CSV** と **公式 API (申請予定)** に切り替える。PR #4 は本線にマージ済み。
+
+### やったこと
+1. **利益計算**: baseblu の VAT 二重控除を解消 (`vat_refund_rate` 0.167 → 0)、仕入先ごとの
+   `vat_treatment`、ECB 為替の自動取得 + 安全幅 3%、BUYMA 固定手数料 ¥55〜¥220、振込 ¥385、
+   カード手数料に国際送料を含める
+2. **在庫・価格確認**: 出品記録の仕入先・出品サイズごとに `/products/<handle>.js` で確認
+   (`.json` には `available` が無く、以前は全件売切/先頭サイズ価格と誤判定)。一部サイズ売切を検出。
+   BUYMA 側の停止・価格変更は本人が行い、`update_listed_prices.py --confirm ID=価格` で記録
+3. **安全**: `--publish` / `--yes` / 本公開コードを削除、検知回避設定を削除、BUYMA の自動操作は
+   `BUYMA_ALLOW_BROWSER_AUTOMATION=1` の時だけ。出品結果 CSV は追記、item_id は数字のみ
+4. **サイズ**: 最安サイズの価格で高いサイズまで出品しない (`priced_out_sizes` 列)
+5. **一括出品 CSV**: `scripts/generate_bulk_upload.py` (zip + manifest、`--import-ids`)。
+   ID 表 `data/buyma_id_tables/*.json` はプレースホルダ
+
+### ユーザ (Mac) にお願いすること
+1. `crontab -l` に `app.guard.cli` の行が無いか確認 (あれば削除。`app/guard/` は削除済み)
+2. 一括出品編集ページ (https://www.buyma.com/my/sell/bulk/) の「ID表を確認する」から ID 表 xlsx を
+   ダウンロード → `data/buyma_id_tables/*.json` に転記 (ブランド・カテゴリ・色系統・配送方法・地域)。
+   ついでに「商品リストをダウンロード」した items/colorsizes の CSV を 1 組保存 (列名テンプレート用)
+3. baseblu で日本向けの会計画面まで進み (購入はしない)、商品ページの en-us 価格から
+   さらに VAT が引かれないこと・関税の扱い (DDU) を確認
+4. シェルや `.env` に古い `EUR_TO_JPY=186` が残っていないか確認 (ECB 自動取得より優先されてしまう)
+
+---
+
+# 旧: 引き継ぎノート（2026-09-24 セッション終了時点 / 11回目更新）
 
 ---
 

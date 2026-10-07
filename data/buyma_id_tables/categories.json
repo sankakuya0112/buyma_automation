@@ -1,0 +1,5 @@
+{
+  "_placeholder": true,
+  "_note": "カテゴリパス (data/categories.json と同じ \"親 > 中 > 子\" 表記) → BUYMA カテゴリ ID。ID表の「カテゴリ」シートから転記。 本物の値を入れたら _placeholder を false にする。推測の ID は入れないこと。",
+  "entries": {}
+}

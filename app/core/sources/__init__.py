@@ -17,7 +17,9 @@ Phase 2c で導入。サイト固有のスクレイピング (scripts/*_sales_to
    - 下の `REGISTERED_SOURCES` に登録
    - `tests/test_sources.py` にメタデータ検証テストを追加
 
-`get_source()` は **専用クラス → data/sources.json → baseblu** の順に解決する。
+`get_source()` は **専用クラス → data/sources.json** の順に解決する。
+名前が空 (source_name 列の無い旧 CSV) のときだけ baseblu とみなし、
+未登録・disabled の名前は ValueError (別の仕入先の原価体系で黙って計算しない)。
 """
 
 from __future__ import annotations
@@ -45,9 +47,12 @@ def get_source(name: str) -> BaseSource:
     """source 名から BaseSource インスタンスを返す。
 
     解決順:
-      1. `REGISTERED_SOURCES` の専用クラス (baseblu / italist)
-      2. `data/sources.json` の設定 (ConfigSource)
-      3. 見つからなければ baseblu (旧 CSV の透過処理のため例外は投げない)
+      1. 名前が空 → baseblu (source_name 列の無い旧 CSV の透過処理)
+      2. `REGISTERED_SOURCES` の専用クラス (baseblu / italist)
+      3. `data/sources.json` の設定 (ConfigSource)
+      4. どれにも無い / disabled → ValueError
+         (2026-10 以前は baseblu に黙って fallback しており、別の仕入先の商品を
+          baseblu の通貨・送料・関税条件で計算してしまう危険があった)
     """
     key = (name or "").strip().lower() or DEFAULT_SOURCE_NAME
 
@@ -64,7 +69,9 @@ def get_source(name: str) -> BaseSource:
     if config is not None:
         return ConfigSource(key, config)
 
-    return REGISTERED_SOURCES[DEFAULT_SOURCE_NAME]()
+    raise ValueError(
+        f"仕入先 {name!r} は app/core/sources/ にも data/sources.json にもありません (または disabled)"
+    )
 
 
 def known_source_names() -> list[str]:

@@ -19,7 +19,8 @@ import run_autopilot as ap  # noqa: E402
 
 def _args(**kw) -> Namespace:
     base = dict(source="baseblu", skip_scrape=False, skip_market=False, market_limit=None,
-                ai_limit=30, no_ai=False, draft=0, weekly_review=False, test=False, dry_run=False)
+                ai_limit=30, no_ai=False, draft=0, weekly_review=False, test=False, dry_run=False,
+                allow_browser=True)
     base.update(kw)
     return Namespace(**base)
 
@@ -30,7 +31,8 @@ class BuildStepsTest(unittest.TestCase):
 
     def test_default_full_pipeline(self):
         names = self._names()
-        self.assertTrue(names[0].startswith("①"))
+        self.assertTrue(names[0].startswith("⓪ 為替"))
+        self.assertTrue(names[1].startswith("①"))
         self.assertTrue(any(n.startswith("③") for n in names))
         self.assertTrue(any(n.startswith("④") for n in names))
         self.assertTrue(any(n.startswith("⑤") for n in names))
@@ -42,6 +44,15 @@ class BuildStepsTest(unittest.TestCase):
         self.assertTrue(names[0].startswith("⓪"))
         self.assertFalse(any(n.startswith("①") or n.startswith("③") or n.startswith("⑥") for n in names))
 
+    def test_market_skipped_without_browser_opt_in(self):
+        names = self._names(allow_browser=False)
+        self.assertFalse(any(n.startswith("③") or n.startswith("④") for n in names))
+        self.assertTrue(any(n.startswith("②") for n in names))
+
+    def test_test_mode_has_no_fx_fetch(self):
+        steps = ap.build_steps(_args(test=True))
+        self.assertFalse(any(s.get("resolver") == "fx_refresh" for s in steps))
+
     def test_no_ai_removes_ai_steps(self):
         names = self._names(no_ai=True)
         self.assertFalse(any("AI" in n for n in names))
@@ -51,9 +62,10 @@ class BuildStepsTest(unittest.TestCase):
         names = [s["name"] for s in steps]
         self.assertFalse(any(n.startswith("①") or n.startswith("③") for n in names))
         draft = next(s for s in steps if s["name"].startswith("⑥"))
-        self.assertIn("--draft", draft["cmd"])
+        self.assertIn("generate_bulk_upload.py", draft["cmd"][1])
         self.assertEqual(draft["cmd"][draft["cmd"].index("--limit") + 1], "3")
-        self.assertIn("--yes", draft["cmd"])
+        self.assertNotIn("--yes", draft["cmd"])
+        self.assertNotIn("buyma_auto_listing.py", " ".join(draft["cmd"]))
         self.assertTrue(any(s.get("resolver") == "weekly_review" for s in steps))
 
     def test_baseblu_uses_dedicated_scraper(self):
@@ -101,7 +113,7 @@ class BuildStepsTest(unittest.TestCase):
         draft = next(s for s in steps if s["name"].startswith("⑥"))
         self.assertEqual(draft["cmd"][draft["cmd"].index("--source") + 1], "antonioli")
         self.assertEqual(draft["input_flag"], "--csv")
-        self.assertIn("--yes", draft["cmd"])
+        self.assertNotIn("--yes", draft["cmd"])
 
     def test_input_csv_args_passes_this_runs_csv(self):
         tmp = Path(tempfile.mkdtemp())

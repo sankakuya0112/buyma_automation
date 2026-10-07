@@ -15,12 +15,15 @@ Phase 2-3: 「価格追従」。仕入先 (baseblu) の値下げに追従でき�
     # 変動幅 X 円以上の商品だけレビュー用にレポート
     python3 scripts/update_listed_prices.py --threshold 5000
 
-    # BUYMA 上で実際に価格更新する (スケルトン、手動推奨)
-    python3 scripts/update_listed_prices.py --execute
+    # BUYMA で本人が価格を更新したら、その価格を記録 (次回の比較基準になる)
+    python3 scripts/update_listed_prices.py --confirm 123456789=98000
+
+    ※ BUYMA 上の価格をブラウザ自動操作で書き換える --execute は 2026-10 に廃止。
 
 データソース:
     1. 出品記録: outputs/reports/*_auto_listing_results.csv (item_id, product_url)
-    2. 最新仕入値: baseblu Shopify API の /products/{handle}.json 現在価格
+    2. 最新仕入値: 出品記録の仕入先 (source_name、無ければ URL から推定) の
+       Shopify 公開データ /products/<handle>.js。出品したサイズのうち在庫ありの最高値
     3. (任意) 市場相場: outputs/reports/*_market_prices.json
        (--market で指定。省略時は最新を自動選択、無ければ相場なしで判定)
 
@@ -32,9 +35,8 @@ Phase 2-3: 「価格追従」。仕入先 (baseblu) の値下げに追従でき�
     data/price_history.json - 過去の価格更新履歴
 
 実装状態:
-    - 差分検出ロジック: 実装済み
-    - BUYMA 上の価格更新: スケルトン (Playwright 自動操作を TODO として残す)
-      初回運用では差分レポートのみ → ユーザが手動で更新が安全。
+    - 差分検出: 実装済み (仕入先ごと・サイズごと)
+    - BUYMA 上の価格更新: 本人が BUYMA の画面 / 一括出品編集で行い、--confirm で記録する
 """
 
 from __future__ import annotations
@@ -62,14 +64,17 @@ from app.core.pricing import (
 )
 from app.core.sources import get_source
 from app.utils.reports import latest_report
+from app.utils.supplier_stock import (
+    fetch_product_snapshot,
+    known_source_hosts,
+    price_for_listing,
+    resolve_record_source,
+)
 # scripts/ は上で sys.path に入れてあるので、filter の相場 lookup をそのまま再利用する
 from filter_baseblu_profitable import get_market_stats, load_market_data
 
 HISTORY_PATH = PROJECT_ROOT / "data" / "price_history.json"
 RESULTS_GLOB = PROJECT_ROOT / "outputs" / "reports" / "*_auto_listing_results.csv"
-BASEBLU_DETAIL_API = "https://www.baseblu.com/en-us/products/{handle}.json"
-
-
 def extract_handle(url: str):
     if not url:
         return None
@@ -77,54 +82,37 @@ def extract_handle(url: str):
     return m.group(1) if m else None
 
 
-def fetch_current_source_price(handle: str) -> dict:
-    """baseblu 個別商品 JSON から最新価格を取得。"""
-    import requests
-    try:
-        resp = requests.get(
-            BASEBLU_DETAIL_API.format(handle=handle),
-            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        product = resp.json().get("product", {}) or {}
-    except Exception as e:
-        return {"error": str(e), "price_eur": None}
+def fetch_current_source_price(record: dict, source_name: str) -> dict:
+    """出品記録の仕入先から現在価格を取る (出品したサイズのうち在庫ありの最高値)。
 
-    variants = product.get("variants", []) or []
-    # 最初の available variant の price を使う
-    price = None
-    for v in variants:
-        if v.get("available") and v.get("price"):
-            try:
-                price = float(v["price"])
-                break
-            except (ValueError, TypeError):
-                continue
-    if price is None and variants:
-        try:
-            price = float(variants[0].get("price", 0))
-        except (ValueError, TypeError):
-            price = None
-
+    戻り値: {"price": 現地通貨 or None, "product_type", "title", "source_name", "error"?}
+    """
+    snap = fetch_product_snapshot(record.get("product_url") or "")
+    if snap.get("error"):
+        return {"error": snap["error"], "price": None, "source_name": source_name}
+    price = price_for_listing(snap, record.get("listed_sizes") or "", record.get("listed_color") or "")
     return {
-        "price_eur": price,
-        "product_type": product.get("product_type", ""),
-        "title": product.get("title", ""),
+        "price": price,
+        "product_type": snap.get("product_type", "") or record.get("product_type", ""),
+        "title": snap.get("title", "") or record.get("title", ""),
+        "source_name": source_name,
+        **({"error": "出品したサイズの在庫がありません"} if price is None else {}),
     }
 
 
 def build_pricing_params(latest: dict) -> PricingParams:
-    """最新の baseblu 価格から、仕入先レイヤ経由で PricingParams を組み立てる。
+    """最新の仕入値から、**その商品の仕入先** の原価体系で PricingParams を組み立てる。
 
-    カード手数料・国内送料・通関手数料・固定国際送料は get_pricing_params() でしか
+    カード手数料・国内送料・通関手数料・固定国際送料・為替は get_pricing_params() でしか
     入らないので、PricingParams を直接作らないこと。
-    仕入先は source_name 列ではなく baseblu 固定: 最新価格は baseblu の商品 JSON
-    からしか取っていないため (fetch_current_source_price)、価格とコスト体系を揃える。
-    title は baseblu の英語タイトル (靴の革/布判定のキーワードが英語のため)。
+    latest["source_name"] が空なら baseblu (旧形式の記録)。未登録の仕入先は ValueError。
+    価格のキーは "price" (旧 "price_eur" も可)。title は英語タイトル (靴の革/布判定用)。
     """
-    return get_source("baseblu").get_pricing_params(
-        sale_price=latest["price_eur"],
+    price = latest.get("price")
+    if price is None:
+        price = latest.get("price_eur")
+    return get_source(latest.get("source_name") or "").get_pricing_params(
+        sale_price=float(price),
         category=latest.get("product_type", "") or "",
         title=latest.get("title", "") or "",
     )
@@ -157,7 +145,8 @@ def decide_for_record(record: dict, latest: dict, market_data: dict | None = Non
 def load_history() -> dict:
     if HISTORY_PATH.exists():
         try:
-            return json.load(open(HISTORY_PATH, encoding="utf-8"))
+            with open(HISTORY_PATH, encoding="utf-8") as f:
+                return json.load(f)
         except Exception:
             return {}
     return {}
@@ -182,7 +171,8 @@ def load_listing_records() -> list[dict]:
             for row in csv.DictReader(f):
                 if row.get("status") not in ("draft", "published"):
                     continue
-                if not row.get("item_id"):
+                # 旧版は公開時に item_id="published" という文字列を記録していた (実 ID ではない)
+                if not str(row.get("item_id") or "").strip().isdigit():
                     continue
                 if not extract_handle(row.get("product_url") or ""):
                     legacy += 1
@@ -193,182 +183,39 @@ def load_listing_records() -> list[dict]:
     return list(recs.values())
 
 
-EDIT_URL = "https://www.buyma.com/my/sell/{item_id}/edit?tab=b"
-
-
-def _dump_edit_page_state(page, item_id: str, context: str) -> None:
-    """編集ページの主要要素を診断ダンプする。
-
-    Mac 実走の初回ログから「保存ボタンのテキスト」「価格 input の位置」を
-    確定するために使う。set_region の `_dump_section_elements` と同じ思想。
-    """
-    info = page.evaluate("""(function(){
-        function visible(el){
-            if (!el) return false;
-            var r = el.getBoundingClientRect();
-            var s = window.getComputedStyle(el);
-            return r.width > 0 && r.height > 0
-                && s.display !== 'none' && s.visibility !== 'hidden';
-        }
-        var btns = Array.from(document.querySelectorAll('button'))
-            .filter(visible)
-            .map(function(b){
-                return {
-                    text: (b.textContent || '').trim().slice(0, 30),
-                    disabled: b.disabled,
-                    cls: b.className.slice(0, 60)
-                };
-            })
-            .slice(0, 30);
-        var priceInputs = [];
-        document.querySelectorAll('input').forEach(function(el){
-            if (el.type !== 'text' || !visible(el)) return;
-            var anc = el;
-            var path = '';
-            for (var d = 0; d < 6; d++) {
-                if (!anc.parentElement) break;
-                anc = anc.parentElement;
-                var t = (anc.textContent || '');
-                if (t.includes('商品価格') || t.includes('販売価格') || t.includes('価格')) {
-                    path = t.slice(0, 80);
-                    break;
-                }
-            }
-            if (path) priceInputs.push({value: el.value, placeholder: el.placeholder, near: path});
-        });
-        return {url: location.href, buttons: btns, priceInputs: priceInputs.slice(0, 5)};
-    })()""")
-    print(f"    🔬 [DUMP-{context}] item={item_id}")
-    print(f"       url={info.get('url', '?')}")
-    for b in info.get("buttons", []):
-        print(f"       btn: '{b['text']}' disabled={b['disabled']}")
-    for p in info.get("priceInputs", []):
-        print(f"       price-input: value={p['value']!r} placeholder={p['placeholder']!r} near={p['near']!r}")
-
-
-def update_listing_price(page, item_id: str, new_price: int, dump: bool = True) -> bool:
-    """BUYMA 編集ページで販売価格を更新する。
-
-    フロー:
-        1. /my/sell/{item_id}/edit?tab=b に遷移
-        2. ページ全体スクロールで lazy render を解除
-        3. (初回 dump=True 時) 編集ページのボタン/価格 input を診断ダンプ
-        4. 商品価格 input を 6 階層 ancestor 探索で特定 → 新価格を __si() でセット
-        5. 「更新する」「保存する」「下書き保存する」のいずれかを Playwright native click
-        6. 確認モーダル ("はい"/"OK"/"保存する") があれば突破
-        7. 完了画面 or URL 変化で成否判定
-
-    diagnostic dump は Mac 実走の初回でセレクタを確定する目的。確定後は dump=False
-    で運用しても良いが、診断目的で常時 ON でも問題ない (1 商品あたり 50ms 程度)。
-    """
+def current_listed_price(record: dict, history: dict) -> int:
+    """比較基準の現売価。本人が --confirm で記録した価格を優先、無ければ出品時の CSV の価格。"""
+    confirmed = (history.get(record.get("item_id", "")) or {}).get("confirmed_listed_price_jpy")
+    if confirmed:
+        return int(confirmed)
     try:
-        page.goto(EDIT_URL.format(item_id=item_id), wait_until="domcontentloaded", timeout=20000)
-    except Exception as e:
-        print(f"    ❌ 編集ページ遷移失敗: {e}")
-        return False
+        return int(float(record.get("price") or 0))
+    except ValueError:
+        return 0
 
-    time.sleep(1.0)
-    # 既存パターンに合わせて lazy render を解除
-    try:
-        for _ in range(8):
-            page.mouse.wheel(0, 500)
-            time.sleep(0.15)
-        page.mouse.wheel(0, -8 * 500)
-    except Exception:
-        pass
 
-    if dump:
-        try:
-            _dump_edit_page_state(page, item_id, "編集ページ")
-        except Exception as e:
-            print(f"    ⚠️ dump 失敗: {e}")
-
-    # 1) 商品価格 input をセット (buyma_auto_listing.set_price と同じ ancestor 探索)
-    set_result = page.evaluate(f"""(function(){{
-        var inputs = document.querySelectorAll('input');
-        for (var i = 0; i < inputs.length; i++) {{
-            var el = inputs[i];
-            if (el.type !== 'text') continue;
-            var a = el;
-            for (var d = 0; d < 6; d++) {{
-                if (!a.parentElement) break;
-                a = a.parentElement;
-                if (a.textContent && (a.textContent.includes('商品価格')
-                                       || a.textContent.includes('販売価格'))) {{
-                    if (typeof window.__si === 'function') {{
-                        window.__si(el, {json.dumps(str(int(new_price)))});
-                    }} else {{
-                        // フォールバック: native setter + input イベント
-                        var setter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value').set;
-                        setter.call(el, {json.dumps(str(int(new_price)))});
-                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }}
-                    return 'set';
-                }}
-            }}
-        }}
-        return 'not_found';
-    }})()""")
-    if set_result != "set":
-        print(f"    ❌ 価格 input が見つからない (result={set_result})")
-        return False
-
-    # 2) 保存系ボタンを順次試す
-    save_button_texts = ["更新する", "変更を保存", "保存する", "下書き保存する"]
-    clicked_label = None
-    for label in save_button_texts:
-        btn = page.locator(f'button:has-text("{label}")').first
-        try:
-            if btn.is_visible(timeout=1500):
-                try:
-                    btn.scroll_into_view_if_needed(timeout=1500)
-                except Exception:
-                    pass
-                btn.click(timeout=4000)
-                clicked_label = label
-                break
-        except Exception:
+def confirm_prices(pairs: list[str]) -> int:
+    """--confirm ITEM_ID=PRICE を data/price_history.json に記録する。"""
+    history = load_history()
+    n = 0
+    for pair in pairs:
+        item_id, _, price = pair.partition("=")
+        item_id = item_id.strip()
+        if not item_id.isdigit() or not price.strip().isdigit():
+            print(f"❌ 形式は ITEM_ID=PRICE (数字のみ): {pair!r}")
             continue
-
-    if not clicked_label:
-        print(f"    ❌ 保存ボタンが見つからない (試行: {save_button_texts})")
-        return False
-
-    # 3) 確認モーダル突破
-    for modal_text in ["保存する", "更新する", "はい", "OK"]:
-        try:
-            modal_btn = page.locator(f'button:has-text("{modal_text}")').nth(1)
-            if modal_btn.is_visible(timeout=1000):
-                modal_btn.click(timeout=2000)
-                break
-        except Exception:
-            continue
-
-    # 4) URL 変化 or トースト/完了表示で成否判定
-    url_before = page.url
-    for _ in range(20):
-        time.sleep(0.5)
-        if page.url != url_before:
-            print(f"    ✅ 価格更新: ¥{new_price:,} ({clicked_label} → {page.url})")
-            return True
-        # 同一 URL のまま成功するパターン (toast 表示) を考慮
-        try:
-            ok = page.locator('text=保存しました').first.is_visible(timeout=500)
-            if ok:
-                print(f"    ✅ 価格更新: ¥{new_price:,} ({clicked_label}, toast)")
-                return True
-        except Exception:
-            continue
-
-    print(f"    ⚠️ 価格更新の応答未確認 ({clicked_label} クリック後 10s 経過)")
-    return False
+        rec = history.setdefault(item_id, {})
+        rec["confirmed_listed_price_jpy"] = int(price)
+        rec["confirmed_at"] = datetime.now().isoformat(timespec="seconds")
+        n += 1
+        print(f"✅ {item_id}: 現売価 ¥{int(price):,} を記録")
+    save_history(history)
+    return n
 
 
-def run(dry_run: bool, threshold: int, throttle: float, limit, market_data: dict | None = None):
+def run(threshold: int, throttle: float, limit, market_data: dict | None = None):
     print("=" * 50)
-    print(f"💰 価格追従 {'(ドライラン)' if dry_run else '(実行モード)'}")
+    print("💰 価格追従 (差分の表示のみ。BUYMA の価格は本人が更新)")
     print("=" * 50)
     if not market_data:
         print("  ℹ️ 相場データなし: 競合を見ずに目標価格で判定します (--market で指定可)")
@@ -380,34 +227,33 @@ def run(dry_run: bool, threshold: int, throttle: float, limit, market_data: dict
     if not records:
         return
 
+    hosts = known_source_hosts()
     history = load_history()
     differs = []   # (item_id, old_price, new_price, diff, title)
-    errors = 0
-    summary = {"unchanged": 0, "changed": 0, "skip": 0, "error": 0}
+    summary = {"unchanged": 0, "changed": 0, "skip": 0, "unknown_source": 0, "error": 0}
 
     for i, r in enumerate(records, 1):
         item_id = r["item_id"]
-        url = r.get("product_url", "")
-        handle = extract_handle(url)
-        if not handle:
-            errors += 1
-            summary["error"] += 1
+        source_name = resolve_record_source(r, hosts)
+        if not source_name:
+            summary["unknown_source"] += 1
+            print(f"  [{i}/{len(records)}] {item_id} ❓ 仕入先が分からないため未確認")
             continue
 
-        old_price = 0
-        try:
-            old_price = int(float(r.get("price") or 0))
-        except ValueError:
-            pass
-
-        latest = fetch_current_source_price(handle)
-        if latest.get("error") or latest.get("price_eur") is None:
+        old_price = current_listed_price(r, history)
+        latest = fetch_current_source_price(r, source_name)
+        if latest.get("error") or latest.get("price") is None:
             summary["error"] += 1
-            print(f"  [{i}/{len(records)}] {item_id} ❌ 取得失敗")
+            print(f"  [{i}/{len(records)}] {item_id} ❌ 取得失敗 ({latest.get('error', '')[:60]})")
             time.sleep(throttle)
             continue
 
-        result, decision = decide_for_record(r, latest, market_data)
+        try:
+            result, decision = decide_for_record(r, latest, market_data)
+        except ValueError as exc:   # 未登録の仕入先など
+            summary["error"] += 1
+            print(f"  [{i}/{len(records)}] {item_id} ❌ {exc}")
+            continue
 
         if decision.action == "skip":
             summary["skip"] += 1
@@ -424,17 +270,19 @@ def run(dry_run: bool, threshold: int, throttle: float, limit, market_data: dict
             differs.append((item_id, old_price, new_price, diff, r.get("title", "")))
             print(f"  [{i}/{len(records)}] {item_id} 💱 ¥{old_price:,} → ¥{new_price:,} ({diff:+,})")
 
-        # history 更新
-        history[item_id] = {
-            "last_check_at": datetime.now().isoformat(),
-            "source_price_eur": latest["price_eur"],
+        rec = history.setdefault(item_id, {})
+        rec.update({
+            "last_check_at": datetime.now().isoformat(timespec="seconds"),
+            "source_name": source_name,
+            "source_price_local": latest["price"],
+            "exchange_rate": result.exchange_rate,
             "target_price_jpy": result.selling_price_jpy,
             "final_price_jpy": new_price,
-            "current_listed_price_jpy": old_price,
+            "compared_listed_price_jpy": old_price,
             "decision_reason": decision.reason,
             "market_median_jpy": decision.market_median_jpy,
             "market_sample_count": decision.market_sample_count,
-        }
+        })
         time.sleep(throttle)
 
     save_history(history)
@@ -450,47 +298,12 @@ def run(dry_run: bool, threshold: int, throttle: float, limit, market_data: dict
         print("\n✅ 閾値以上の変動なし")
         return
 
-    print(f"\n💡 更新候補 ({len(differs)} 件, 閾値 ±¥{threshold:,}):")
+    print(f"\n💡 更新候補 ({len(differs)} 件, 閾値 ±¥{threshold:,}) — BUYMA で本人が更新し、--confirm で記録:")
     for item_id, old, new, d, title in differs:
         print(f"  {item_id} | {title[:35]}")
         print(f"    ¥{old:,} → ¥{new:,} ({d:+,})")
         print(f"    → https://www.buyma.com/my/sell/{item_id}/edit?tab=b")
-
-    if dry_run:
-        print("\n💡 --execute で実際の更新を試みます (現状スケルトン、手動更新推奨)")
-        return
-
-    # execute モード: 価格更新ループ (現状スケルトン)
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("❌ Playwright 未インストール、更新処理スキップ")
-        return
-
-    from buyma_auto_listing import login, load_config
-    config = load_config()
-    print("\n🛠 価格更新を開始...")
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            locale="ja-JP",
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-        page = ctx.new_page()
-        if not login(page, config["buyma_email"], config["buyma_password"]):
-            print("❌ ログイン失敗")
-            browser.close()
-            return
-        for item_id, _, new_price, _, _ in differs:
-            if update_listing_price(page, item_id, new_price):
-                print(f"  ✅ 更新: {item_id} → ¥{new_price:,}")
-            else:
-                print(f"  ⚠️ スケルトン未実装: {item_id}")
-            time.sleep(1.0)
-        browser.close()
+        print(f"    記録: python3 scripts/update_listed_prices.py --confirm {item_id}={new}")
 
 
 def resolve_market_path(market_arg: str | None) -> str | None:
@@ -503,9 +316,13 @@ def resolve_market_path(market_arg: str | None) -> str | None:
 
 
 def main(argv=None):
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="出品中商品の価格追従")
-    parser.add_argument("--dry-run", action="store_true", help="差分検出のみ (default)")
-    parser.add_argument("--execute", action="store_true", help="BUYMA で価格を実際に更新")
+    parser.add_argument("--dry-run", action="store_true", help="(互換用。常に差分の表示のみ)")
+    parser.add_argument("--execute", action="store_true", help="廃止: BUYMA の価格は自動更新しません")
+    parser.add_argument("--confirm", nargs="+", metavar="ITEM_ID=PRICE",
+                        help="BUYMA で本人が更新した現売価を記録 (次回の比較基準)")
     parser.add_argument("--threshold", type=int, default=3000,
                         help="更新候補とする価格差分 (円、default 3000)")
     parser.add_argument("--throttle", type=float, default=0.8)
@@ -513,10 +330,16 @@ def main(argv=None):
     parser.add_argument("--market", help="相場 JSON (fetch_buyma_market_prices.py の出力)。"
                         "省略時は outputs/reports の最新 *_market_prices.json、'' で相場なし")
     args = parser.parse_args(argv)
+    if args.execute:
+        from app.utils.automation_guard import refuse_buyma_write
+        refuse_buyma_write("BUYMA の価格更新 (update_listed_prices --execute)")
+    if args.confirm:
+        confirm_prices(args.confirm)
+        return
     market_path = resolve_market_path(args.market)
     if market_path:
         print(f"📈 相場: {market_path}")
-    run(dry_run=not args.execute, threshold=args.threshold, throttle=args.throttle, limit=args.limit,
+    run(threshold=args.threshold, throttle=args.throttle, limit=args.limit,
         market_data=load_market_data(market_path))
 
 

@@ -59,20 +59,20 @@ if _SCRIPTS_DIR not in sys.path:
 from baseblu_sales_to_csv import (  # noqa: E402
     _extract_color,
     _extract_season,
-    _extract_sizes,
     _extract_sku_from_description,
     _extract_sku_from_variant,
     strip_html,
 )
 
 from app.core.sources import ConfigSource, get_source_config, load_source_configs  # noqa: E402
+from app.utils.variant_select import all_sizes, select_listing_variants  # noqa: E402
 
 OUTPUT_DIR = _PROJECT_ROOT / "outputs" / "reports"
 
 # CSV の列。filter_baseblu_profitable.py が読む形式に揃えること。
 CSV_FIELDNAMES = [
     "title", "vendor", "product_type", "sku",
-    "color", "sizes", "available_sizes", "season",
+    "color", "sizes", "available_sizes", "priced_out_sizes", "season",
     "sale_price", "original_price", "discount_rate", "available",
     "description_en", "image_url", "sub_images", "product_url",
     "source_name", "currency", "landed_cost_basis",
@@ -156,18 +156,12 @@ def parse_shopify_product(product: dict, source: ConfigSource) -> dict | None:
     if not variants:
         return None
 
-    # 在庫判定はバリアント横断。variants[0] だけ見ると「最初のサイズだけ売切」の
-    # 商品を在庫なし扱いにして機会損失する (2026-06 の実バグ)。
-    available = any(v.get("available", False) for v in variants)
-
-    def _price(v: dict) -> float:
-        try:
-            return float(v.get("price", 0))
-        except (TypeError, ValueError):
-            return float("inf")
-
-    available_variants = [v for v in variants if v.get("available", False)]
-    variant = min(available_variants, key=_price) if available_variants else variants[0]
+    # 在庫判定はバリアント横断 (variants[0] だけ見ると「最初のサイズだけ売切」を在庫なし扱い)。
+    # 価格の基準は在庫ありの最安バリアント、出品サイズはその価格で買えるものだけ
+    # (app/utils/variant_select.py)。
+    picked = select_listing_variants(variants, product.get("options"))
+    available = picked["available"]
+    variant = picked["variant"]
 
     sku = _extract_sku_from_variant(variant.get("sku", ""), variant.get("option1", ""))
 
@@ -201,9 +195,10 @@ def parse_shopify_product(product: dict, source: ConfigSource) -> dict | None:
         "vendor": product.get("vendor", ""),
         "product_type": product.get("product_type", ""),
         "sku": sku,
-        "color": _extract_color(product),
-        "sizes": _extract_sizes(variants, only_available=False),
-        "available_sizes": _extract_sizes(variants, only_available=True),
+        "color": picked["listing_color"] or _extract_color(product),
+        "sizes": all_sizes(variants, product.get("options")),
+        "available_sizes": picked["available_sizes"],
+        "priced_out_sizes": picked["priced_out_sizes"],
         "season": _extract_season(description_en),
         "sale_price": sale_price,
         "original_price": original_price,

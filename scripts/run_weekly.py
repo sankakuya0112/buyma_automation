@@ -20,7 +20,7 @@ run_weekly.py — 週次パイプラインを 1 コマンドで実行するラ�
 
 オプション:
     --skip-scrape    今日すでに取得済みのセール CSV を再利用
-    --skip-market    相場取得を飛ばす (フィルタ 1 回のみ)
+    --skip-market    相場取得を飛ばす (フィルタ 1 回のみ。BUYMA_ALLOW_BROWSER_AUTOMATION=1 で無ければ自動で飛ばす)
     --market-limit N 相場取得の件数上限 (時間短縮、デバッグ用)
     --probe          ブランド単位の需要調査も行う (時間がかかる)
     --dry-run        実行せずコマンドだけ表示
@@ -40,6 +40,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = PROJECT_ROOT / "scripts"
 REPORTS = PROJECT_ROOT / "outputs" / "reports"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.utils.reports import latest_report  # noqa: E402  (2026-10: import 漏れで ④ が NameError だった)
 
 
 def _latest(kind: str, source: str | None = "baseblu") -> str | None:
@@ -62,6 +66,11 @@ def build_steps(args) -> list[dict]:
     """
     py = sys.executable or "python3"
     steps: list[dict] = []
+    # BUYMA の検索ページをブラウザで読む ③ と --probe は、BUYMA_ALLOW_BROWSER_AUTOMATION=1 の時だけ
+    allow_browser = getattr(args, "allow_browser", None)
+    if allow_browser is None:
+        from app.utils.automation_guard import browser_automation_allowed
+        allow_browser = browser_automation_allowed()
 
     if not args.skip_scrape:
         steps.append({
@@ -76,7 +85,7 @@ def build_steps(args) -> list[dict]:
         "required": True,
     })
 
-    if not args.skip_market:
+    if not args.skip_market and allow_browser:
         market_cmd = [py, str(SCRIPTS / "fetch_buyma_market_prices.py"), "--csv", "latest"]
         if args.market_limit:
             market_cmd += ["--limit", str(args.market_limit)]
@@ -92,7 +101,7 @@ def build_steps(args) -> list[dict]:
             "required": True,
         })
 
-    if args.probe:
+    if args.probe and allow_browser:
         steps.append({
             "name": "⑤ ブランド需要の能動調査 (--probe)",
             "cmd": [py, str(SCRIPTS / "scout_demand.py"), "--probe-from-csv", "latest"],
@@ -134,6 +143,8 @@ def main():
                         help="実行せずコマンドだけ表示")
     args = parser.parse_args()
 
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の BUYMA_ALLOW_BROWSER_AUTOMATION などを工程の組み立て前に反映
     steps = build_steps(args)
 
     print("=" * 60)
@@ -188,8 +199,8 @@ def main():
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順): {final_csv}")
     print()
-    print("次のステップ (出品テスト):")
-    print("   python3 scripts/buyma_auto_listing.py --draft --limit 1 --hold")
+    print("次のステップ (一括出品 zip を作る・下書き):")
+    print("   python3 scripts/generate_bulk_upload.py --limit 3")
 
 
 if __name__ == "__main__":

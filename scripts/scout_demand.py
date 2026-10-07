@@ -244,15 +244,14 @@ def probe_brands(brands: list[str]) -> None:
     )
     from playwright.sync_api import sync_playwright
 
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 検索ページのブランド需要調査 (scout_demand --probe)")
+
     print(f"🔍 {len(brands)} ブランドの BUYMA 需要を調査...")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
             locale="ja-JP",
         )
         page = ctx.new_page()

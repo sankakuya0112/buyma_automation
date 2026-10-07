@@ -1,0 +1,5 @@
+{
+  "_placeholder": true,
+  "_note": "参考: 地域名 → 買付地/発送地 ID (ID表の「買付地・発送地」シート)。実際に使うのは defaults.json の *_area_id / *_city_id。 本物の値を入れたら _placeholder を false にする。推測の ID は入れないこと。",
+  "entries": {}
+}

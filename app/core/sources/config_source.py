@@ -12,7 +12,7 @@
 設計上の約束:
   - 設定値が壊れていたら **黙って既定値で動かさず** ValueError を投げる。
     原価計算に直結するため、誤った値で出品するより止まる方が安全。
-  - landed_cost_basis / vat_refund_rate が不明な仕入先は DDU + 0.0 にする。
+  - landed_cost_basis / VAT の扱いが不明な仕入先は DDU + vat_treatment="none" にする。
     原価を高めに見積もる = 赤字出品より機会損失を選ぶ、という安全側の倒し方。
 """
 
@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from app.core.sources.base import BaseSource
+from app.core.sources.base import VAT_TREATMENTS, BaseSource, resolve_vat_refund_rate
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DEFAULT_SOURCES_PATH = PROJECT_ROOT / "data" / "sources.json"
@@ -132,8 +132,9 @@ def validate_source_config(name: str, cfg: dict) -> None:
             f"{cfg['product_url_template']!r}"
         )
 
+    resolve_config_vat(name, cfg)  # VAT の扱いを検証 (不正なら ValueError)
+
     for field, default in (
-        ("vat_refund_rate", 0.0),
         ("purchase_fx_fee_rate", 0.0),
         ("customs_handling_rate", BaseSource.customs_handling_rate),
     ):
@@ -151,6 +152,50 @@ def validate_source_config(name: str, cfg: dict) -> None:
                 raise ValueError
         except (TypeError, ValueError) as exc:
             raise ValueError(f"sources.{name}.{field} は 0 以上の数値か null にしてください: {value!r}") from exc
+
+
+def resolve_config_vat(name: str, cfg: dict) -> tuple[str, float, float]:
+    """設定から (vat_treatment, local_vat_rate, 控除率) を決める。
+
+    - 新形式: "vat_treatment": "none" | "deducted_at_checkout" (+ "local_vat_rate": 0.22)
+    - 旧形式の "vat_refund_rate" は 0.0 のときだけ受け付ける ("none" と同じ)。
+      0.167 のような手書きの控除率は「VAT 抜き価格への二重控除」「22% 国での控除不足」の
+      どちらも起こすので、明示的な vat_treatment への書き換えを求めて止める。
+    """
+    treatment = cfg.get("vat_treatment")
+    local_rate_raw = cfg.get("local_vat_rate", 0.0)
+    try:
+        local_rate = float(local_rate_raw or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"sources.{name}.local_vat_rate が数値ではありません: {local_rate_raw!r}") from exc
+    if not 0.0 <= local_rate < 0.5:
+        raise ValueError(f"sources.{name}.local_vat_rate は 0.0-0.5 の割合で指定してください: {local_rate}")
+
+    legacy = None
+    if "vat_refund_rate" in cfg and cfg.get("vat_refund_rate") is not None:
+        legacy = _require_rate(name, cfg, "vat_refund_rate", 0.0)
+
+    if treatment is None:
+        if legacy and legacy > 0:
+            raise ValueError(
+                f"sources.{name}.vat_refund_rate={legacy} は廃止しました。"
+                '"vat_treatment": "none" (表示価格がそのまま請求される) か '
+                '"deducted_at_checkout" + "local_vat_rate" (VAT 込み表示で会計時に外れる) で書いてください'
+            )
+        treatment = "none"
+    treatment = str(treatment).strip().lower()
+    if treatment not in VAT_TREATMENTS:
+        raise ValueError(f"sources.{name}.vat_treatment は {'/'.join(VAT_TREATMENTS)} のいずれか: {treatment!r}")
+    try:
+        refund = resolve_vat_refund_rate(treatment, local_rate)
+    except ValueError as exc:
+        raise ValueError(f"sources.{name}: {exc}") from exc
+    if legacy is not None and abs(legacy - refund) > 1e-4:
+        raise ValueError(
+            f"sources.{name}.vat_refund_rate={legacy} が vat_treatment から決まる控除率 {refund} と矛盾します "
+            "(vat_refund_rate を削除してください)"
+        )
+    return treatment, local_rate, refund
 
 
 def get_source_config(name: str, path: str | Path | None = None) -> Optional[dict]:
@@ -188,7 +233,7 @@ class ConfigSource(BaseSource):
         self.currency = str(config["currency"]).upper()
         self.country = str(config["country"]).upper()
         self.landed_cost_basis = str(config["landed_cost_basis"]).upper()  # type: ignore[assignment]
-        self.vat_refund_rate = _require_rate(self.name, config, "vat_refund_rate", 0.0)
+        self.vat_treatment, self.local_vat_rate, _ = resolve_config_vat(self.name, config)
         self.purchase_fx_fee_rate = _require_rate(self.name, config, "purchase_fx_fee_rate", 0.0)
         self.domestic_shipping_jpy = float(config.get("domestic_shipping_jpy") or 0.0)
         # 省略時は BaseSource の既定値 (DHL 受取人払い 2,200 円 / 2%)

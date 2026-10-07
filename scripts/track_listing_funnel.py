@@ -106,6 +106,9 @@ def print_report(history: dict, snapshot: dict) -> None:
 
 
 def run(max_pages: int, debug_html: bool, headless: bool) -> None:
+    # 関数を直接呼ばれても止める (CLI の入口だけでは不十分)
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 出品リストの自動取得 (track_listing_funnel)")
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -123,10 +126,6 @@ def run(max_pages: int, debug_html: bool, headless: bool) -> None:
         browser = pw.chromium.launch(**launch_kwargs)
         ctx = browser.new_context(
             locale="ja-JP",
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
         )
         page = ctx.new_page()
         if not login(page, config["buyma_email"], config["buyma_password"]):
@@ -163,6 +162,8 @@ def main() -> None:
                         help=f"1 ページ目の HTML を {DEBUG_HTML_PATH} に保存")
     parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 出品リストの自動取得 (track_listing_funnel)")
     run(max_pages=args.max_pages, debug_html=args.debug_html, headless=args.headless)
 
 

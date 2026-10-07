@@ -1,0 +1,33 @@
+{
+  "_note": [
+    "候補選定 (scripts/select_listing_candidates.py) で「BUYMA で売れやすいブランド」を優先するための暫定の重み。",
+    "⚠️ 実測ではなく経験則の推測 (2026-10-08 作成)。BUYMA の検索結果はスクレイピングしない方針のため、",
+    "実売・本人の目視確認・公式 API で取れるデータが貯まったら置き換える (scripts/scout_demand.py の demand_index も可)。",
+    "A = 知名度が高く BUYMA でも取扱い・需要が多いと考えられるブランド / B = 一定の需要が見込めるブランド / 記載なし = C",
+    "aliases は仕入先の表記ゆれ → BUYMA でのブランド表記 (検索・ブランド選択の目安)。大文字小文字は無視"
+  ],
+  "tiers": {
+    "A": [
+      "MAISON MARGIELA", "MM6 MAISON MARGIELA", "MONCLER", "GUCCI", "PRADA", "MIU MIU", "SAINT LAURENT",
+      "BOTTEGA VENETA", "LOEWE", "CELINE", "BALENCIAGA", "FENDI", "VALENTINO", "GIVENCHY", "BURBERRY",
+      "DIOR", "THOM BROWNE", "MAX MARA", "S MAX MARA", "ACNE STUDIOS", "JIL SANDER", "STONE ISLAND",
+      "CANADA GOOSE", "GOLDEN GOOSE", "TOTEME", "LEMAIRE", "A.P.C.", "AMI PARIS", "MAISON KITSUNE",
+      "MARNI", "CHLOE", "ALAIA", "FERRAGAMO", "BRUNELLO CUCINELLI", "DOLCE & GABBANA", "VERSACE",
+      "ALEXANDER MCQUEEN", "LORO PIANA", "TOM FORD", "BALMAIN", "OFF-WHITE", "RICK OWENS"
+    ],
+    "B": [
+      "ETRO", "PT TORINO", "VEJA", "NEW BALANCE", "AGOLDE", "STUART WEITZMAN", "CASADEI", "LARDINI",
+      "PHILIPP PLEIN", "PALM ANGELS", "ISABEL MARANT", "SEE BY CHLOE", "KENZO", "MSGM", "Y-3", "ADIDAS",
+      "HERNO", "FAY", "TOD'S", "MISSONI", "MOSCHINO", "DSQUARED2", "WOOLRICH", "AMIRI", "SACAI",
+      "COMME DES GARCONS", "ISSEY MIYAKE", "VIVIENNE WESTWOOD", "GANNI", "AURALEE"
+    ]
+  },
+  "aliases": {
+    "MARGIELA": "MAISON MARGIELA",
+    "MM6": "MM6 MAISON MARGIELA",
+    "ALAÏA": "ALAIA",
+    "CHLOÉ": "CHLOE",
+    "SALVATORE FERRAGAMO": "FERRAGAMO",
+    "YVES SAINT LAURENT": "SAINT LAURENT"
+  }
+}

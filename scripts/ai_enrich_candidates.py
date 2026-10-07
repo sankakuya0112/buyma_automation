@@ -23,13 +23,13 @@ ai_enrich_candidates.py — 利益フィルタ済み CSV の上位 N 件だけ�
     python3 scripts/ai_enrich_candidates.py --limit 10     # 上位 10 件
     python3 scripts/ai_enrich_candidates.py --dry-run      # 送信内容とトークン概算だけ表示
     python3 scripts/ai_enrich_candidates.py --no-judge     # 審査を省略 (出品文とカテゴリのみ)
+    python3 scripts/ai_enrich_candidates.py --source italist # 仕入先を絞って最新 CSV を選ぶ
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import json
 import os
 import sys
@@ -51,6 +51,7 @@ from app.ai.router import policy_for, resolve_model, price_table  # noqa: E402
 from app.ai.tasks import category as category_task  # noqa: E402
 from app.ai.tasks import judge as judge_task  # noqa: E402
 from app.ai.tasks import listing_copy as copy_task  # noqa: E402
+from app.utils.reports import latest_report  # noqa: E402
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "reports"
 CATEGORIES_PATH = PROJECT_ROOT / "data" / "categories.json"
@@ -63,9 +64,9 @@ AI_COLUMNS = [
 ]
 
 
-def latest_profitable_csv() -> str | None:
-    files = sorted(glob.glob(str(OUTPUT_DIR / "*_profitable_products.csv")), reverse=True)
-    return files[0] if files else None
+def latest_profitable_csv(source: str | None = None) -> str | None:
+    """最新の *_profitable_products.csv。source で仕入先を絞る (同日に複数仕入先を回した場合の取り違え防止)。"""
+    return latest_report("profitable_products.csv", source=source, reports_dir=OUTPUT_DIR)
 
 
 def load_rows(path: str) -> tuple[list[dict], list[str]]:
@@ -220,7 +221,8 @@ def dry_run_report(rows: list[dict], cand_idx: list[int], cat_data: dict) -> dic
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="利益フィルタ済み CSV を AI で補強する")
-    parser.add_argument("--input", help="入力 CSV (省略時は最新の *_profitable_products.csv)")
+    parser.add_argument("--input", help="入力 CSV (省略時は最新の *_profitable_products.csv。--source で仕入先を絞る)")
+    parser.add_argument("--source", help="仕入先名 (--input 省略時に *_<source>_profitable_products.csv の最新を選ぶ)")
     parser.add_argument("--output", help="出力 CSV (省略時は入力を上書き)")
     parser.add_argument("--limit", type=int, default=30, help="AI に送る上位件数 (デフォルト 30)")
     parser.add_argument("--no-copy", action="store_true", help="出品文生成を省略")
@@ -229,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="送信せずトークン概算だけ表示")
     args = parser.parse_args(argv)
 
-    input_path = args.input or latest_profitable_csv()
+    input_path = args.input or latest_profitable_csv(args.source)
     if not input_path or not os.path.exists(input_path):
         print("❌ 入力 CSV が見つかりません。先に filter_baseblu_profitable.py を実行してください。")
         return 1

@@ -315,5 +315,37 @@ class BuymaTitleTrimTest(unittest.TestCase):
         self.assertTrue(out.endswith("..."))
 
 
+class BuildResultRowTest(unittest.TestCase):
+    """出品結果 CSV の行 (2026-09-24: product_url 等が無く在庫確認・価格追従が動かなかった)。"""
+
+    PRODUCT = {
+        "title": "Leather Tote", "vendor": "GUCCI", "recommended_price": "70800",
+        "sku": "ABC_123", "product_type": "BAGS",
+        "product_url": "https://www.baseblu.com/en-us/products/gucci-leather-tote",
+        "source_name": "baseblu", "color": "Black",
+    }
+
+    def test_row_keys_match_fieldnames(self):
+        from app.utils.listing_helpers import RESULT_FIELDNAMES, build_result_row
+        row = build_result_row(self.PRODUCT, "draft", "133231149", "2026-09-24 09:00:00")
+        self.assertEqual(tuple(row.keys()), RESULT_FIELDNAMES)
+
+    def test_row_carries_supplier_url_and_ids(self):
+        from app.utils.listing_helpers import build_result_row
+        row = build_result_row(self.PRODUCT, "draft", "133231149", "2026-09-24 09:00:00")
+        self.assertEqual(row["product_url"], self.PRODUCT["product_url"])
+        self.assertEqual(row["sku"], "ABC_123")
+        self.assertEqual(row["source_name"], "baseblu")
+        self.assertEqual(row["price"], "70800")
+        self.assertEqual(row["item_id"], "133231149")
+
+    def test_missing_fields_become_empty_strings(self):
+        from app.utils.listing_helpers import RESULT_FIELDNAMES, build_result_row
+        row = build_result_row({"title": "x"}, "error", None, "t")
+        self.assertEqual(row["item_id"], "")
+        self.assertEqual(row["product_url"], "")
+        self.assertEqual(set(row) , set(RESULT_FIELDNAMES))
+
+
 if __name__ == "__main__":
     unittest.main()

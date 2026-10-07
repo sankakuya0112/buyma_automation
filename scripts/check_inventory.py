@@ -79,8 +79,13 @@ def save_status(data: dict) -> None:
 
 
 def load_all_listing_results() -> list[dict]:
-    """過去の自動出品結果 CSV を全部マージして返す。"""
+    """過去の自動出品結果 CSV を全部マージして返す。
+
+    仕入先 URL (product_url) からハンドルを取れない行は在庫確認できないので除外し、
+    件数だけ 1 回表示する (2026-09-24 以前の旧形式 CSV には product_url 列が無い)。
+    """
     all_rows = []
+    legacy = 0
     for path in sorted(glob.glob(str(RESULTS_GLOB))):
         with open(path, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
@@ -88,7 +93,12 @@ def load_all_listing_results() -> list[dict]:
                     continue
                 if not row.get("item_id"):
                     continue
+                if not extract_handle(row.get("product_url") or ""):
+                    legacy += 1
+                    continue
                 all_rows.append(row)
+    if legacy:
+        print(f"ℹ️ 仕入先 URL の無い旧形式の出品記録 {legacy} 件は対象外 (product_url 列が無い CSV)")
     return all_rows
 
 

@@ -1,5 +1,10 @@
 # PHASE2: Guard（在庫・価格監視システム）
 
+> ⚠️ **2026-04 時点の設計書 (歴史的資料)。** ここで前提にしている第 2 世代コード
+> (`app/scouts` / `app/guard` / `app/core/models.py` / `scripts/run_pipeline.py` など) は 2026-09-24 に削除済み。
+> 現行の実装と使い方は `README.md`、作業状況は `HANDOFF.md` を参照。
+
+
 ## 概要
 
 PHASE1 で構築した基盤の上に、Guard（番人）機能を実装します。Guard は出品済みの商品について、1日1-2回の頻度で以下を監視します：

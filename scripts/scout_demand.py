@@ -66,6 +66,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.utils.reports import latest_report  # noqa: E402
+
 CACHE_DIR = PROJECT_ROOT / "data" / "market_cache"
 DEFAULT_INDEX_PATH = PROJECT_ROOT / "data" / "demand_index.json"
 
@@ -177,10 +179,9 @@ def print_index_report(index: dict) -> None:
             )
 
 
-def latest_sales_csv() -> str | None:
-    pattern = str(PROJECT_ROOT / "outputs" / "reports" / "*_baseblu_sales_products_sorted.csv")
-    files = sorted(glob.glob(pattern))
-    return files[-1] if files else None
+def latest_sales_csv(source: str | None = None, reports_dir=None) -> str | None:
+    """最新の仕入元セール CSV。source で仕入先を絞る (省略時は全仕入先の最新)。"""
+    return latest_report("sales_products_sorted.csv", source=source, reports_dir=reports_dir)
 
 
 def match_source(index: dict, csv_path: str) -> list[dict]:
@@ -294,6 +295,7 @@ def main():
                         help="ブランドの BUYMA 需要を能動調査 (Mac 専用)")
     parser.add_argument("--probe-from-csv", metavar="CSV",
                         help="CSV の全 vendor を需要調査 (Mac 専用、'latest' 可)")
+    parser.add_argument("--source", help="仕入先名。'latest' の解決を *_<source>_sales_products_sorted.csv に絞る")
     args = parser.parse_args()
 
     # モード 3: 能動調査 (Mac)
@@ -302,7 +304,7 @@ def main():
         if args.probe_from_csv:
             csv_path = args.probe_from_csv
             if csv_path.lower() == "latest":
-                csv_path = latest_sales_csv()
+                csv_path = latest_sales_csv(args.source)
                 if not csv_path:
                     print("❌ セール CSV が見つかりません")
                     sys.exit(1)
@@ -337,7 +339,7 @@ def main():
     if args.match_source:
         csv_path = args.match_source
         if csv_path.lower() == "latest":
-            csv_path = latest_sales_csv()
+            csv_path = latest_sales_csv(args.source)
         if not csv_path or not Path(csv_path).exists():
             print(f"❌ セール CSV が見つかりません: {args.match_source}")
             sys.exit(1)

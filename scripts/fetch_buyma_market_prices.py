@@ -48,6 +48,8 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.utils.reports import latest_report  # noqa: E402
+
 CACHE_DIR = PROJECT_ROOT / "data" / "market_cache"
 CACHE_TTL_HOURS = 24
 SEARCH_URL_BASE = "https://www.buyma.com/r/"
@@ -666,12 +668,26 @@ def fetch_market_with_fallback(
     return {"brand": brand, "source": "none", "sample_count": 0, "median_jpy": None}
 
 
+def resolve_csv_path(csv_arg: str, source: str | None = None, reports_dir=None) -> tuple[str | None, bool]:
+    """--csv の解決。'latest' または存在しないパスなら最新の profitable CSV を選ぶ。
+
+    source を指定すると *_<source>_profitable_products.csv に限定する
+    (2026-09-24 以前は baseblu 固定で、他の仕入先の実行でも baseblu の表を読んでいた)。
+    戻り値は (パス or None, 自動選択したか)。
+    """
+    if csv_arg and csv_arg.lower() != "latest" and os.path.exists(csv_arg):
+        return csv_arg, False
+    return latest_report("profitable_products.csv", source=source, reports_dir=reports_dir), True
+
+
 def main():
     parser = argparse.ArgumentParser(description="BUYMA 市場価格スクレイパー")
     parser.add_argument("--brand", help="単発: ブランド名")
     parser.add_argument("--keyword", help="単発: 商品キーワード")
     parser.add_argument("--sku", help="単発: SKU (型番)。指定時は SKU 検索を優先、フォールバックで keyword")
     parser.add_argument("--csv", help="CSV 全件処理: profitable CSV のパス ('latest' で自動選択)")
+    parser.add_argument("--source", help="仕入先名 (baseblu / antonioli など)。--csv latest の解決先を "
+                        "*_<source>_profitable_products.csv に限定 (省略時は全仕入先の最新)")
     parser.add_argument("--no-fetch", action="store_true", help="ネット取得せずキャッシュのみ集計")
     parser.add_argument("--out", help="集計 JSON 出力先 (CSV モード時)")
     parser.add_argument("--limit", type=int, help="CSV モード時の処理件数上限")
@@ -753,19 +769,15 @@ def main():
         parser.error("--brand+--keyword または --csv のいずれかを指定してください")
 
     # "latest" または存在しないパス → 最新の profitable CSV を自動選択
-    csv_path = args.csv
-    if csv_path.lower() == "latest" or not os.path.exists(csv_path):
-        pattern = str(PROJECT_ROOT / "outputs" / "reports" / "*_baseblu_profitable_products.csv")
-        import glob as _g
-        candidates = sorted(_g.glob(pattern))
-        if not candidates:
-            print(f"❌ CSV not found: {csv_path} & no auto-detect candidate")
-            sys.exit(1)
-        auto = candidates[-1]
-        if csv_path.lower() != "latest":
-            print(f"⚠️ 指定 CSV が見つかりません: {csv_path}")
-        print(f"📂 最新の profitable CSV を自動選択: {auto}")
-        csv_path = auto
+    csv_path, auto_selected = resolve_csv_path(args.csv, args.source)
+    if not csv_path:
+        print(f"❌ CSV not found: {args.csv} & no auto-detect candidate"
+              + (f" (source={args.source})" if args.source else ""))
+        sys.exit(1)
+    if auto_selected:
+        if args.csv.lower() != "latest":
+            print(f"⚠️ 指定 CSV が見つかりません: {args.csv}")
+        print(f"📂 最新の profitable CSV を自動選択: {csv_path}")
 
     print(f"📂 CSV: {csv_path}")
     with open(csv_path, encoding="utf-8-sig") as f:

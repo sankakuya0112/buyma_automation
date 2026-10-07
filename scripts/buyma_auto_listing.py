@@ -65,8 +65,10 @@ except Exception:
     _translate_description_advanced = None
 
 # 純粋関数は app.utils.listing_helpers に切り出し済み (Phase 2c+)
+from app.utils.reports import latest_report
 from app.utils.listing_helpers import (
     COLOR_JA_MAP,
+    RESULT_FIELDNAMES,
     _ALPHA_SIZE_TO_JP,
     _EU_SHOE_TO_JP_CM,
     _IT_SIZE_RANGES,
@@ -74,6 +76,7 @@ from app.utils.listing_helpers import (
     _map_footwear_to_jp_cm,
     _strip_accents,
     _trim_buyma_title,
+    build_result_row,
     classify_size_category,
     clean_source_description,
     evaluate_listing_readiness,
@@ -552,7 +555,7 @@ def resolve_listing_color(product: dict) -> tuple:
     return color_jp, (first_color_en or color_jp)
 
 
-def load_products(max_price=None, min_profit=None):
+def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
     """
     利益商品 CSV から商品データを読み込む。
 
@@ -565,16 +568,21 @@ def load_products(max_price=None, min_profit=None):
     Args:
         max_price: 販売価格上限（円）。指定時はこの価格以下の商品のみ。
         min_profit: 最低利益（円）。指定時はこの利益以上の商品のみ。
+        csv_path: 明示的な CSV パス（run_autopilot が ②/④ で書いた表を渡す）。"latest" は自動選択。
+        source: 仕入先名。自動選択を *_<source>_profitable_products.csv に絞る
+                （同じ日に複数の仕入先を回したとき別の表を読まないため）。
     """
-    profitable_files = sorted(
-        glob.glob(os.path.join(OUTPUT_DIR, "*_profitable_products.csv")),
-        reverse=True,
-    )
-    if not profitable_files:
-        print("❌ 利益商品 CSV が見つかりません。先に sales_to_csv → filter_baseblu_profitable.py を実行してください。")
+    if csv_path and csv_path.lower() != "latest" and os.path.exists(csv_path):
+        latest_csv = csv_path
+    else:
+        if csv_path and csv_path.lower() != "latest":
+            print(f"⚠️ 指定 CSV が見つかりません: {csv_path} → 最新を自動選択します")
+        latest_csv = latest_report("profitable_products.csv", source=source, reports_dir=OUTPUT_DIR)
+    if not latest_csv:
+        print("❌ 利益商品 CSV が見つかりません。先に sales_to_csv → filter_baseblu_profitable.py を実行してください。"
+              + (f" (source={source})" if source else ""))
         sys.exit(1)
 
-    latest_csv = profitable_files[0]
     print(f"📂 読込: {os.path.basename(latest_csv)}")
 
     products = []
@@ -3124,6 +3132,17 @@ def main():
         idx = args.index("--min-profit")
         try: min_profit = int(args[idx + 1])
         except: print("❌ --min-profit の後に数字を指定"); sys.exit(1)
+    # 入力 CSV の明示指定 / 仕入先の絞り込み (run_autopilot が ②/④ で書いた表を渡す)
+    csv_path = None
+    source_filter = None
+    if "--csv" in args:
+        idx = args.index("--csv")
+        try: csv_path = args[idx + 1]
+        except IndexError: print("❌ --csv の後にパスを指定"); sys.exit(1)
+    if "--source" in args:
+        idx = args.index("--source")
+        try: source_filter = args[idx + 1]
+        except IndexError: print("❌ --source の後に仕入先名を指定"); sys.exit(1)
 
     def _read_int_arg(name, default=None):
         if name not in args:
@@ -3166,7 +3185,8 @@ def main():
     cat_data = load_categories()
     brands_data = load_brands()
     tag_rules = load_tags()
-    products = load_products(max_price=max_price, min_profit=min_profit)
+    products = load_products(max_price=max_price, min_profit=min_profit,
+                             csv_path=csv_path, source=source_filter)
     if not products:
         print("❌ 商品なし"); sys.exit(1)
 
@@ -3257,12 +3277,12 @@ def main():
                 print(f"  🔁 retry {attempt}/2 (status={status})")
                 time.sleep(random.uniform(5, 10))
 
-            results.append({
-                "status": status, "item_id": item_id or "",
-                "title": product["title"], "vendor": product["vendor"],
-                "price": product["recommended_price"],
-                "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            # 列は app.utils.listing_helpers.RESULT_FIELDNAMES が唯一の定義。
+            # product_url が無いと check_inventory / update_listed_prices が仕入先を辿れない
+            results.append(build_result_row(
+                product, status, item_id,
+                processed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ))
 
             # 連続失敗の通知 (status が retriable 系で 2 回 retry も失敗した時のみ)
             # silent skip 設定: SLACK_WEBHOOK_URL / SMTP_HOST 未設定なら何も送られない
@@ -3319,7 +3339,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     result_path = os.path.join(OUTPUT_DIR, f"{datetime.now():%Y-%m-%d}_auto_listing_results.csv")
     with open(result_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=["status","item_id","title","vendor","price","processed_at"])
+        w = csv.DictWriter(f, fieldnames=list(RESULT_FIELDNAMES), extrasaction="ignore")
         w.writeheader(); w.writerows(results)
 
     pub = sum(1 for r in results if r["status"]=="published")

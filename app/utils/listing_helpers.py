@@ -348,3 +348,33 @@ def _trim_buyma_title(text: str, max_width: int = 60) -> str:
         out.append(ch)
         width += w
     return "".join(out).rstrip() + suffix
+
+
+# ========== 出品結果 CSV (outputs/reports/*_auto_listing_results.csv) ==========
+# 列定義の唯一の置き場。check_inventory / update_listed_prices は item_id + product_url
+# (仕入先ハンドル抽出) を、sales_report は processed_at / status / vendor / price / title を読む。
+# 2026-09-24 以前の CSV には sku / product_type / product_url / source_name が無い (旧形式)。
+RESULT_FIELDNAMES: tuple[str, ...] = (
+    "status", "item_id", "title", "vendor", "price",
+    "sku", "product_type", "product_url", "source_name", "processed_at",
+)
+
+
+def build_result_row(product: dict, status: str, item_id: str | None, processed_at: str) -> dict:
+    """出品 1 件の結果行を作る (純粋関数。processed_at は呼び出し側が渡す)。
+
+    product は buyma_auto_listing.load_products() が作る dict。
+    キーは RESULT_FIELDNAMES と一致させる (tests/test_listing_pure_functions.py が照合)。
+    """
+    return {
+        "status": status,
+        "item_id": item_id or "",
+        "title": product.get("title", ""),
+        "vendor": product.get("vendor", ""),
+        "price": product.get("recommended_price", ""),
+        "sku": product.get("sku", ""),
+        "product_type": product.get("product_type", ""),
+        "product_url": product.get("product_url", ""),
+        "source_name": product.get("source_name", ""),
+        "processed_at": processed_at,
+    }

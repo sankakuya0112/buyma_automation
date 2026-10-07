@@ -10,7 +10,10 @@ fetch_buyma_market_prices.py の精度改善ロジックに対するユニット
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -22,6 +25,7 @@ from scripts.fetch_buyma_market_prices import (  # noqa: E402
     _detect_default_prices,
     _is_brand_match,
     compute_stats,
+    resolve_csv_path,
 )
 from app.core.pricing import MarketStats  # noqa: E402
 
@@ -166,6 +170,42 @@ class TestMarketStatsIsReliable(unittest.TestCase):
             max_jpy=50000,
         )
         self.assertTrue(ms.is_reliable())
+
+
+class TestResolveCsvPath(unittest.TestCase):
+    """--csv latest の解決 (2026-09-24: baseblu 固定で他仕入先の表を読んでいた)。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        now = time.time()
+        for name, age in (("2026-09-24_baseblu_profitable_products.csv", 200),
+                          ("2026-09-24_antonioli_profitable_products.csv", 100)):
+            p = self.tmp / name
+            p.write_text("vendor\n", encoding="utf-8")
+            os.utime(p, (now - age, now - age))
+
+    def test_latest_honours_source(self):
+        path, auto = resolve_csv_path("latest", "antonioli", self.tmp)
+        self.assertTrue(auto)
+        self.assertTrue(path.endswith("_antonioli_profitable_products.csv"))
+        path, _ = resolve_csv_path("latest", "baseblu", self.tmp)
+        self.assertTrue(path.endswith("_baseblu_profitable_products.csv"))
+
+    def test_latest_without_source_picks_most_recently_written(self):
+        path, _ = resolve_csv_path("latest", None, self.tmp)
+        self.assertTrue(path.endswith("_antonioli_profitable_products.csv"))
+
+    def test_explicit_existing_path_is_kept(self):
+        explicit = self.tmp / "2026-09-24_baseblu_profitable_products.csv"
+        path, auto = resolve_csv_path(str(explicit), "antonioli", self.tmp)
+        self.assertFalse(auto)
+        self.assertEqual(path, str(explicit))
+
+    def test_missing_path_falls_back_and_unknown_source_is_none(self):
+        path, auto = resolve_csv_path("/nonexistent.csv", "baseblu", self.tmp)
+        self.assertTrue(auto)
+        self.assertTrue(path.endswith("_baseblu_profitable_products.csv"))
+        self.assertEqual(resolve_csv_path("latest", "slamjam", self.tmp), (None, True))
 
 
 if __name__ == "__main__":

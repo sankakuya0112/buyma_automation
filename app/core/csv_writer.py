@@ -1,7 +1,7 @@
 """
 BUYMA 取込用 34 列 CSV ライタ。
 
-PROFIT_FIRST タスク 1-5 の実装。PLUSELECT_TOOL が実運用で使用していた
+PLUSELECT_TOOL が実運用で使用していた
 BUYMA 標準フォーマットに準拠する（`docs/reference/CSV_COLUMNS.md` 参照）。
 
 仕様:

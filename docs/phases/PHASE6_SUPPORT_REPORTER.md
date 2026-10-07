@@ -1,5 +1,10 @@
 # Phase 6 実装指示書 — 運営支援（Support + Reporter）
 
+> ⚠️ **2026-04 時点の設計書 (歴史的資料)。** ここで前提にしている第 2 世代コード
+> (`app/scouts` / `app/guard` / `app/core/models.py` / `scripts/run_pipeline.py` など) は 2026-09-24 に削除済み。
+> 現行の実装と使い方は `README.md`、作業状況は `HANDOFF.md` を参照。
+
+
 ## このPhaseの目的
 日々の運営を効率化する2機能を追加する。
 - **Support**: 問い合わせへの回答ドラフトを自動生成（最終送信は人間が行う）

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
@@ -78,6 +79,17 @@ class LegacyNormalizationTest(unittest.TestCase):
             self.assertEqual(rows[1]["profit_jpy"], "20000")
         finally:
             os.unlink(path)
+
+
+class LatestProfitableCsvTest(unittest.TestCase):
+    def test_latest_csv_is_source_aware(self):
+        tmp = tempfile.mkdtemp()
+        for name in ("2026-09-24_baseblu_profitable_products.csv", "2026-09-24_antonioli_profitable_products.csv"):
+            open(f"{tmp}/{name}", "w", encoding="utf-8").write("vendor\n")
+        with patch.object(audit_pricing, "OUTPUT_DIR", tmp):
+            self.assertTrue(audit_pricing._latest_profitable_csv("antonioli").endswith("_antonioli_profitable_products.csv"))
+            self.assertTrue(audit_pricing._latest_profitable_csv("baseblu").endswith("_baseblu_profitable_products.csv"))
+            self.assertIsNone(audit_pricing._latest_profitable_csv("slamjam"))
 
 
 if __name__ == "__main__":

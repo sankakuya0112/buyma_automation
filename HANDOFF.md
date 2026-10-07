@@ -1,4 +1,49 @@
-# 引き継ぎノート（2026-09-23 セッション終了時点 / 10回目更新）
+# 引き継ぎノート（2026-09-24 セッション終了時点 / 11回目更新）
+
+---
+
+## 🆕 2026-09-24 追記: 本線に統合 + 旧コード削除 + 不具合 4 件修正 (図解: 別途共有済み)
+
+### やったこと
+1. **PR 3 本を本線 `claude/add-test-flag-HibqE` に取り込み** (#2 AI オートパイロット・仕入先設定化・
+   原価是正 → #3 価格再計算の仕入先レイヤ統一 → #1 First Sale Sprint)。以降はこのブランチが唯一の本線
+2. **旧世代コードの削除** (残すコード・テスト・CI から未参照であることを確認済み):
+   第 1 世代 (`main.py`, `scripts/run_all.py`, ルート `config.py`, `buyma/`, `scrapers/`, `data_processing/`,
+   `templates/`)、第 2 世代 (`scripts/run_pipeline.py`, `app/scouts|listing|governors|guard`,
+   `app/core/{db,models,logger,enums}.py`, `app/utils/{currency,images}.py`, `tests/test_guard.py`,
+   `tests/test_rules.py`)、`extension/`, `scripts/_archive/`, `buyma_agent_architecture.html`,
+   `スクレイピング実行手順.md`, `PROFIT_FIRST_INSTRUCTIONS.md`, `scripts/italist_sales_to_csv.py`
+   (代替 `shopify_sales_to_csv.py --source italist`)。requirements.txt から selenium / bs4 / pandas /
+   lxml / sqlalchemy を削除。`data/tag_reference.json` は BUYMA タグ正式名の唯一の控えなので残した
+3. **不具合修正**
+   - 出品結果 CSV に `product_url` 等が無く、`check_inventory.py` / `update_listed_prices.py` が
+     全件失敗していた → `RESULT_FIELDNAMES` / `build_result_row()` (app/utils/listing_helpers.py)。
+     旧形式の記録は読み込み時に除外して件数表示
+   - `fetch_buyma_market_prices.py --csv latest` が baseblu 固定 → `--source` 追加。最新ファイル解決を
+     `app/utils/reports.latest_report` に集約 (scout_demand / sales_report / audit_pricing 等も同様)
+   - 同日に 2 仕入先を回すと ⑤⑥ が名前順で後ろの表を読む → run_autopilot が `--source` と
+     ②/④ で書いた CSV のパスを `--input` / `--csv` で明示
+   - `update_listed_prices.py` が相場もカテゴリも見ずに判定 → `decide_for_record()` で filter と同じ
+     `decide_final_price(result, market=, category=)`。`--market` (省略時は最新 JSON を自動選択)
+4. README.md 全面書き直し (初心者向け)、CLAUDE.md / MAC_AI_SETUP.md の古い記述を更新、
+   PROJECT_STATUS.md / docs/phases / MASTER_PLAN.md に「歴史的資料」バナー
+5. テスト 535 → 499 (削除 36) → **528 ケース全 PASS** (新規 29)
+
+### 明日の朝の Mac チェックリスト (B)
+1. **baseblu の値段に VAT が含まれているか**: 商品をカートに入れ、日本向けのレジ画面で
+   商品ページより安くなるかを見る。安くなる = 税込表示 (今の計算で正しい)。
+   変わらない = 税抜表示 → `data/sources.json` の baseblu `vat_refund_rate` を 0.0 にする
+   (利益を 1 商品あたり数千円多く見積もっている状態。€200 のバッグで約 ¥6,200)
+2. **下書き 1 件 → 目視 → 手で公開**:
+   `python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 1`
+   価格・発送地 (神奈川県)・カテゴリを BUYMA 画面で確認してから公開ボタンを押す
+3. `crontab -l` に `app.guard.cli` の行が無いことを確認 (あれば削除。`app/guard/` は消えたため)
+4. `git pull origin claude/add-test-flag-HibqE` → `python3 scripts/run_autopilot.py --test` が完走すること
+
+### 未対応 (別タスク)
+- baseblu 以外の仕入先で `generate_buyma_csv.py` を使うときの「仕入れ元: BaseBlu」等の固定文字
+- `app/core/config.py` / `config.json.example` に残る `db_path` 等 (動作に影響なし)
+- 革バッグの関税 (現行 8%)、EU 産の EPA 税率 → 初回の DHL 請求書で実額を確認してから判断
 
 ---
 
@@ -30,9 +75,10 @@
 修正後は売価が自動で上がる (目標利益率 25% 維持) ため、**靴は出品候補から外れやすくなる** (正しい挙動)。
 
 ### 未対応 (別タスク)
-- `scripts/update_listed_prices.py` / `scripts/generate_buyma_csv.py` は Source を通さず
-  `PricingParams` を直接作るため、海外決済手数料・国内送料・立替手数料が入らない (以前からの不整合)。
-  靴の関税修正は自動で効く
+- ~~`scripts/update_listed_prices.py` / `scripts/generate_buyma_csv.py` は Source を通さず
+  `PricingParams` を直接作るため、海外決済手数料・国内送料・立替手数料が入らない~~
+  → **2026-09-23 PR #3 で `get_source().get_pricing_params()` 経由に統一済み**
+  (tests/test_script_pricing_params.py)
 - 革バッグの関税 (現行 8%)、EU 産の EPA 税率 → 初回の DHL 請求書で実額を確認してから判断
 
 ---
@@ -246,7 +292,8 @@ Mac 側 Claude Code セッションの作業 (80a3127: Italist source 登録、
 3. テスト 271 → 295 ケース (Italist 7 + 純粋関数 18 追加)
 
 ### 未完了 (次タスク)
-- ~~`scripts/italist_sales_to_csv.py` が未実装~~ → **2026-06-10 実装済み**。
+- ~~`scripts/italist_sales_to_csv.py` が未実装~~ → **2026-06-10 実装済み** →
+  **2026-09-24 削除** (`shopify_sales_to_csv.py --source italist` が代替。以下は当時の記録)。
   汎用 Shopify 解析は baseblu_sales_to_csv.py から再利用。`--test` で
   モック疎通可。**collection URL は Mac 実走で要確認**
   (DEFAULT_PRODUCTS_JSON_URL が仮値。違ったら --url で上書き or 定数修正)。
@@ -396,6 +443,10 @@ filter の CSV ソートが期待利益順 → 期待値順に変更。
 ---
 
 # 引き継ぎノート（2026-04-22 セッション終了時点 / 6回目更新）
+
+> ⚠️ **ここから下は 2026-04〜06 時点の記録です。** ブランチ運用・コマンド・ファイル名は
+> 当時のもので、現行の入口は `scripts/run_autopilot.py`、本線は `claude/add-test-flag-HibqE`
+> (セッションごとの作業ブランチから PR で取り込む) です。現状は README.md とこのファイルの先頭を参照。
 
 このファイルは次セッションへの**引き継ぎ用スナップショット**です。最新の作業状況・
 未解決の課題・次に試すべきアプローチをまとめてあります。開発の知見は CLAUDE.md

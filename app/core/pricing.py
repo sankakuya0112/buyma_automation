@@ -1,7 +1,7 @@
 """
 統一された利益計算モジュール。
 
-PROFIT_FIRST タスク 1-1 の実装。BUYMA 出品価格を算出する唯一の関数群。
+BUYMA 出品価格を算出する唯一の関数群。
 
 計算に含める要素:
     - VAT 還付（欧州サイト: 仕入値の約 16.7%）
@@ -19,8 +19,7 @@ PROFIT_FIRST タスク 1-1 の実装。BUYMA 出品価格を算出する唯一�
     result = calculate_pricing(params)
     print(result.selling_price_jpy, result.profit_jpy)
 
-なお既存の `filter_baseblu_profitable.py` / `draft_builder._calculate_listing_price`
-/ `run_pipeline._calculate_profit` は本モジュールに置き換えられる予定。
+価格を計算するスクリプトは必ずこのモジュールを使う (計算式の二重管理を防ぐ)。
 """
 
 from __future__ import annotations

@@ -17,9 +17,9 @@ data/brands.json を更新するスクリプト。
 """
 
 import csv
-import glob
 import json
 import os
+import sys
 import time
 import unicodedata
 import requests
@@ -27,6 +27,9 @@ import requests
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR  = os.path.join(BASE_DIR, "outputs", "reports")
 BRANDS_PATH = os.path.join(BASE_DIR, "data", "brands.json")
+sys.path.insert(0, BASE_DIR)
+
+from app.utils.reports import latest_report  # noqa: E402
 
 BUYMA_SUGGEST_URL = "https://cdn-suggest.buyma.com/brand_suggest"
 
@@ -97,14 +100,13 @@ def lookup_brand(brand_name):
 
 def get_vendors_from_csv():
     """利益商品CSVからブランド名一覧を取得"""
-    pattern = os.path.join(OUTPUT_DIR, "*_baseblu_profitable_products.csv")
-    files = sorted(glob.glob(pattern), reverse=True)
-    if not files:
+    latest = latest_report("profitable_products.csv", reports_dir=OUTPUT_DIR)
+    if not latest:
         print("❌ 利益商品CSVが見つかりません")
         return set()
 
     vendors = set()
-    with open(files[0], newline="", encoding="utf-8-sig") as f:
+    with open(latest, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             vendor = row.get("vendor", "").strip()
             if vendor:

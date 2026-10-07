@@ -161,7 +161,9 @@ def main():
     source_name = (args.source or "baseblu").strip().lower()
     input_path = get_latest_sales_csv(source_name)
     if not input_path:
-        print(f"❌ 入力CSVが見つかりません。先に scripts/{source_name}_sales_to_csv.py を実行してください。")
+        hint = ("scripts/baseblu_sales_to_csv.py" if source_name == "baseblu"
+                else f"scripts/shopify_sales_to_csv.py --source {source_name}")
+        print(f"❌ 入力CSVが見つかりません。先に {hint} を実行してください。")
         return
     print(f"📂 入力ファイル: {os.path.basename(input_path)}")
 

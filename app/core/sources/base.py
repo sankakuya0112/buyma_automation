@@ -1,8 +1,7 @@
 """仕入先 (Source) 抽象基底クラス。
 
-`app.scouts.BaseScraper` がサイト固有のスクレイピング責務 (DB 書き込み、Playwright 等)
-を持つのに対し、`BaseSource` は仕入先のメタデータと CSV パイプライン用のアダプタを
-定義する。Phase 2c で BasebluSource / ItalistSource を切り出すための足場。
+`BaseSource` は仕入先のメタデータ (通貨 / DDP・DDU / VAT 還付 / 送料 / 実コスト) と
+CSV パイプライン用のアダプタを定義する。スクレイピング本体は scripts/ 側が担当する。
 """
 
 from __future__ import annotations

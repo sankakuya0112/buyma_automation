@@ -4,12 +4,13 @@
 BUYMA 出品価格を算出する唯一の関数群。
 
 計算に含める要素:
-    - VAT 還付（欧州サイト: 仕入値の約 16.7%）
-    - 国際送料（商品重量 × 単価、または固定値）
-    - 輸入関税（カテゴリ別マスタ）
-    - 輸入消費税（10%）
-    - BUYMA 手数料（5.8%）
-    - 決済手数料（3%）
+    - 現地 VAT の控除 (仕入先ごとに明示。表示価格が既に VAT 抜きなら 0。
+      VAT 込み表示で日本向け会計時に VAT が外れるなら rate/(1+rate)。22% → 0.1803)
+    - 国際送料（固定値、または重量 × 単価）
+    - 輸入関税（カテゴリ別マスタ）・輸入消費税（10%）・通関の立替手数料
+    - 海外カード決済手数料 (商品代 + 国際送料に対して)
+    - BUYMA 成約手数料 (定率 7.7% + 2026-10 新設の定額 55〜220 円)
+    - 振込手数料 (385 円。BUYMA_TRANSFER_FEE_JPY で変更可)
     - 目標利益率
 
 使用例:
@@ -34,12 +35,69 @@ from typing import Optional
 # 定数・マスタ
 # ---------------------------------------------------------------------------
 
-BUYMA_COMMISSION_RATE = 0.077         # BUYMA 成約手数料 (一般出品者 7.7%)
+BUYMA_COMMISSION_RATE = 0.077         # BUYMA 成約手数料 (一般出品者 7.7%。日本居住者は 5.5% 対象外)
 PAYMENT_COMMISSION_RATE = 0.0         # 決済システム利用料は購入者負担のため 0
-BANK_TRANSFER_FEE_JPY = 330.0         # 振込手数料 (220-385 の中央値)
+# 振込手数料 (国内口座 385 円 / 楽天銀行 220 円。https://qa.buyma.com/bm/usage-fee/4503.html)。
+# 1 回の振込で複数取引をまとめられるが、安全側で 1 取引ごとに計上する。
+# 実行時の値は bank_transfer_fee_jpy() (環境変数 BUYMA_TRANSFER_FEE_JPY で上書き可)。
+BANK_TRANSFER_FEE_JPY = 385.0
 CONSUMPTION_TAX_RATE = 0.10           # 輸入消費税 10%
-DEFAULT_VAT_REFUND_RATE = 0.167       # EU 域外輸出の VAT 還付 16.7%
+# PricingParams の既定 VAT 控除率。以前は 0.167 だったが、VAT 抜き価格に掛けると
+# 原価を過小評価する (= 赤字出品) ため、既定は「控除なし」の安全側にする。
+# 仕入先ごとの値は app/core/sources/ (vat_treatment / local_vat_rate) が決める。
+DEFAULT_VAT_REFUND_RATE = 0.0
+
+# BUYMA 定額成約手数料 (2026-09-02 告知、10/1 以降の注文から適用予定)。
+# 出典: https://buyersinfo.buyma.com/?p=95495
+# (出品価格の上限 [未満], 1 件あたりの定額手数料 円・税込)
+BUYMA_FIXED_FEE_TIERS: tuple[tuple[float, float], ...] = (
+    (10_000, 55.0),
+    (20_000, 110.0),
+    (100_000, 165.0),
+    (float("inf"), 220.0),
+)
 DEFAULT_TARGET_MARGIN_PCT = 0.25      # 目標利益率 25%
+
+
+def vat_extraction_rate(vat_rate: float) -> float:
+    """VAT 込み価格から VAT 分を外すときの控除率 = rate / (1 + rate)。
+
+    例: イタリア 22% → 0.22 / 1.22 = 0.1803 (VAT 込み €122 → VAT 抜き €100)。
+    以前使っていた 0.167 は「20% VAT」相当 (0.2/1.2) で、22% の国では控除不足になる。
+    """
+    if vat_rate <= 0:
+        return 0.0
+    return round(vat_rate / (1.0 + vat_rate), 4)
+
+
+def bank_transfer_fee_jpy() -> float:
+    """振込手数料 (円)。BUYMA_TRANSFER_FEE_JPY で上書き可 (楽天銀行なら 220)。"""
+    raw = os.getenv("BUYMA_TRANSFER_FEE_JPY")
+    if raw:
+        try:
+            v = float(raw)
+            if v >= 0:
+                return v
+        except ValueError:
+            pass
+    return BANK_TRANSFER_FEE_JPY
+
+
+def fixed_fee_enabled() -> bool:
+    """定額成約手数料を計上するか (BUYMA_FIXED_FEE_ENABLED=0 で無効。既定は計上 = 安全側)。"""
+    return os.getenv("BUYMA_FIXED_FEE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def buyma_fixed_fee_jpy(selling_price_jpy: float, enabled: Optional[bool] = None) -> float:
+    """出品価格に応じた BUYMA 定額成約手数料 (1 件あたり、円)。"""
+    if enabled is None:
+        enabled = fixed_fee_enabled()
+    if not enabled or selling_price_jpy <= 0:
+        return 0.0
+    for upper, fee in BUYMA_FIXED_FEE_TIERS:
+        if selling_price_jpy < upper:
+            return fee
+    return BUYMA_FIXED_FEE_TIERS[-1][1]
 
 # 為替レートはデフォルトを 2026-04-23 ECB 参考値にアップデート。
 # 実運用では .env の EUR_TO_JPY / USD_TO_JPY / GBP_TO_JPY で月次上書き可。
@@ -212,6 +270,10 @@ class PricingParams:
     # default 0 で後方互換。Source.get_pricing_params() が実値を注入する。
     customs_handling_min_jpy: float = 0.0
     customs_handling_rate: float = 0.0
+    # 振込手数料 (円)。None → bank_transfer_fee_jpy() (既定 385 円 / 環境変数で上書き)
+    bank_transfer_fee_jpy: Optional[float] = None
+    # BUYMA 定額成約手数料を計上するか。None → fixed_fee_enabled() (既定 True)
+    apply_fixed_fee: Optional[bool] = None
 
 
 @dataclass
@@ -242,6 +304,8 @@ class PricingResult:
     domestic_shipping_jpy: float = 0.0              # 国内発送費 (円)
     customs_handling_jpy: float = 0.0               # 通関の立替手数料 (円)
     duty_min_jpy: float = 0.0                       # 適用した 1 点あたり最低関税額 (円)
+    buyma_fixed_fee_jpy: float = 0.0                # BUYMA 定額成約手数料 (円、売価の価格帯で決まる)
+    bank_transfer_fee_jpy: float = 0.0              # 振込手数料 (円、原価に含めた値)
 
     def is_profitable(self, min_profit_jpy: float = 3000.0) -> bool:
         """利益額が閾値を超えているか。"""
@@ -328,10 +392,12 @@ def _profit_at_price(
     total_cost_jpy: float,
     buyma_commission_rate: float,
     payment_commission_rate: float,
+    apply_fixed_fee: Optional[bool] = None,
 ) -> float:
-    """指定売価での純利益を計算する (手数料控除後)。"""
+    """指定売価での純利益を計算する (定率 + 定額の手数料控除後)。"""
     fees = selling_price_jpy * (buyma_commission_rate + payment_commission_rate)
-    return selling_price_jpy - fees - total_cost_jpy
+    fixed = buyma_fixed_fee_jpy(selling_price_jpy, apply_fixed_fee)
+    return selling_price_jpy - fees - fixed - total_cost_jpy
 
 
 def _resolve_floor_params(category: str) -> tuple[int, float]:
@@ -366,6 +432,35 @@ def _round_up_100(value: float) -> int:
 
 
 def _solve_breakeven_price(
+    total_cost_jpy: float,
+    buyma_commission_rate: float,
+    payment_commission_rate: float,
+    category: str = "",
+    apply_fixed_fee: Optional[bool] = None,
+) -> int:
+    """定額成約手数料 (売価の価格帯で決まる) を含めて最低売価を求める。
+
+    定額手数料は売価が上がるほど増える階段関数なので、「手数料込みの原価」で解いた
+    売価の価格帯の手数料で解き直し、価格帯が変わらなくなるまで繰り返す (単調増加で収束)。
+    """
+    fixed = buyma_fixed_fee_jpy(
+        _solve_breakeven_price_raw(total_cost_jpy, buyma_commission_rate,
+                                   payment_commission_rate, category),
+        apply_fixed_fee,
+    )
+    price = 0
+    for _ in range(6):
+        price = _solve_breakeven_price_raw(
+            total_cost_jpy + fixed, buyma_commission_rate, payment_commission_rate, category,
+        )
+        new_fixed = buyma_fixed_fee_jpy(price, apply_fixed_fee)
+        if new_fixed <= fixed:
+            break
+        fixed = new_fixed
+    return price
+
+
+def _solve_breakeven_price_raw(
     total_cost_jpy: float,
     buyma_commission_rate: float,
     payment_commission_rate: float,
@@ -413,6 +508,7 @@ def decide_final_price(
     buyma_commission_rate: float = BUYMA_COMMISSION_RATE,
     payment_commission_rate: float = PAYMENT_COMMISSION_RATE,
     category: str = "",
+    apply_fixed_fee: Optional[bool] = None,
 ) -> FinalPriceDecision:
     """競合密度と原価優位を軸に最終売価を決定する (Phase 2a Tier 2 → 2d 改訂)。
 
@@ -437,6 +533,7 @@ def decide_final_price(
     cost = pricing_result.total_cost_jpy
     breakeven_price = _solve_breakeven_price(
         cost, buyma_commission_rate, payment_commission_rate, category=category,
+        apply_fixed_fee=apply_fixed_fee,
     )
     floor_at_target = _floor_profit(target_price, category=category)
     competition = _categorize_competition(market.sample_count if market else 0)
@@ -458,6 +555,7 @@ def decide_final_price(
     def _build_list_decision(final: int, reason: str) -> FinalPriceDecision:
         profit = _profit_at_price(
             final, cost, buyma_commission_rate, payment_commission_rate,
+            apply_fixed_fee=apply_fixed_fee,
         )
         margin = (profit / cost * 100) if cost > 0 else 0
         return FinalPriceDecision(
@@ -594,7 +692,10 @@ def resolve_exchange_rate(currency: str) -> float:
     優先順位:
       1. 環境変数 ``{CURRENCY}_TO_JPY`` (例: EUR_TO_JPY)
       2. ``DEFAULT_EXCHANGE_RATES`` マスタ
-      3. 1.0 (デフォルト)
+      3. 未知の通貨は ValueError (以前は 1.0 = 原価ほぼ 0 の大赤字になっていた)
+
+    ※ ネットワーク取得・キャッシュ・安全バッファ込みのレートは app.core.fx.effective_rate()。
+      仕入先レイヤ (BaseSource.get_pricing_params) はそちらを使って exchange_rate を明示する。
     """
     cur = currency.upper()
     env_key = f"{cur}_TO_JPY"
@@ -604,7 +705,10 @@ def resolve_exchange_rate(currency: str) -> float:
             return float(env_val)
         except ValueError:
             pass
-    return DEFAULT_EXCHANGE_RATES.get(cur, 1.0)
+    if cur not in DEFAULT_EXCHANGE_RATES:
+        # 未知通貨を 1 円換算すると原価がほぼ 0 = 大赤字出品になるので止める
+        raise ValueError(f"通貨 {cur!r} の為替レートがありません ({cur}_TO_JPY を設定してください)")
+    return DEFAULT_EXCHANGE_RATES[cur]
 
 
 # ---------------------------------------------------------------------------
@@ -616,15 +720,17 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     BUYMA 出品価格と利益を算出する。
 
     計算フロー:
-        1. VAT 還付後の仕入値（円）= source × exchange × (1 - vat_refund)
+        1. VAT 控除後の仕入値（円）= source × exchange × (1 - vat_refund)
+           (vat_refund は仕入先レイヤが決める。VAT 抜き表示なら 0)
         2. 国際送料（円）       = 重量 × 単価 または指定値
         3. 輸入関税（円）       = max((仕入値 + 送料) × 関税率, 最低関税額)
         4. 輸入消費税（円）     = (仕入値 + 送料 + 関税) × 10%
         4b. 通関立替手数料（円）= max(最低額, 率 × (関税 + 消費税))  ※DDU のみ
-        5. 総仕入原価（円）     = 仕入値 + 送料 + 関税 + 消費税 + 立替手数料 + 諸経費
-        6. 売価（円）           = 原価 × (1 + 目標利益率) / (1 - 手数料率合計)
+        5. 総仕入原価（円）     = 仕入値 + 送料 + 関税 + 消費税 + 立替手数料
+                                  + カード手数料 (商品代+送料) + 国内送料 + 振込手数料
+        6. 売価（円）           = (原価 × (1 + 目標利益率) + 定額手数料) / (1 - 手数料率合計)
                                   → 100 円単位に切り上げ
-        7. 実利益（円）         = 売価 - 手数料 - 原価
+        7. 実利益（円）         = 売価 - 定率手数料 - 定額手数料 - 原価
 
     Args:
         params: 計算入力
@@ -662,9 +768,9 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     net_source_jpy = source_price_jpy - vat_refund_jpy
 
     # 1b. 海外決済手数料 (カード会社の海外事務手数料)。
-    # 課金額ベース = チェックアウト総額に掛かるが、保守的に商品価格全額
-    # (VAT 還付前) に適用する。還付が後日でもカード請求は満額のため。
-    purchase_fx_fee_jpy = source_price_jpy * params.purchase_fx_fee_rate
+    # カードの請求額 = 商品代 + 国際送料 なので両方に掛ける (2026-10 修正: 以前は送料を
+    # 含めず €50 で約 ¥200 過小評価)。商品代は保守的に VAT 控除前の表示価格を使う。
+    purchase_fx_fee_jpy = (source_price_jpy + shipping_jpy) * params.purchase_fx_fee_rate
 
     # 2-4. 税関コスト
     # DDP の場合: チェックアウト価格に関税・輸入消費税が含まれているため
@@ -687,16 +793,30 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
             )
 
     # 5. 総原価 (振込手数料も原価に含める: BUYMA → ショッパー入金時に差し引かれる)
+    transfer_fee_jpy = (
+        float(params.bank_transfer_fee_jpy)
+        if params.bank_transfer_fee_jpy is not None else bank_transfer_fee_jpy()
+    )
     total_cost_jpy = (
         net_source_jpy + shipping_jpy + customs_jpy + consumption_tax_jpy
         + customs_handling_jpy
         + purchase_fx_fee_jpy + params.domestic_shipping_jpy
-        + BANK_TRANSFER_FEE_JPY
+        + transfer_fee_jpy
     )
 
-    # 6. 売価（手数料を含めた逆算・100円切上）
-    raw_price = total_cost_jpy * (1 + params.target_margin_pct) / (1 - commission_total)
-    selling_price_jpy = int(math.ceil(raw_price / 100) * 100)
+    # 6. 売価（定率 + 定額手数料を含めた逆算・100円切上）
+    #    売価 × (1 - 定率) - 定額(売価) - 原価 = 原価 × 目標利益率
+    #    定額手数料は売価の価格帯で決まるので、価格帯が安定するまで解き直す
+    fixed_fee_jpy = 0.0
+    selling_price_jpy = 0
+    for _ in range(6):
+        raw_price = (total_cost_jpy * (1 + params.target_margin_pct) + fixed_fee_jpy) / (1 - commission_total)
+        selling_price_jpy = int(math.ceil(raw_price / 100) * 100)
+        new_fixed = buyma_fixed_fee_jpy(selling_price_jpy, params.apply_fixed_fee)
+        if new_fixed <= fixed_fee_jpy:
+            break
+        fixed_fee_jpy = new_fixed
+    fixed_fee_jpy = buyma_fixed_fee_jpy(selling_price_jpy, params.apply_fixed_fee)
 
     # 7. 利益確定
     buyma_commission_jpy = selling_price_jpy * params.buyma_commission_rate
@@ -704,9 +824,9 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
     # 代わりに振込手数料を表示用に入れる
     payment_commission_jpy = (
         selling_price_jpy * params.payment_commission_rate
-        if params.payment_commission_rate > 0 else BANK_TRANSFER_FEE_JPY
+        if params.payment_commission_rate > 0 else transfer_fee_jpy
     )
-    revenue_after_fees = selling_price_jpy - buyma_commission_jpy - (
+    revenue_after_fees = selling_price_jpy - buyma_commission_jpy - fixed_fee_jpy - (
         selling_price_jpy * params.payment_commission_rate
     )
     profit_jpy = revenue_after_fees - total_cost_jpy
@@ -732,4 +852,6 @@ def calculate_pricing(params: PricingParams) -> PricingResult:
         domestic_shipping_jpy=round(params.domestic_shipping_jpy, 2),
         customs_handling_jpy=round(customs_handling_jpy, 2),
         duty_min_jpy=round(duty_min_jpy, 2),
+        buyma_fixed_fee_jpy=round(fixed_fee_jpy, 2),
+        bank_transfer_fee_jpy=round(transfer_fee_jpy, 2),
     )

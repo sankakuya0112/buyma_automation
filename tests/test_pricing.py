@@ -110,11 +110,13 @@ class TestCalculatePricing(unittest.TestCase):
         self.assertGreaterEqual(r.margin_pct, 25.0 * 0.95)  # 5%の許容
 
     def test_vat_refund_calculation(self):
-        """VAT 還付額が source の 16.7% と等しい。"""
-        params = PricingParams(source_price=100.0, currency="EUR", category="bag")
+        """VAT 控除額 = source × vat_refund_rate。既定は控除なし (0)。"""
+        r0 = calculate_pricing(PricingParams(source_price=100.0, currency="EUR", category="bag"))
+        self.assertEqual(r0.vat_refund_jpy, 0.0)
+        params = PricingParams(source_price=100.0, currency="EUR", category="bag",
+                               vat_refund_rate=0.1803)
         r = calculate_pricing(params)
-        expected = 100.0 * 186.0 * 0.167
-        self.assertAlmostEqual(r.vat_refund_jpy, expected, places=1)
+        self.assertAlmostEqual(r.vat_refund_jpy, 100.0 * 186.0 * 0.1803, places=1)
 
     def test_shipping_from_weight(self):
         """shipping_jpy 未指定時は 重量 × 単価 で計算される。"""
@@ -145,6 +147,8 @@ class TestCalculatePricing(unittest.TestCase):
             target_margin_pct=0.0,
             buyma_commission_rate=0.0,
             payment_commission_rate=0.0,
+            bank_transfer_fee_jpy=330.0,
+            apply_fixed_fee=False,
         )
         r = calculate_pricing(params)
 
@@ -258,6 +262,9 @@ class TestProfitScenarios(unittest.TestCase):
             source_price=400.0,
             currency="EUR",
             category="dress",
+            vat_refund_rate=0.167,          # 旧既定値での検算 (現在の既定は 0)
+            bank_transfer_fee_jpy=330.0,    # 旧値 (現在は 385)
+            apply_fixed_fee=False,          # 2026-10 新設の定額手数料なしでの検算
         )
         r = calculate_pricing(params)
 

@@ -15,6 +15,22 @@ if TYPE_CHECKING:
 
 LandedCostBasis = Literal["DDP", "DDU"]
 
+VAT_TREATMENTS = ("none", "deducted_at_checkout")
+
+
+def resolve_vat_refund_rate(vat_treatment: str, local_vat_rate: float) -> float:
+    """vat_treatment + 現地 VAT 率 → 原価計算の VAT 控除率。不正値は ValueError。"""
+    from app.core.pricing import vat_extraction_rate
+
+    treatment = (vat_treatment or "none").strip().lower()
+    if treatment not in VAT_TREATMENTS:
+        raise ValueError(f"vat_treatment は {'/'.join(VAT_TREATMENTS)} のいずれか: {vat_treatment!r}")
+    if treatment == "none":
+        return 0.0
+    if not 0.0 < float(local_vat_rate) < 0.5:
+        raise ValueError(f"deducted_at_checkout には local_vat_rate (例 0.22) が必要です: {local_vat_rate!r}")
+    return vat_extraction_rate(float(local_vat_rate))
+
 
 class BaseSource(ABC):
     """すべての仕入先が継承する抽象基底クラス。
@@ -28,10 +44,16 @@ class BaseSource(ABC):
     country: str = ""
     landed_cost_basis: LandedCostBasis = "DDU"
 
-    # --- 実コストモデル (Phase 2d) ---
-    # VAT 還付率。仕入先が輸出価格として VAT を既に控除している場合は 0.0 に
-    # すること (二重控除 = 利益過大評価 = 赤字出品リスク)。
-    vat_refund_rate: float = 0.167
+    # --- 現地 VAT の扱い (2026-10 明示化) ---
+    # vat_treatment:
+    #   "none"                 … 取得する表示価格 = 日本向けに請求される商品代 (VAT 抜き表示 or
+    #                            日本向けでも VAT が外れない)。控除しない。不明なときもこれ (安全側)
+    #   "deducted_at_checkout" … 表示価格は現地 VAT 込みで、日本向けの会計で VAT が外れる。
+    #                            控除率 = local_vat_rate / (1 + local_vat_rate) (22% → 0.1803)
+    # 以前は一律 0.167 を引いており、VAT 抜き価格 (baseblu の en-us 表示) では二重控除、
+    # 22% の国の VAT 込み価格では控除不足になっていた。
+    vat_treatment: str = "none"
+    local_vat_rate: float = 0.0
     # 海外カード決済の事務手数料 (Visa/Master 標準 ~2.2%)。JPY 建て仕入れなら 0。
     purchase_fx_fee_rate: float = 0.022
     # 国内発送費 (出品者→購入者)。宅急便コンパクト〜宅急便 60-80 サイズ想定。
@@ -42,6 +64,11 @@ class BaseSource(ABC):
     # ※ 3,300 円は「現地税金元払い (発送人払い)」の料金で、受取人払いには当たらない。
     customs_handling_min_jpy: float = 2200.0
     customs_handling_rate: float = 0.02
+
+    @property
+    def vat_refund_rate(self) -> float:
+        """原価計算に使う VAT 控除率 (vat_treatment と local_vat_rate から決まる)。"""
+        return resolve_vat_refund_rate(self.vat_treatment, self.local_vat_rate)
 
     @abstractmethod
     def fetch_products(self, limit: Optional[int] = None) -> Iterable[dict]:
@@ -75,16 +102,22 @@ class BaseSource(ABC):
         landed_cost_basis ハードコードを解消するために使う。
         title は靴が革か布かの判定 (関税率) に使う。
         """
-        from app.core.pricing import PricingParams, resolve_exchange_rate
+        from app.core import fx
+        from app.core.pricing import PricingParams
+
+        # 為替は「手動指定 or ECB キャッシュ or 固定値」× 安全バッファ (app/core/fx.py)。
+        # 送料の円換算と商品代の円換算で同じレートを使うため、ここで明示的に決める。
+        exchange_rate = fx.effective_rate(self.currency)
 
         shipping_jpy: Optional[float] = None
         shipping_local = self.shipping_cost_local(sale_price)
         if shipping_local is not None:
-            shipping_jpy = shipping_local * resolve_exchange_rate(self.currency)
+            shipping_jpy = shipping_local * exchange_rate
 
         return PricingParams(
             source_price=sale_price,
             currency=self.currency,
+            exchange_rate=exchange_rate,
             category=category,
             landed_cost_basis=self.landed_cost_basis,
             vat_refund_rate=self.vat_refund_rate,

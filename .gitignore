@@ -50,3 +50,8 @@ data/ai_usage.jsonl
 data/first_sale_sprint.json
 data/funnel_history.json
 outputs/sprints/
+
+# 為替キャッシュ (scripts/update_fx_rates.py が生成)
+data/fx_rates.json
+# 一括出品 CSV (scripts/generate_bulk_upload.py の出力)
+outputs/bulk/

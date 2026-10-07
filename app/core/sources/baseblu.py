@@ -20,6 +20,17 @@ class BasebluSource(BaseSource):
     country = "IT"
     landed_cost_basis = "DDU"
 
+    # VAT: 控除しない (2026-10-07 確認)。
+    # scripts/baseblu_sales_to_csv.py が読む en-us ストア (Shopify.country="US") の価格は
+    # 既にイタリア VAT 22% を外した EUR 価格。同じ商品で
+    #   https://www.baseblu.com/collections/sales/products.json        → 812.00 EUR (IT 向け・VAT 込み)
+    #   https://www.baseblu.com/en-us/collections/sales/products.json  → 665.57 EUR
+    # となり 812 / 1.22 = 665.57 と一致、商品ページには "Duties Excluded" と表示される。
+    # 以前の 0.167 控除は二重控除で、原価を 1 点あたり数千〜2 万円以上少なく見積もっていた。
+    # 未確認: 日本宛ての会計画面の合計 (ユーザーが支払い直前まで進めて確認する)。
+    vat_treatment = "none"
+    local_vat_rate = 0.22   # 参考値 (IT)。vat_treatment="none" の間は計算に使わない
+
     # Asia 向け送料 €50 固定、€850 以上で送料無料 (docs/strategy/PROCUREMENT_ROADMAP.md)。
     # 単品買付 (無在庫) 前提なので閾値判定は商品単価に対して行う。
     SHIPPING_FLAT_EUR = 50.0

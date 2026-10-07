@@ -15,20 +15,26 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+from app.core import fx  # noqa: E402
 from app.core.pricing import (  # noqa: E402
-    BANK_TRANSFER_FEE_JPY,
     PricingParams,
+    bank_transfer_fee_jpy,
     calculate_pricing,
-    resolve_exchange_rate,
 )
 import generate_buyma_csv  # noqa: E402
 import update_listed_prices  # noqa: E402
 
 
 def _assert_baseblu_costs(tc: unittest.TestCase, result, sale_price_eur: float) -> None:
-    """baseblu (EUR/DDU/€50 送料) の原価項目がすべて入っていること。"""
-    rate = resolve_exchange_rate("EUR")
-    tc.assertAlmostEqual(result.purchase_fx_fee_jpy, sale_price_eur * rate * 0.022, places=1)
+    """baseblu (EUR/DDU/€50 送料) の原価項目がすべて入っていること。
+
+    為替は仕入先レイヤが fx.effective_rate (キャッシュ/固定値 × バッファ) で明示する。
+    カード手数料は商品代 + 国際送料に掛かる (2026-10)。
+    """
+    rate = result.exchange_rate
+    tc.assertAlmostEqual(rate, fx.effective_rate("EUR"), places=2)
+    tc.assertAlmostEqual(result.purchase_fx_fee_jpy, (sale_price_eur + 50.0) * rate * 0.022, places=1)
+    tc.assertEqual(result.vat_refund_jpy, 0.0)   # baseblu は VAT 抜き表示 = 控除なし
     tc.assertEqual(result.domestic_shipping_jpy, 1000.0)
     tc.assertGreaterEqual(result.customs_handling_jpy, 2200.0)
     tc.assertAlmostEqual(result.shipping_jpy, 50.0 * rate, places=1)
@@ -36,7 +42,7 @@ def _assert_baseblu_costs(tc: unittest.TestCase, result, sale_price_eur: float) 
         result.source_price_jpy - result.vat_refund_jpy
         + result.shipping_jpy + result.customs_jpy + result.consumption_tax_jpy
         + result.customs_handling_jpy + result.purchase_fx_fee_jpy
-        + result.domestic_shipping_jpy + BANK_TRANSFER_FEE_JPY
+        + result.domestic_shipping_jpy + bank_transfer_fee_jpy()
     )
     tc.assertAlmostEqual(result.total_cost_jpy, expected_total, delta=1.0)
 
@@ -160,9 +166,10 @@ class GenerateBuymaCsvParamsTest(unittest.TestCase):
         self.assertEqual(result.domestic_shipping_jpy, 1000.0)
         self.assertGreaterEqual(result.customs_handling_jpy, 2200.0)
 
-    def test_no_exchange_rate_keeps_default_rate(self):
+    def test_no_exchange_rate_uses_fx_effective_rate(self):
+        """--exchange-rate 未指定なら仕入先レイヤが fx.effective_rate を明示する。"""
         params = self._build()
-        self.assertIsNone(params.exchange_rate)
+        self.assertAlmostEqual(params.exchange_rate, fx.effective_rate("EUR"), places=4)
 
 
 if __name__ == "__main__":

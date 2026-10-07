@@ -562,10 +562,6 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
             locale="ja-JP",
         )
         page = ctx.new_page()
@@ -695,6 +691,11 @@ def main():
                         help="取得した HTML を /tmp/buyma_market_debug.html に保存 (単発モード時)")
     args = parser.parse_args()
 
+    if not args.no_fetch:
+        # BUYMA の検索ページをブラウザで読みに行くため、既定では止める (キャッシュ集計 --no-fetch は可)
+        from app.utils.automation_guard import require_browser_automation
+        require_browser_automation("BUYMA 検索ページの相場取得 (fetch_buyma_market_prices)")
+
     # 単発モード (--brand 必須、--keyword or --sku のどちらか以上)
     if args.brand and (args.keyword or args.sku):
         # SKU + keyword 両方ある時は fetch_market_with_fallback で 2 段構え
@@ -730,10 +731,6 @@ def main():
                 browser = pw.chromium.launch(headless=True)
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 800},
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                    ),
                     locale="ja-JP",
                 )
                 page = ctx.new_page()
@@ -796,10 +793,6 @@ def main():
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
             locale="ja-JP",
         )
         page = ctx.new_page()

@@ -54,12 +54,13 @@ def dump_select(page, idx):
 
 
 def main():
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 出品フォームのカテゴリ自動収集 (harvest_buyma_categories)")
     config = B.load_config()
     os.makedirs(B.STATE_DIR, exist_ok=True)
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False, args=["--no-sandbox", "--window-size=1400,900"])
-        kw = dict(viewport=None, locale="ja-JP", timezone_id="Asia/Tokyo",
-                  user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        browser = pw.chromium.launch(headless=False, args=["--window-size=1400,900"])
+        kw = dict(viewport=None, locale="ja-JP", timezone_id="Asia/Tokyo")
         if os.path.exists(B.STORAGE_STATE_PATH):
             kw["storage_state"] = B.STORAGE_STATE_PATH
         ctx = browser.new_context(**kw); page = ctx.new_page()

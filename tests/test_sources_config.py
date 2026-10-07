@@ -261,10 +261,9 @@ class GetSourceResolutionTest(unittest.TestCase):
         self.assertIsInstance(s, ConfigSource)
         self.assertEqual(s.name, "antonioli")
 
-    def test_unknown_name_falls_back_to_baseblu(self):
-        s = get_source("totally_unknown_shop")
-        self.assertIsInstance(s, BasebluSource)
-        self.assertEqual(s.name, "baseblu")
+    def test_unknown_name_raises(self):
+        with self.assertRaises(ValueError):
+            get_source("totally_unknown_shop")
 
     def test_empty_name_falls_back_to_baseblu(self):
         self.assertEqual(get_source("").name, "baseblu")

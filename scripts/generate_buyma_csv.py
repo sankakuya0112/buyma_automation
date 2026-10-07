@@ -204,7 +204,9 @@ def build_pricing_params(
 
     カード手数料・国内送料・通関手数料・VAT 還付率・DDP/DDU・固定国際送料は
     get_pricing_params() でしか入らないので、PricingParams を直接作らないこと。
-    source_name 列が無い旧 CSV は get_source() が baseblu に fallback する。
+    source_name 列が無い旧 CSV は get_source() が baseblu とみなす。
+    為替は get_pricing_params() が fx.effective_rate (キャッシュ/固定値 × バッファ) で明示する。
+    --currency だけ上書きした場合は、その通貨のレートに揃え直す (通貨とレートの食い違い防止)。
     """
     source = get_source(row.get("source_name", ""))
     params = source.get_pricing_params(
@@ -217,6 +219,9 @@ def build_pricing_params(
     overrides: dict = {"target_margin_pct": target_margin}
     if currency:
         overrides["currency"] = currency
+        if exchange_rate is None and currency.upper() != params.currency.upper():
+            from app.core import fx
+            exchange_rate = fx.effective_rate(currency)
     if exchange_rate is not None:
         overrides["exchange_rate"] = exchange_rate
         # 国際送料 (円) は get_pricing_params() が既定レートで換算済み。

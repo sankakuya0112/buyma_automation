@@ -1,44 +1,28 @@
 """
 check_inventory.py
 -------------------
-出品中の商品について baseblu 側の在庫を確認し、売り切れ商品を BUYMA で
-出品停止にするためのフレームワーク。
+出品済み商品について **仕入先ごと・出品したサイズごと** に在庫を確認し、
+売切れ (全サイズ / 一部サイズ) を一覧にする。
 
-Phase 2-2: BUYMA のキャンセル率は評価に直結するため、仕入れ元が売り切れた
-商品を放置すると致命的。定期実行 (cron など) で検査 + 停止 する前提。
+BUYMA のキャンセル率は評価に直結するため、仕入先で売り切れた商品を放置しないこと。
+BUYMA 側の停止・在庫変更は **本人が行う** (ブラウザ自動操作による停止は 2026-10 に廃止):
+  - 1 件ずつなら BUYMA の出品リストで停止
+  - まとめてなら一括出品編集 (colorsizes.csv の在庫ステータス=0) を本人がアップロード
 
 使い方:
-    # ドライラン: 売切検出のみ、停止は実行しない
-    python3 scripts/check_inventory.py --dry-run
-
-    # 実際に BUYMA 停止まで行う
-    python3 scripts/check_inventory.py --execute
-
-    # Mac 上で定期実行する場合 (launchd / cron)
-    0 */6 * * * cd ~/buyma_automation && python3 scripts/check_inventory.py --execute >> logs/inventory.log
+    python3 scripts/check_inventory.py            # 確認だけ (BUYMA には触れない)
+    python3 scripts/check_inventory.py --limit 5
 
 データソース:
     出品記録 CSV: outputs/reports/*_auto_listing_results.csv
-    (buyma_auto_listing.py の実行結果。item_id + product_url が残っている)
-
-    商品ページ URL からハンドルを抽出し、baseblu JSON API で
-    availability を確認する。
+    (item_id / product_url / source_name / listed_sizes が残っている)
+    仕入先: product_url の Shopify 公開商品データ (/products/<handle>.js)。
+    source_name 列が空なら URL のホスト名から仕入先を推定、不明なら確認しない。
 
 状態管理:
     data/inventory_status.json
-    {
-      "<buyma_item_id>": {
-        "url": "https://www.baseblu.com/...",
-        "last_check_at": "2026-04-22T..."
-        "status": "in_stock" | "sold_out" | "stopped",
-        "stopped_at": "..."
-      }
-    }
-
-実装状態:
-    - baseblu 在庫チェックは実装済み (Shopify API の /products/{handle}.json)
-    - BUYMA 出品停止は現状 **スケルトン** (ログイン + 停止 UI 操作は TODO)
-      初回運用では --dry-run で検出のみ → 手動停止 を推奨
+    {"<buyma_item_id>": {"url": ..., "source_name": ..., "status": "in_stock" | "partial" | "sold_out",
+                         "missing_listed_sizes": [...], "last_check_at": ...}}
 """
 
 from __future__ import annotations
@@ -47,7 +31,6 @@ import argparse
 import csv
 import glob
 import json
-import os
 import re
 import sys
 import time
@@ -58,9 +41,15 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.utils.supplier_stock import (  # noqa: E402
+    evaluate_stock,
+    fetch_product_snapshot,
+    known_source_hosts,
+    resolve_record_source,
+)
+
 STATUS_PATH = PROJECT_ROOT / "data" / "inventory_status.json"
 RESULTS_GLOB = PROJECT_ROOT / "outputs" / "reports" / "*_auto_listing_results.csv"
-BASEBLU_DETAIL_API = "https://www.baseblu.com/en-us/products/{handle}.json"
 
 
 def load_status() -> dict:
@@ -91,7 +80,8 @@ def load_all_listing_results() -> list[dict]:
             for row in csv.DictReader(f):
                 if row.get("status") not in ("draft", "published"):
                     continue
-                if not row.get("item_id"):
+                # 旧版は公開時に item_id="published" という文字列を記録していた (実 ID ではない)
+                if not str(row.get("item_id") or "").strip().isdigit():
                     continue
                 if not extract_handle(row.get("product_url") or ""):
                     legacy += 1
@@ -110,207 +100,17 @@ def extract_handle(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def check_baseblu_stock(handle: str) -> dict:
-    """baseblu (Shopify) の個別商品 JSON で在庫を確認する。
-
-    戻り値:
-        {"available": bool, "available_sizes": [...], "raw": <dict>}
-    """
-    import requests
-    url = BASEBLU_DETAIL_API.format(handle=handle)
-    try:
-        resp = requests.get(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0",
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("product", {})
-    except Exception as e:
-        return {"error": str(e), "available": None, "available_sizes": []}
-
-    variants = data.get("variants", []) or []
-    available_sizes = [
-        v.get("option1") for v in variants if v.get("available")
-    ]
-    any_available = bool(available_sizes)
-    return {
-        "available": any_available,
-        "available_sizes": available_sizes,
-        "variants_total": len(variants),
-    }
-
-
-EDIT_URL = "https://www.buyma.com/my/sell/{item_id}/edit?tab=b"
-
-
-def _dump_stop_page_state(page, item_id: str) -> None:
-    """編集ページの停止/取り下げ候補ボタンをダンプ。
-
-    Mac 実走の初回ログから「停止ボタンのテキスト」「ラジオ/トグルの位置」を
-    確定するためのもの。`set_region` の `_dump_section_elements` と同じ思想で、
-    DOM 構造を一度知れば本体の処理を最終調整できる。
-    """
-    info = page.evaluate("""(function(){
-        function visible(el){
-            if (!el) return false;
-            var r = el.getBoundingClientRect();
-            var s = window.getComputedStyle(el);
-            return r.width > 0 && r.height > 0
-                && s.display !== 'none' && s.visibility !== 'hidden';
-        }
-        var keywords = ['停止', '取り下げ', '削除', '公開停止', '出品停止'];
-        var candidates = [];
-        document.querySelectorAll('button, a, label, input[type=radio]').forEach(function(el){
-            if (!visible(el)) return;
-            var t = (el.textContent || el.value || '').trim();
-            if (!t) return;
-            if (keywords.some(function(k){return t.indexOf(k) !== -1})) {
-                candidates.push({
-                    tag: el.tagName,
-                    text: t.slice(0, 40),
-                    cls: (el.className || '').slice(0, 60)
-                });
-            }
-        });
-        return {url: location.href, candidates: candidates.slice(0, 20)};
-    })()""")
-    print(f"    🔬 [DUMP-停止] item={item_id}")
-    print(f"       url={info.get('url', '?')}")
-    if not info.get("candidates"):
-        print(f"       (停止/取下げ系の visible 要素なし — 別 URL の可能性)")
-    for c in info.get("candidates", []):
-        print(f"       {c['tag']}: '{c['text']}'  cls={c['cls']!r}")
-
-
-def stop_buyma_listing(page, item_id: str, dump: bool = True) -> bool:
-    """BUYMA で出品を停止する。
-
-    フロー:
-        1. 編集ページに遷移
-        2. lazy render 解除のためスクロール
-        3. (初回 dump=True) 停止候補要素を診断ダンプ
-        4. 「出品停止」ボタン / ラジオを Playwright native click
-        5. 「更新する」「保存する」「下書き保存する」のいずれかをクリック
-        6. 確認モーダル ("はい"/"OK") 突破
-        7. URL 変化または toast で成否判定
-
-    BUYMA 編集画面は「販売中 / 停止 / 取り下げ」のラジオ + 保存ボタンの構造
-    が定説。初回 Mac 実走で正確なテキスト/構造を dump → 必要なら微調整。
-    """
-    try:
-        page.goto(EDIT_URL.format(item_id=item_id), wait_until="domcontentloaded", timeout=20000)
-    except Exception as e:
-        print(f"    ❌ 編集ページ遷移失敗: {e}")
-        return False
-
-    time.sleep(1.0)
-    # lazy render 解除
-    try:
-        for _ in range(8):
-            page.mouse.wheel(0, 500)
-            time.sleep(0.15)
-        page.mouse.wheel(0, -8 * 500)
-    except Exception:
-        pass
-
-    if dump:
-        try:
-            _dump_stop_page_state(page, item_id)
-        except Exception as e:
-            print(f"    ⚠️ dump 失敗: {e}")
-
-    # 1) 停止系ラジオ/ボタンを順次クリック (Playwright native)
-    stop_labels = ["出品停止", "停止する", "公開停止", "停止"]
-    clicked_stop = None
-    for label in stop_labels:
-        # まず label/button タグを優先
-        for selector in [f'label:has-text("{label}")', f'button:has-text("{label}")']:
-            try:
-                el = page.locator(selector).first
-                if el.is_visible(timeout=1500):
-                    try:
-                        el.scroll_into_view_if_needed(timeout=1500)
-                    except Exception:
-                        pass
-                    el.click(timeout=3000)
-                    clicked_stop = label
-                    break
-            except Exception:
-                continue
-        if clicked_stop:
-            break
-
-    if not clicked_stop:
-        print(f"    ⚠️ 停止系要素が見つからない (試行: {stop_labels})")
-        return False
-
-    time.sleep(0.5)
-
-    # 2) 保存系ボタン
-    save_labels = ["更新する", "変更を保存", "保存する", "下書き保存する"]
-    clicked_save = None
-    for label in save_labels:
-        try:
-            btn = page.locator(f'button:has-text("{label}")').first
-            if btn.is_visible(timeout=1500):
-                try:
-                    btn.scroll_into_view_if_needed(timeout=1500)
-                except Exception:
-                    pass
-                btn.click(timeout=4000)
-                clicked_save = label
-                break
-        except Exception:
-            continue
-
-    if not clicked_save:
-        print(f"    ⚠️ 保存ボタンが見つからない (試行: {save_labels})")
-        return False
-
-    # 3) 確認モーダル突破
-    for modal_text in ["保存する", "更新する", "はい", "OK", "停止する"]:
-        try:
-            modal_btn = page.locator(f'button:has-text("{modal_text}")').nth(1)
-            if modal_btn.is_visible(timeout=1000):
-                modal_btn.click(timeout=2000)
-                break
-        except Exception:
-            continue
-
-    # 4) URL 変化 or toast で成否判定
-    url_before = page.url
-    for _ in range(20):
-        time.sleep(0.5)
-        if page.url != url_before:
-            print(f"    ✅ 停止: {item_id} ({clicked_stop} + {clicked_save})")
-            return True
-        try:
-            ok = page.locator('text=保存しました').first.is_visible(timeout=500)
-            if ok:
-                print(f"    ✅ 停止: {item_id} ({clicked_stop} + {clicked_save}, toast)")
-                return True
-        except Exception:
-            continue
-
-    print(f"    ⚠️ 停止応答未確認: {item_id} ({clicked_stop} + {clicked_save} 後 10s)")
-    return False
-
-
-def run(execute: bool, throttle_sec: float = 1.0, limit: Optional[int] = None):
+def run(throttle_sec: float = 1.0, limit: Optional[int] = None) -> dict:
     print("=" * 50)
-    print(f"📦 在庫チェック {'(実行モード)' if execute else '(ドライラン)'}")
+    print("📦 在庫チェック (仕入先の公開データを読むだけ。BUYMA には触れません)")
     print("=" * 50)
 
     results = load_all_listing_results()
     if not results:
         print("⚠️ 過去の出品記録 CSV が見つかりません。")
-        return
+        return {}
 
-    # item_id でユニーク化 (最新 CSV の status を優先)
+    # item_id でユニーク化 (新しい CSV の行を優先)
     unique = {}
     for r in results:
         unique[r["item_id"]] = r
@@ -319,39 +119,42 @@ def run(execute: bool, throttle_sec: float = 1.0, limit: Optional[int] = None):
         listings = listings[:limit]
     print(f"  対象: {len(listings)} 件")
 
+    hosts = known_source_hosts()
     status = load_status()
-    summary = {"in_stock": 0, "sold_out": 0, "already_stopped": 0, "error": 0}
-    sold_out_items = []
+    summary = {"in_stock": 0, "partial": 0, "sold_out": 0, "unknown_source": 0, "error": 0}
+    action_items = []
 
     for i, r in enumerate(listings, 1):
         item_id = r["item_id"]
         url = r.get("product_url") or ""
-        handle = extract_handle(url)
-        if not handle:
-            summary["error"] += 1
+        source_name = resolve_record_source(r, hosts)
+        if not source_name:
+            summary["unknown_source"] += 1
+            print(f"  [{i}/{len(listings)}] {item_id} ❓ 仕入先が分からないため未確認 ({url[:60]})")
             continue
 
-        rec = status.get(item_id, {"url": url, "status": "in_stock"})
-        if rec.get("status") == "stopped":
-            summary["already_stopped"] += 1
-            continue
-
-        check = check_baseblu_stock(handle)
-        now = datetime.now().isoformat()
-        if check.get("available") is True:
-            rec.update({"status": "in_stock", "last_check_at": now})
-            summary["in_stock"] += 1
-            print(f"  [{i}/{len(listings)}] {item_id} ✅ 在庫あり (sizes={check['available_sizes']})")
-        elif check.get("available") is False:
-            rec.update({"status": "sold_out", "last_check_at": now})
-            summary["sold_out"] += 1
-            sold_out_items.append((item_id, r.get("title"), url))
-            print(f"  [{i}/{len(listings)}] {item_id} ⚠️ 売切 ({r.get('title','')[:30]})")
-        else:
-            summary["error"] += 1
-            err = check.get("error", "unknown")
-            print(f"  [{i}/{len(listings)}] {item_id} ❌ エラー: {err}")
-
+        snap = fetch_product_snapshot(url)
+        check = evaluate_stock(snap, r.get("listed_sizes") or "")
+        now = datetime.now().isoformat(timespec="seconds")
+        rec = status.get(item_id, {})
+        rec.update({
+            "url": url, "source_name": source_name, "status": check["status"],
+            "available_sizes": check.get("available_sizes", []),
+            "missing_listed_sizes": check.get("missing_listed_sizes", []),
+            "last_check_at": now,
+        })
+        st = check["status"]
+        summary[st if st in summary else "error"] += 1
+        label = {"in_stock": "✅ 在庫あり", "partial": "⚠️ 一部サイズ売切",
+                 "sold_out": "⛔ 売切", "error": "❌ エラー"}.get(st, st)
+        extra = ""
+        if st == "partial":
+            extra = f" 売切サイズ={check['missing_listed_sizes']}"
+        elif st == "error":
+            extra = f" {check.get('error', '')[:80]}"
+        print(f"  [{i}/{len(listings)}] {item_id} [{source_name}] {label}{extra}")
+        if st in ("partial", "sold_out"):
+            action_items.append((item_id, r.get("title", ""), st, check.get("missing_listed_sizes", [])))
         status[item_id] = rec
         time.sleep(throttle_sec)
 
@@ -364,67 +167,31 @@ def run(execute: bool, throttle_sec: float = 1.0, limit: Optional[int] = None):
     for k, v in summary.items():
         print(f"  {k}: {v}")
 
-    if not sold_out_items:
-        print("\n🎉 売切はありません")
-        return
+    if not action_items:
+        print("\n🎉 対応が必要な商品はありません")
+        return summary
 
-    print(f"\n⚠️ 要停止リスト ({len(sold_out_items)} 件):")
-    for item_id, title, url in sold_out_items:
-        print(f"  - {item_id} | {title[:40]}")
-        print(f"    → https://www.buyma.com/my/sell/{item_id}/edit?tab=b")
-
-    if not execute:
-        print("\n💡 --execute で実際の出品停止を試みます (現状はスケルトン、手動停止推奨)")
-        return
-
-    # 実行モード: BUYMA ログイン + 停止ループ
-    print("\n🛑 停止処理を開始...")
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("❌ Playwright 未インストール。停止処理はスキップ")
-        return
-
-    # 既存の login 関数を流用
-    from buyma_auto_listing import login, load_config
-    config = load_config()
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(
-            locale="ja-JP",
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-        page = ctx.new_page()
-        if not login(page, config["buyma_email"], config["buyma_password"]):
-            print("❌ ログイン失敗")
-            browser.close()
-            return
-        for item_id, title, _ in sold_out_items:
-            ok = stop_buyma_listing(page, item_id)
-            if ok:
-                status[item_id]["status"] = "stopped"
-                status[item_id]["stopped_at"] = datetime.now().isoformat()
-                print(f"  ✅ 停止: {item_id}")
-            else:
-                print(f"  ⚠️ 未実装のため未処理: {item_id}")
-            time.sleep(1.0)
-        browser.close()
-    save_status(status)
+    print(f"\n⚠️ BUYMA で本人が対応する商品 ({len(action_items)} 件):")
+    for item_id, title, st, missing in action_items:
+        what = "出品停止" if st == "sold_out" else f"サイズ {', '.join(missing)} を在庫なしに"
+        print(f"  - {item_id} | {title[:40]} → {what}")
+        print(f"    https://www.buyma.com/my/sell/{item_id}/edit?tab=b")
+    return summary
 
 
-def main():
-    parser = argparse.ArgumentParser(description="baseblu 在庫確認 + BUYMA 出品停止")
-    parser.add_argument("--dry-run", action="store_true", help="検出のみ、停止しない (default)")
-    parser.add_argument("--execute", action="store_true", help="実際に BUYMA で停止する (現状スケルトン)")
-    parser.add_argument("--throttle", type=float, default=1.0, help="API 呼び出し間隔 (秒)")
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="仕入先の在庫確認 (BUYMA 側の操作は本人が行う)")
+    parser.add_argument("--dry-run", action="store_true", help="(互換用。常に確認のみ)")
+    parser.add_argument("--execute", action="store_true",
+                        help="廃止: BUYMA の自動停止は行いません")
+    parser.add_argument("--throttle", type=float, default=1.0, help="問い合わせ間隔 (秒)")
     parser.add_argument("--limit", type=int, help="処理件数上限 (デバッグ用)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    execute = bool(args.execute and not args.dry_run)
-    run(execute=execute, throttle_sec=args.throttle, limit=args.limit)
+    if args.execute:
+        from app.utils.automation_guard import refuse_buyma_write
+        refuse_buyma_write("BUYMA の出品停止 (check_inventory --execute)")
+    run(throttle_sec=args.throttle, limit=args.limit)
 
 
 if __name__ == "__main__":

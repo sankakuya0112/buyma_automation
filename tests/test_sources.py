@@ -85,10 +85,10 @@ class TestGetSourceFactory(unittest.TestCase):
         s = get_source("")
         self.assertIsInstance(s, BasebluSource)
 
-    def test_unknown_falls_back_to_baseblu(self):
-        # 旧 CSV を透過処理するための fallback 仕様
-        s = get_source("unknown_source_xyz")
-        self.assertIsInstance(s, BasebluSource)
+    def test_unknown_name_raises(self):
+        # 2026-10: 未登録の仕入先を baseblu の原価体系で黙って計算しない
+        with self.assertRaises(ValueError):
+            get_source("unknown_source_xyz")
 
     def test_registered_sources_contains_baseblu(self):
         self.assertIn("baseblu", REGISTERED_SOURCES)

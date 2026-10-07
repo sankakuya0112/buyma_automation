@@ -217,8 +217,15 @@ def main():
                 continue
 
             # Phase 2c: source_name 列があれば BaseSource 経由で PricingParams を組み立てる。
-            # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) に fallback する。
-            source = get_source(row.get("source_name", ""))
+            # 旧 CSV (列なし) は get_source() が baseblu (EUR/DDU) とみなす。
+            # 未登録・disabled の仕入先は別の原価体系で計算しないよう除外する。
+            try:
+                source = get_source(row.get("source_name", ""))
+            except ValueError as exc:
+                print(f"   ⏭ {exc}: {title[:40]}")
+                skipped_count["parse_error"] += 1
+                skipped_count["total"] += 1
+                continue
             params = source.get_pricing_params(
                 sale_price=source_price,
                 category=product_type,

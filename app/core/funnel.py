@@ -1,15 +1,15 @@
 """自社出品ファネルの実測 — BUYMA 出品リストのアクセス/ほしいもの/成約の解析。
 
-closed-loop 化の観測レイヤ。scripts/track_listing_funnel.py (Mac 実行) が
-取得した HTML をここの純粋関数で解析し、data/funnel_history.json に
+closed-loop 化の観測レイヤ。出品リストの HTML (本人がブラウザで保存したもの、
+または BUYMA_ALLOW_BROWSER_AUTOMATION=1 のときだけ動く scripts/track_listing_funnel.py
+の取得物) をここの純粋関数で解析し、data/funnel_history.json に
 スナップショットとして蓄積する。decision_gate.py がこれを消費する。
 
 PLUSELECT の BuyManager が「アクセス/ほしいもの/カート集計」を実運用して
 いた通り、これらは出品者自身のページから読める一次需要データであり、
 成約 (遅い・まばら) より 2〜3 桁速く返ってくる先行指標。
 
-⚠️ セレクタ規約: 実 DOM は初回 Mac 実走の --debug-html ダンプで確定する
-(update_listed_prices._dump_edit_page_state と同じ運用)。ここでは
+⚠️ セレクタ規約: 実 DOM は保存した HTML で確定する。ここでは
 「item_id リンクで行を区切り、行チャンク内のラベル付き数値を拾う」
 という DOM 構造に依存しない正規表現方式を採る。
 """

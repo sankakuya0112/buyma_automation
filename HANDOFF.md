@@ -1,4 +1,42 @@
-# 引き継ぎノート（2026-10-07 / 12回目更新）
+# 引き継ぎノート（2026-10-08 / 13回目更新）
+
+---
+
+## 🆕 2026-10-08: M1 — 出品シート (手入力) を既定の手順に (PR: feat/listing-sheet)
+
+### 状況
+- 本人のアカウントでは一括出品編集 https://www.buyma.com/my/sell/bulk/ が「アクセスが許可されていません」。
+  BUYMA ショップ出店ガイド (2021-12) でも一括出品機能は一般個人 ×・ショップ ○ → 一般アカウントでは使えない前提
+- 最初の 1〜3 件は **本人が通常の出品フォーム https://www.buyma.com/my/sell/new?tab=b に手入力して下書き保存**
+- 自動化の本命は公式 Personal Shopper API (2026-05-14 全出品者に公開・申込制)。本人が申込。承認後に実装
+- ブラウザ自動操作はしない (M0 のまま)
+
+### やったこと
+1. **候補選定** `scripts/select_listing_candidates.py` + `app/core/candidate_select.py`:
+   原価 ≤ ¥80,000・利益 ≥ ¥5,000・よく出るサイズ (XS〜XL / IT36〜52 / 靴 35.5〜44 / ワンサイズ) の在庫あり、
+   ブランド優先度 `data/brand_demand_tiers.json` (⚠️推測、実測ではない) → 上位だけ `--refresh` で
+   `/products/<handle>.js` と商品ページを 2 秒間隔で取り直す。各候補に BUYMA 検索 URL (`/r/<語>/`) を付ける。
+   BUYMA の検索結果は取りに行かない
+2. **出品シート** `scripts/generate_listing_sheet.py` + `app/core/listing_sheet.py`: 出品フォームの順に
+   ✏️入力 / 🔽画面で選ぶ / ⚠️確認 / ℹ️参考。原価内訳・提案価格・利益 ≥ ¥5,000 の下限価格・BUYMA 検索 URL。
+   HTML (印刷・コピーボタン) / 1 商品 1 枚の Markdown / CSV / `sheets_manifest.json`。
+   下書き保存後 `--record 1=<商品ID>[@価格]` で出品記録 (`*_auto_listing_results.csv`) に追記
+3. **メンズ対応**: baseblu の `gender:` タグを CSV に通し、メンズはカテゴリ「メンズファッション」、
+   IT サイズ (46=S, 48=M …)・シャツの襟サイズ (39–40=M …) を別の対応表で変換
+4. `pricing.profit_at_price` / `min_price_for_profit` (固定手数料の段差込みで ¥100 単位の下限価格)
+5. 文言: 「/my/sell/bulk/ が使える」前提を修正 (README / CLAUDE.md / automation_guard / run_autopilot /
+   first_sale_sprint / generate_bulk_upload)。`run_autopilot --draft N` は出品シート、一括 zip は `--bulk-zip N`
+6. baseblu 取得に `--no-details` / `--delay` (既定 1 秒) を追加 (全商品の詳細ページを取りに行かない)
+
+### ユーザにお願いすること
+1. 出品シートを見て 1〜3 件を手入力 → 下書き保存。カテゴリ・色系統・サイズ・配送方法・地域・ブランドは画面で選ぶ
+2. シートの BUYMA 検索 URL で競合価格を確認 (提案価格は「原価 + 25%」で、相場データなし。下限価格までは下げられる)
+3. baseblu の日本向け会計で VAT が追加で引かれない/足されないこと・DDU を確認 (未確認のまま計算している)
+4. Personal Shopper API の申込 (承認後に Partners でアプリ登録、Webhook URL が必要)
+
+### メモ
+- antonioli (Shopify) は値引き品が多い (原価 ≤ ¥80,000・30% 以上引きのファッションが約 56 件) が、
+  送料・VAT・関税の条件が未確認 (`sources.json` で unverified)。条件を確認するまで使わない
 
 ---
 
@@ -23,9 +61,8 @@ BUYMA の規約上のリスク (許可のない外部プログラム禁止) を�
 
 ### ユーザ (Mac) にお願いすること
 1. `crontab -l` に `app.guard.cli` の行が無いか確認 (あれば削除。`app/guard/` は削除済み)
-2. 一括出品編集ページ (https://www.buyma.com/my/sell/bulk/) の「ID表を確認する」から ID 表 xlsx を
-   ダウンロード → `data/buyma_id_tables/*.json` に転記 (ブランド・カテゴリ・色系統・配送方法・地域)。
-   ついでに「商品リストをダウンロード」した items/colorsizes の CSV を 1 組保存 (列名テンプレート用)
+2. ~~一括出品編集ページから ID 表を転記~~ → 2026-10-08: 本人のアカウントでは一括出品編集に
+   アクセスできないため不要 (一括出品の権限が付いた場合のみ)。出品シートで画面から選ぶ
 3. baseblu で日本向けの会計画面まで進み (購入はしない)、商品ページの en-us 価格から
    さらに VAT が引かれないこと・関税の扱い (DDU) を確認
 4. シェルや `.env` に古い `EUR_TO_JPY=186` が残っていないか確認 (ECB 自動取得より優先されてしまう)

@@ -1,5 +1,5 @@
 """
-run_autopilot.py — 仕入れ候補の取得 → 利益計算 → 相場 → AI 補強 → 一括出品 CSV (下書き) を 1 コマンドで
+run_autopilot.py — 仕入れ候補の取得 → 利益計算 → 相場 → AI 補強 → 出品シート (手入力用) を 1 コマンドで
 --------------------------------------------------------------------------
 run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と「下書き作成」を足したもの。
 決定論的な工程 (利益計算・相場フィルタ) には AI を使わず、AI は上位候補にだけ使う。
@@ -8,7 +8,8 @@ run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と
 
     cd ~/buyma_automation
     python3 scripts/run_autopilot.py                 # 取得 → 利益 → 相場 → AI 補強 (下書きなし)
-    python3 scripts/run_autopilot.py --draft 3       # さらに上位 3 件の一括出品 zip (下書き) を作る
+    python3 scripts/run_autopilot.py --draft 3       # さらに上位 3 件の出品シート (手入力用) を作る
+    python3 scripts/run_autopilot.py --bulk-zip 3    # 一括出品 zip を作る (一括出品の権限があるアカウントのみ)
     python3 scripts/run_autopilot.py --skip-scrape   # 今日取得済みのセール CSV を再利用
     python3 scripts/run_autopilot.py --skip-market   # 相場取得を飛ばす (ブラウザ自動操作が無効なら自動で飛ばす)
     python3 scripts/run_autopilot.py --ai-limit 10   # AI に送る件数を絞る (費用を抑える)
@@ -24,8 +25,11 @@ run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と
     ③ BUYMA 相場の取得                    (fetch_buyma_market_prices.py) BUYMA_ALLOW_BROWSER_AUTOMATION=1 の時だけ
     ④ 利益フィルタ 2 回目 (相場連動)      (filter_baseblu_profitable.py --market …)
     ⑤ AI 補強: 出品文/カテゴリ/審査       (ai_enrich_candidates.py --source … --input …)  API キー必要 (無ければ自動スキップ)
-    ⑥ 一括出品 zip (--draft N 指定時)    (generate_bulk_upload.py --source … --limit N --csv …)
-       → 本人が https://www.buyma.com/my/sell/bulk/ からアップロード (下書き) → 画面で確認して公開
+    ⑥ 出品シート (--draft N 指定時)      (generate_listing_sheet.py --source … --limit N --csv …)
+       → 本人が https://www.buyma.com/my/sell/new?tab=b に入力して下書き保存 → 画面で確認して公開
+    ⑥' 一括出品 zip (--bulk-zip N 指定時) (generate_bulk_upload.py)  一括出品編集の権限があるアカウント (ショップ等) のみ。
+       一般の個人アカウントでは /my/sell/bulk/ が「アクセスが許可されていません」になる (2026-10-08 確認)
+    ※ 自動化の本命は公式 Personal Shopper API (申込制、承認後に対応予定)
     ⑦ 週次レビュー (--weekly-review 時)   (Fable 5.1 に集計値だけ渡す)
     ⑧ AI 費用レポート                     (ai_cost_report.py)
 
@@ -163,11 +167,18 @@ def build_steps(args) -> list[dict]:
                       "note": "ANTHROPIC_API_KEY 未設定なら自動で従来ロジックにフォールバックします"})
 
     if args.draft and not args.test:
-        steps.append({"name": f"⑥ 一括出品 zip の作成 (下書き・上位 {args.draft} 件)", "required": False,
-                      "cmd": [py, str(SCRIPTS / "generate_bulk_upload.py"), "--source", source,
+        steps.append({"name": f"⑥ 出品シートの作成 (手入力用・上位 {args.draft} 件)", "required": False,
+                      "cmd": [py, str(SCRIPTS / "generate_listing_sheet.py"), "--source", source,
                               "--limit", str(args.draft)],
                       "source": source, "input_flag": "--csv",
-                      "note": "BUYMA にはアクセスしません。zip は本人が一括出品編集からアップロードし、公開も本人が行います"})
+                      "note": "BUYMA にはアクセスしません。本人がシートを見て通常の出品フォームに入力し、下書き保存・公開も本人が行います"})
+    if getattr(args, "bulk_zip", 0) and not args.test:
+        steps.append({"name": f"⑥' 一括出品 zip の作成 (下書き・上位 {args.bulk_zip} 件・権限のあるアカウントのみ)",
+                      "required": False,
+                      "cmd": [py, str(SCRIPTS / "generate_bulk_upload.py"), "--source", source,
+                              "--limit", str(args.bulk_zip)],
+                      "source": source, "input_flag": "--csv",
+                      "note": "一括出品編集 (/my/sell/bulk/) が使えるアカウント (ショップ等) 向け。一般の個人アカウントでは使えません"})
 
     if args.weekly_review:
         steps.append({"name": "⑦ 週次レビュー (Fable 5.1・集計値のみ)", "cmd": None,
@@ -303,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ai-limit", type=int, default=30, help="AI に送る上位件数 (デフォルト 30)")
     parser.add_argument("--no-ai", action="store_true", help="AI 補強を使わない")
     parser.add_argument("--draft", type=int, default=0, metavar="N",
-                        help="上位 N 件の一括出品 zip (下書き) を作る。BUYMA にはアクセスしない")
+                        help="上位 N 件の出品シート (手入力用) を作る。BUYMA にはアクセスしない")
+    parser.add_argument("--bulk-zip", type=int, default=0, metavar="N",
+                        help="上位 N 件の一括出品 zip を作る (一括出品編集の権限があるアカウントのみ)")
     parser.add_argument("--weekly-review", action="store_true", help="Fable による週次レビューを生成")
     parser.add_argument("--test", action="store_true", help="モックデータで通し確認 (ネット不要)")
     parser.add_argument("--dry-run", action="store_true", help="実行せずコマンドだけ表示")
@@ -383,11 +396,12 @@ def main(argv: list[str] | None = None) -> int:
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順・AI 列付き): {final_csv}")
     if not args.draft:
-        print("次のステップ (一括出品 zip を作る):")
-        print("   python3 scripts/generate_bulk_upload.py --limit 3")
+        print("次のステップ (候補を選んで出品シートを作る):")
+        print(f"   python3 scripts/select_listing_candidates.py --source {args.source} --limit 5 --refresh")
+        print(f"   python3 scripts/generate_listing_sheet.py --source {args.source} --limit 3")
     else:
-        print("次のステップ: outputs/bulk/ の zip を https://www.buyma.com/my/sell/bulk/ からアップロード (下書き) し、")
-        print("   BUYMA の画面で 1 件ずつ確認して公開してください。")
+        print("次のステップ: outputs/listing_sheets/ の最新フォルダの listing_sheets.html を開き、")
+        print("   https://www.buyma.com/my/sell/new?tab=b に入力して「下書き保存」→ 確認して公開してください。")
     return 0
 
 

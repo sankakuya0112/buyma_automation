@@ -8,7 +8,8 @@ filter_baseblu_profitable.py の出力 CSV から期待値上位 N 件を選び�
 マニフェスト (data/first_sale_sprint.json) を生成する。
 
 戦略 (docs/strategy/FIRST_SALE_SPRINT.md 参照):
-    下書き = 公式の一括出品 CSV (generate_bulk_upload.py で zip を作り、本人がアップロード)
+    下書き = 出品シート (generate_listing_sheet.py) を見ながら本人が通常の出品フォームに入力して保存
+             (一括出品 CSV は一括出品編集の権限があるアカウントのみ。自動化は公式 API の承認後)
     公開   = 人間 (管理画面で仕上げてクリック。自動公開は廃止)
     ※ 2026-10-07 以降、BUYMA のブラウザ自動操作 (buyma_auto_listing.py) は規約上の理由で既定停止
 
@@ -107,8 +108,8 @@ def render_checklist(manifest: SprintManifest) -> str:
             "",
             "手順:",
             "",
-            "- [ ] 下書き作成: `python3 scripts/generate_bulk_upload.py --limit N` の zip を "
-            "https://www.buyma.com/my/sell/bulk/ からアップロード (この商品が含まれていること)",
+            "- [ ] 下書き作成: `python3 scripts/generate_listing_sheet.py --limit N` の出品シートを見ながら "
+            "https://www.buyma.com/my/sell/new?tab=b に入力して「下書き保存」(この商品のシートを使う)",
             "- [ ] BUYMA 管理画面で下書きを開き、以下を **人間が** 確認・修正:",
             "  - [ ] 発送地 = 国内 / 神奈川県 (自動設定は 2026-06-16 修正後まだ未検証)",
             f"  - [ ] カテゴリ第 3 階層が適切か ({it.product_type or 'type不明'} — "

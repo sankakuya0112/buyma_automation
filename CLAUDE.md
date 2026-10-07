@@ -8,12 +8,17 @@
 ## プロジェクト概要
 
 BUYMA 出品支援ツール。海外 EC サイト (baseblu ほか、`data/sources.json` で追加可) の
-セール商品を取得し、原価計算・相場照合・AI 補強を経て **BUYMA 公式の一括出品 CSV (下書き)** を作る
-パイプライン。**アップロードと公開は人が行う**。当面の目標は「まず 1 件売る」
+セール商品を取得し、原価計算・相場照合・AI 補強を経て **出品シート (手入力用)** を作る
+パイプライン。**BUYMA への入力・下書き保存・公開は人が行う**。当面の目標は「まず 1 件売る」
 (`docs/strategy/FIRST_SALE_SPRINT.md`)。
 
-**全工程の入口**: `scripts/run_autopilot.py` (⓪ 為替 → ① 取得 → ② 利益 → ③ 相場 → ④ 相場連動 → ⑤ AI → ⑥ 一括出品 zip)  
-**出品の本体**: `scripts/generate_bulk_upload.py` + `app/core/bulk_csv.py` (items.csv + colorsizes.csv、常に「下書き」)  
+**全工程の入口**: `scripts/run_autopilot.py` (⓪ 為替 → ① 取得 → ② 利益 → ③ 相場 → ④ 相場連動 → ⑤ AI → ⑥ 出品シート)  
+**出品の本体 (2026-10-08〜)**: `scripts/select_listing_candidates.py` (候補選定) → `scripts/generate_listing_sheet.py`
++ `app/core/listing_sheet.py` (出品フォームの順の手入力シート、`--record N=商品ID` で出品記録へ)。
+本人が https://www.buyma.com/my/sell/new?tab=b に入力して下書き保存する  
+**一括出品 CSV** (`generate_bulk_upload.py` + `app/core/bulk_csv.py`) は一括出品編集の権限があるアカウント (ショップ等) 専用。
+一般個人アカウントでは `/my/sell/bulk/` がアクセス不可 (2026-10-08 本人のアカウントで確認)。
+**自動化の本命**: 公式 Personal Shopper API (2026-05-14 全出品者に公開・申込制。本人が申込中。承認後に実装)  
 
 ### 🚫 BUYMA のブラウザ自動操作は禁止方針 (2026-10-07〜)
 BUYMA の規約は許可のない外部プログラム・自動出品ツールを禁止している
@@ -23,7 +28,7 @@ BUYMA の規約は許可のない外部プログラム・自動出品ツール�
   `app/utils/automation_guard.require_browser_automation()` で既定停止。`BUYMA_ALLOW_BROWSER_AUTOMATION=1` の時だけ動く
 - 本公開・出品停止・価格更新の自動操作は `refuse_buyma_write()` で常に拒否。**新たに作らないこと**
 - 自動操作の検知回避 (AutomationControlled 無効化・UA 偽装など) は入れないこと
-- BUYMA への書き込みは公式の一括出品 CSV (本人がアップロード) か、承認後の公式 API だけ
+- BUYMA への書き込みは本人の手入力 (出品シート) か、承認後の公式 API だけ (一括出品 CSV は権限のあるアカウントのみ)
 - 一括出品 CSV の「コントロール」は「下書き」以外を書かない (`bulk_csv.validate_rows` が拒否)
 
 ### 💴 原価計算の前提 (2026-10-07 改定)

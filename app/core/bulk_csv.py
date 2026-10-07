@@ -2,6 +2,8 @@
 
 仕様: BUYMA Buyers info「一括出品編集マニュアル」 https://buyersinfo.buyma.com/?page_id=78343
   - アップロード先: https://www.buyma.com/my/sell/bulk/ (本人がブラウザで操作する)
+  - ⚠️ 権限のあるアカウント (ショップ等) のみ。一般個人アカウントではアクセス不可 (2026-10-08 確認)。
+    一般アカウントは app/core/listing_sheet.py の出品シートで手入力するのが既定
   - zip にする場合のファイル名は items.csv / colorsizes.csv (フォルダではなく 2 ファイルを直接)
   - 全列は不要。最低限「商品ID か 商品管理番号」と「コントロール」があればアップロード可。
     マニュアルに無い列名は無視される。列の並び替えは可

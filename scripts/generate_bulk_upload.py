@@ -4,6 +4,12 @@ generate_bulk_upload.py
 利益商品 CSV から BUYMA 公式「一括出品編集」用の zip (items.csv + colorsizes.csv) を作る。
 **すべて下書き** で、BUYMA には一切アクセスしない。アップロードと公開は本人が行う。
 
+⚠️ 一括出品編集 (https://www.buyma.com/my/sell/bulk/) は権限のあるアカウント向け。2026-10-08、
+   本人の一般個人アカウントでは「お客様がお探しのページはアクセスが許可されていません」になった。
+   BUYMA のショップ出店ガイド (2021-12 版) でも「一括出品機能」は一般個人 ×・ショップ ○。
+   → 一般アカウントの既定の手順は scripts/generate_listing_sheet.py (出品シートを見て手入力)。
+   このスクリプトはショップ等で権限が付いた場合のために残している。自動化の本命は公式 API (申込制)。
+
     # 利益が出る出品OK商品の先頭 3 件 (最初は少数で試す)
     python3 scripts/generate_bulk_upload.py --limit 3
 
@@ -15,7 +21,7 @@ generate_bulk_upload.py
     # 商品管理番号 → 商品ID を取り込み、出品記録 (在庫・価格確認の対象) に追記する
     python3 scripts/generate_bulk_upload.py --import-ids ~/Downloads/items.utf8.csv
 
-手順 (本人):
+手順 (本人、一括出品編集の権限がある場合):
   1. 出力された outputs/bulk/*_buyma_bulk_draft.zip を https://www.buyma.com/my/sell/bulk/
      の「商品リストをアップロードする」から登録 → 下書きになる
   2. BUYMA の画面で 1 件ずつ内容 (カテゴリ・ブランド・配送方法・画像・サイズ) を確認して公開
@@ -159,6 +165,8 @@ def generate(args) -> Path | None:
             print(f"   - {w}")
     print("\n次の手順 (本人): https://www.buyma.com/my/sell/bulk/ → 商品リストをアップロード → "
           "下書きを 1 件ずつ確認して公開 → リストをダウンロードして --import-ids")
+    print("   ⚠️ 一括出品編集は権限のあるアカウント (ショップ等) のみ。「アクセスが許可されていません」と出る場合は\n"
+          "      python3 scripts/generate_listing_sheet.py --limit 3 (出品シートを見て通常の出品フォームに手入力)")
     return zip_path
 
 
@@ -229,7 +237,8 @@ def import_ids(downloaded_items_csv: str, bulk_dir: Path, reports_dir: Path,
 def main(argv=None):
     from app.utils.env import load_project_env
     load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
-    ap = argparse.ArgumentParser(description="BUYMA 一括出品 (下書き) 用 zip を作る。BUYMA にはアクセスしない")
+    ap = argparse.ArgumentParser(description="BUYMA 一括出品 (下書き) 用 zip を作る (一括出品編集の権限があるアカウント向け)。"
+                                             "BUYMA にはアクセスしない")
     ap.add_argument("--csv", default="latest", help="利益商品 CSV (*_profitable_products.csv)。既定は最新")
     ap.add_argument("--source", help="仕入先名で最新 CSV を絞る")
     ap.add_argument("--limit", type=int, default=3, help="商品数の上限 (既定 3。最初は少数で確認)")

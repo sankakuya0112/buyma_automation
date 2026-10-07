@@ -1,0 +1,5 @@
+{
+  "_placeholder": true,
+  "_note": "系統色の日本語名 (ブラック / ホワイト / マルチカラー など、translate_color_to_jp の出力) → 色系統 ID。ID表の「色の系統・サイズの種類」シートから転記。 本物の値を入れたら _placeholder を false にする。推測の ID は入れないこと。",
+  "entries": {}
+}

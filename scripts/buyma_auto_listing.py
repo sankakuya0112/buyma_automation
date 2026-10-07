@@ -97,8 +97,12 @@ from app.utils.listing_helpers import (
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 except ImportError:
-    print("pip install playwright requests --break-system-packages && playwright install chromium")
-    sys.exit(1)
+    # 一括出品 CSV (generate_bulk_upload.py) は本モジュールの純粋関数だけ使うので、
+    # Playwright が無くても import できるようにする。ブラウザ実行時だけ main() で止める。
+    sync_playwright = None
+
+    class PWTimeout(Exception):
+        pass
 
 # ========== パス設定 ==========
 BASE_DIR      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3045,6 +3049,9 @@ def check_cli_policy(args: list[str]) -> None:
 def main():
     args = sys.argv[1:]
     check_cli_policy(args)
+    if sync_playwright is None:
+        print("pip install playwright requests --break-system-packages && playwright install chromium")
+        sys.exit(1)
     test_mode   = "--test"   in args
     resume_mode = "--resume" in args
     draft_mode  = True   # 常に下書き (--draft は互換のため受け付けるだけ)

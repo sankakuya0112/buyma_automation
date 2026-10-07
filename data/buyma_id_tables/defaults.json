@@ -1,0 +1,12 @@
+{
+  "_placeholder": true,
+  "_note": "全商品共通の値。shipping_method_ids は \"2123_2126\" のように _ 区切り (最大 10)。buy_area_id/buy_city_id は買付地 (イタリア等)、ship_area_id/ship_city_id は発送地 (日本・神奈川県等)。quantity は買付可数量 (既定 1)。 本物の値を入れたら _placeholder を false にする。推測の ID は入れないこと。",
+  "entries": {
+    "shipping_method_ids": "",
+    "buy_area_id": "",
+    "buy_city_id": "",
+    "ship_area_id": "",
+    "ship_city_id": "",
+    "quantity": "1"
+  }
+}

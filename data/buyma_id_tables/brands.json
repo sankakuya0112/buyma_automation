@@ -1,0 +1,5 @@
+{
+  "_placeholder": true,
+  "_note": "ブランド名 → BUYMA ブランド ID。一括出品編集ページの「ID表を確認する」でダウンロードした xlsx の「ブランド」シートから転記。例: {\"GUCCI\": \"1234\"} (この例の数字は架空) 本物の値を入れたら _placeholder を false にする。推測の ID は入れないこと。",
+  "entries": {}
+}

@@ -143,6 +143,8 @@ def main():
                         help="実行せずコマンドだけ表示")
     args = parser.parse_args()
 
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の BUYMA_ALLOW_BROWSER_AUTOMATION などを工程の組み立て前に反映
     steps = build_steps(args)
 
     print("=" * 60)

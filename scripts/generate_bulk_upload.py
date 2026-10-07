@@ -205,7 +205,8 @@ def import_ids(downloaded_items_csv: str, bulk_dir: Path, reports_dir: Path,
         cands = manifests.get(mgmt) or []
         if not mgmt or not item_id or not cands:
             continue
-        variants = {(c.get("available_sizes"), str(c.get("recommended_price"))) for c in cands}
+        variants = {(c.get("available_sizes"), str(c.get("recommended_price")), c.get("color", ""),
+                     c.get("product_url", "")) for c in cands}
         if len(variants) > 1:
             ambiguous.append(mgmt)
             continue

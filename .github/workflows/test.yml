@@ -8,6 +8,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'claude/**'   # 本線 claude/add-test-flag-HibqE 向けの PR (作業ブランチ名が claude/ 以外でも) を検証
 
 jobs:
   unittest:

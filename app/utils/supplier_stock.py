@@ -141,13 +141,16 @@ def split_sizes(value: str | Iterable[str] | None) -> list[str]:
 
 
 def _variants_for_color(snapshot: dict, listed_color: Optional[str]) -> list[dict]:
-    """色の軸がある商品なら出品した色のバリアントだけ。色が一致しなければ全色 (旧記録など)。"""
+    """色の軸がある商品なら出品した色のバリアントだけ。
+
+    出品した色が記録に無い (旧記録) ときだけ全色を見る。記録はあるのに仕入先から
+    その色が消えた場合は「該当なし」(= 売切扱い)。別の色の在庫・価格で判定しない。
+    """
     variants = snapshot.get("variants") or []
     color = (listed_color or "").strip().lower()
     if not snapshot.get("has_color") or not color:
         return variants
-    same = [v for v in variants if (v.get("color") or "").lower() == color]
-    return same or variants
+    return [v for v in variants if (v.get("color") or "").strip().lower() == color]
 
 
 def evaluate_stock(snapshot: dict, listed_sizes: Iterable[str] | str | None = None,

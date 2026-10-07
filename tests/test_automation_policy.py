@@ -160,7 +160,7 @@ class EnvLoaderTest(unittest.TestCase):
         from app.utils.env import load_project_env
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
-            path.write_text("# c\nFX_BUFFER_PCT=0.05\nexport BUYMA_TRANSFER_FEE_JPY='220'\nEUR_TO_JPY=1 # x\n",
+            path.write_text("# c\nFX_BUFFER_PCT=\"0.05\" # 5%\nexport BUYMA_TRANSFER_FEE_JPY='220'\nEUR_TO_JPY=1 # x\n",
                             encoding="utf-8")
             with patch.dict(os.environ, {"EUR_TO_JPY": "180"}, clear=False):
                 os.environ.pop("FX_BUFFER_PCT", None)
@@ -172,6 +172,13 @@ class EnvLoaderTest(unittest.TestCase):
                 for k in loaded:
                     os.environ.pop(k, None)
         self.assertEqual(sorted(loaded), ["BUYMA_TRANSFER_FEE_JPY", "FX_BUFFER_PCT"])
+
+    def test_fallback_parser_handles_quotes_and_comments(self):
+        from app.utils.env import _parse_line
+        self.assertEqual(_parse_line('EUR_TO_JPY="250" # comment'), ("EUR_TO_JPY", "250"))
+        self.assertEqual(_parse_line("export A='x y'"), ("A", "x y"))
+        self.assertEqual(_parse_line("B=3 # c"), ("B", "3"))
+        self.assertIsNone(_parse_line("# only comment"))
 
 
 class OtherScriptGuardsTest(unittest.TestCase):

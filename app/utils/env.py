@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _parse_line(line: str) -> Optional[tuple[str, str]]:
+    """python-dotenv が無い環境用の簡易パーサ (KEY=VALUE、export、引用符、行末コメント)。"""
     line = line.strip()
     if not line or line.startswith("#") or "=" not in line:
         return None
@@ -23,11 +24,26 @@ def _parse_line(line: str) -> Optional[tuple[str, str]]:
     key, _, value = line.partition("=")
     key = key.strip()
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        value = value[1:-1]
+    if value[:1] in ("'", '"'):
+        q = value[0]
+        end = value.find(q, 1)
+        value = value[1:end] if end > 0 else value[1:]
     elif " #" in value:
         value = value.split(" #", 1)[0].rstrip()
     return (key, value) if key else None
+
+
+def _read_env_file(p: Path) -> dict[str, str]:
+    try:
+        from dotenv import dotenv_values  # requirements.txt にある正式なパーサを優先
+        return {k: v for k, v in dotenv_values(p).items() if k and v is not None}
+    except ImportError:
+        out = {}
+        for line in p.read_text(encoding="utf-8").splitlines():
+            kv = _parse_line(line)
+            if kv:
+                out[kv[0]] = kv[1]
+        return out
 
 
 def load_project_env(path: Optional[str | Path] = None) -> list[str]:
@@ -36,11 +52,7 @@ def load_project_env(path: Optional[str | Path] = None) -> list[str]:
     if not p.exists():
         return []
     loaded = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        kv = _parse_line(line)
-        if not kv:
-            continue
-        key, value = kv
+    for key, value in _read_env_file(p).items():
         if key not in os.environ:
             os.environ[key] = value
             loaded.append(key)

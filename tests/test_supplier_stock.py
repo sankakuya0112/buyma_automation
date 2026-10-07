@@ -137,9 +137,14 @@ class MultiOptionStockTest(unittest.TestCase):
         self.assertIsNone(ss.price_for_listing(snap, "S", "black"))
         self.assertAlmostEqual(ss.price_for_listing(snap, "S,M", "Black"), 120.0)
 
-    def test_unknown_color_falls_back_to_all(self):
+    def test_missing_color_record_falls_back_to_all(self):
         snap = ss.parse_shopify_product_js(self.JS2)
         self.assertEqual(ss.evaluate_stock(snap, "S", "")["status"], "in_stock")
+
+    def test_listed_color_gone_is_sold_out_not_other_color(self):
+        snap = ss.parse_shopify_product_js(self.JS2)
+        self.assertEqual(ss.evaluate_stock(snap, "S", "Green")["status"], "sold_out")
+        self.assertIsNone(ss.price_for_listing(snap, "S", "Green"))
 
     def test_string_options(self):
         snap = ss.parse_shopify_product_js({"options": ["Size"], "variants": [

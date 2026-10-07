@@ -55,3 +55,6 @@ outputs/sprints/
 data/fx_rates.json
 # 一括出品 CSV (scripts/generate_bulk_upload.py の出力)
 outputs/bulk/
+
+# 出品シート (価格・在庫は作成時点の値。scripts/generate_listing_sheet.py)
+outputs/listing_sheets/

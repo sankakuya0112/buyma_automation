@@ -38,7 +38,7 @@ class GuardTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 guard.require_browser_automation("x")
         self.assertEqual(cm.exception.code, 2)
-        self.assertIn("generate_bulk_upload.py", err.getvalue())
+        self.assertIn("generate_listing_sheet.py", err.getvalue())
 
     def test_allowed_only_with_exact_1(self):
         for val, allowed in (("1", True), ("true", False), ("0", False), ("yes", False)):

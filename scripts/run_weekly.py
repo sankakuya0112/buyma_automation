@@ -199,8 +199,9 @@ def main():
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順): {final_csv}")
     print()
-    print("次のステップ (一括出品 zip を作る・下書き):")
-    print("   python3 scripts/generate_bulk_upload.py --limit 3")
+    print("次のステップ (出品シートを作って BUYMA の出品フォームに手入力・下書き保存):")
+    print("   python3 scripts/select_listing_candidates.py --limit 5 --refresh")
+    print("   python3 scripts/generate_listing_sheet.py --limit 3")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ import run_autopilot as ap  # noqa: E402
 
 def _args(**kw) -> Namespace:
     base = dict(source="baseblu", skip_scrape=False, skip_market=False, market_limit=None,
-                ai_limit=30, no_ai=False, draft=0, weekly_review=False, test=False, dry_run=False,
+                ai_limit=30, no_ai=False, draft=0, bulk_zip=0, weekly_review=False, test=False, dry_run=False,
                 allow_browser=True)
     base.update(kw)
     return Namespace(**base)
@@ -62,11 +62,18 @@ class BuildStepsTest(unittest.TestCase):
         names = [s["name"] for s in steps]
         self.assertFalse(any(n.startswith("①") or n.startswith("③") for n in names))
         draft = next(s for s in steps if s["name"].startswith("⑥"))
-        self.assertIn("generate_bulk_upload.py", draft["cmd"][1])
+        self.assertIn("generate_listing_sheet.py", draft["cmd"][1])
         self.assertEqual(draft["cmd"][draft["cmd"].index("--limit") + 1], "3")
         self.assertNotIn("--yes", draft["cmd"])
         self.assertNotIn("buyma_auto_listing.py", " ".join(draft["cmd"]))
         self.assertTrue(any(s.get("resolver") == "weekly_review" for s in steps))
+
+    def test_bulk_zip_flag_is_separate_from_draft(self):
+        steps = ap.build_steps(_args(bulk_zip=2, skip_scrape=True, skip_market=True))
+        bulk = next(s for s in steps if s["name"].startswith("⑥'"))
+        self.assertIn("generate_bulk_upload.py", bulk["cmd"][1])
+        self.assertEqual(bulk["cmd"][bulk["cmd"].index("--limit") + 1], "2")
+        self.assertFalse(any("generate_listing_sheet.py" in " ".join(s["cmd"]) for s in steps if s.get("cmd")))
 
     def test_baseblu_uses_dedicated_scraper(self):
         """baseblu は商品ページ HTML から色を取る専用スクリプトを使い続ける。"""

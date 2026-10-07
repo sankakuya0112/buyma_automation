@@ -36,7 +36,7 @@ Phase 2-3: 「価格追従」。仕入先 (baseblu) の値下げに追従でき�
 
 実装状態:
     - 差分検出: 実装済み (仕入先ごと・サイズごと)
-    - BUYMA 上の価格更新: 本人が BUYMA の画面 / 一括出品編集で行い、--confirm で記録する
+    - BUYMA 上の価格更新: 本人が BUYMA の画面 (権限があれば一括出品編集) で行い、--confirm で記録する
 """
 
 from __future__ import annotations

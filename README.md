@@ -1,13 +1,18 @@
 # BUYMA 出品支援ツール
 
 海外 EC サイト（BaseBlu ほか）のセール商品から「利益が出て BUYMA で売れそうなもの」を選び、
-BUYMA 公式の **一括出品 CSV（下書き）** を作るところまでを自動でやるツールです。
-**アップロードと公開ボタンは人が行います**（CSV 作成 = ツール / アップロード・公開 = 人間）。
+BUYMA の出品フォームにそのまま写せる **出品シート** を作るところまでを自動でやるツールです。
+**BUYMA への入力・下書き保存・公開は人が行います**（候補選び・原価計算・シート作成 = ツール / 入力・公開 = 人間）。
 
 > ⚠️ 2026-10-07 方針変更: BUYMA の規約は許可のない外部プログラム・自動出品ツールを禁止しているため
 > （[BUYMA ガイド](https://qa.buyma.com/information/news/30118.html)）、BUYMA の画面をブラウザで
 > 自動操作するスクリプト（`buyma_auto_listing.py`・相場取得など）は**既定で停止**しました。
-> 出品は公式の一括出品編集（https://www.buyma.com/my/sell/bulk/）と、承認後は公式 API を使います。
+> 出品は **出品シートを見ながら通常の出品フォーム（https://www.buyma.com/my/sell/new?tab=b）に手入力** して
+> 下書き保存するのが既定です。自動化は公式の **Personal Shopper API**（2026-05-14 に全出品者へ公開・申込制、
+> https://specification.personal-shopper-api.buyma.com/ ）の承認後に対応する予定です。
+> 一括出品 CSV（`generate_bulk_upload.py`）は **一括出品編集の権限があるアカウント（ショップ等）向け** です。
+> 一般の個人アカウントでは https://www.buyma.com/my/sell/bulk/ が「アクセスが許可されていません」になります
+> （2026-10-08 確認。BUYMA のショップ出店ガイドでも一括出品機能は一般個人 ×・ショップ ○）。
 > 本公開・出品停止・価格更新の自動操作は廃止し、どの設定でも動きません。
 
 当面の目標は「機能を増やす」ことではなく **まず 1 件売る** ことです
@@ -26,11 +31,13 @@ BUYMA 公式の **一括出品 CSV（下書き）** を作るところまでを�
 | ③ 相場を見る | BUYMA で同じ商品がいくらで何件出ているか集める（**既定で停止**。`BUYMA_ALLOW_BROWSER_AUTOMATION=1` の時だけ） | 必要 | `fetch_buyma_market_prices.py` |
 | ④ 決め直す | 相場を見て売値を決め直す（多ければ安く、赤字なら見送り） | 不要 | `filter_baseblu_profitable.py --market` |
 | ⑤ AI | 日本語の商品名・説明・カテゴリを作り、出品してよいか判定 | API | `ai_enrich_candidates.py` |
-| ⑥ 一括出品 CSV | 公式の一括出品用 zip（items.csv + colorsizes.csv、すべて「下書き」）を作る。BUYMA にはアクセスしない | 不要 | `generate_bulk_upload.py` |
-| ⑦ アップロード・公開 | **あなたが** zip を一括出品編集からアップロードし、下書きを確認して公開ボタンを押す | — | — |
+| ⑥ 出品シート | 出品フォームの順に「入力する値 / 画面で選ぶ項目」と原価内訳・利益・下限価格・BUYMA 検索 URL をまとめる。BUYMA にはアクセスしない | 不要 | `generate_listing_sheet.py`（候補選びは `select_listing_candidates.py`） |
+| ⑦ 入力・公開 | **あなたが** シートを見て通常の出品フォームに入力 →「下書き保存」→ 確認して公開 | — | — |
+
+（一括出品編集の権限があるアカウントだけは、⑥ の代わりに `--bulk-zip N` / `generate_bulk_upload.py` で一括出品 zip も作れます。）
 
 ⑤ は `.env` に `ANTHROPIC_API_KEY` が無ければ自動で飛ばされます（週 ¥500 の予算で自動停止）。
-⑥ は `--draft N` を付けたときだけ動きます。毎回の最初に ECB の参照レートを取りに行きます（失敗しても前回値で続行）。
+⑥ は `--draft N` を付けたときだけ動きます（上位 N 件の出品シート）。毎回の最初に ECB の参照レートを取りに行きます（失敗しても前回値で続行）。
 
 売値の決め方（€200 のバッグの例、ECB 2026-10-06 の 1 € = 178.15 円 × 安全幅 3% = 183.49 円）:
 商品代 ¥36,699（baseblu の en-us 価格は既に伊 VAT 抜きなので控除なし）+ 国際送料 ¥9,175 + 関税 ¥3,670
@@ -80,17 +87,28 @@ python3 scripts/run_autopilot.py --test
 # 本番: ① 集める 〜 ⑤ AI まで
 python3 scripts/run_autopilot.py
 
-# 上位 3 件の一括出品 zip（下書き）を作る → outputs/bulk/
-python3 scripts/run_autopilot.py --skip-scrape --draft 3
-#   → https://www.buyma.com/my/sell/bulk/ の「商品リストをアップロードする」で zip を登録（下書きになる）
-#   → BUYMA の画面で 1 件ずつ確認して公開
-#   → 出品リストをダウンロードして商品 ID を取り込む:
-python3 scripts/generate_bulk_upload.py --import-ids ~/Downloads/items.utf8.csv
+# 手入力で出す候補を選ぶ（原価 ≤ ¥80,000・利益 ≥ ¥5,000・よく出るサイズの在庫あり・売れやすいブランド優先）
+#   --refresh: 上位だけ仕入先の公開ページで在庫・価格・素材を取り直す（2 秒間隔）
+python3 scripts/select_listing_candidates.py --source baseblu --limit 5 --refresh
+
+# 上位 3 件の出品シートを作る → outputs/listing_sheets/<日時>/（listing_sheets.html を開く）
+python3 scripts/generate_listing_sheet.py --limit 3
+#   → 仕入先ページで在庫・価格を確認
+#   → https://www.buyma.com/my/sell/new?tab=b にシートの順で入力（🔽 の項目は画面で選ぶ）→「下書き保存する」
+#   → 内容を確認して公開
+#   → 保存した商品 ID を出品記録に追記（在庫・価格の見張り役の対象になる）:
+python3 scripts/generate_listing_sheet.py --record 1=133231149      # シート #1 の商品 ID
+python3 scripts/generate_listing_sheet.py --record 2=133231150@78000 # BUYMA で価格を変えたら @価格
 ```
 
-ブランド・カテゴリ・色系統・配送方法・地域の ID は、一括出品編集ページの「ID表を確認する」から
-ダウンロードした表を見て `data/buyma_id_tables/*.json` に書きます（書くまでは空欄の下書きになり、
-公開前に画面で選びます）。
+出品シートの記号: ✏️ 入力（そのまま貼る）/ 🔽 選択（ブランド・カテゴリ・色系統・サイズ・配送方法・地域など、
+BUYMA の画面で選ぶ。ID は書いていません）/ ⚠️ 確認（価格・購入期限など本人が決める）/ ℹ️ 参考（原価内訳・検索 URL）。
+競合の価格はシートの「BUYMA 検索」URL を開いて目で確認します（ツールは BUYMA の検索結果を取りに行きません）。
+ブランドの優先度 `data/brand_demand_tiers.json` は実測ではない暫定の推測です。
+
+一括出品編集の権限があるアカウントの場合だけ: `python3 scripts/run_autopilot.py --skip-scrape --bulk-zip 3`
+（または `generate_bulk_upload.py --limit 3`）で zip を作り、https://www.buyma.com/my/sell/bulk/ からアップロード、
+`generate_bulk_upload.py --import-ids <ダウンロードした items CSV>` で商品 ID を取り込みます。
 
 出品後の見張り役（どちらも BUYMA には触れず、対応が必要な商品を一覧にするだけ）:
 
@@ -115,7 +133,9 @@ python3 scripts/update_listed_prices.py --confirm 123456789=98000  # BUYMA で�
 | `YYYY-MM-DD_<仕入先>_profitable_products.csv` | ②④⑤ の出品候補（売値・利益・AI の列付き） |
 | `YYYY-MM-DD_market_prices.json` | ③ の相場メモ |
 | `YYYY-MM-DD_auto_listing_results.csv` | 出品記録（商品 ID・仕入先 URL・出品サイズ）。同じ日の分は追記 |
-| `outputs/bulk/*_buyma_bulk_draft.zip` | ⑥ の一括出品 zip（下書き） |
+| `YYYY-MM-DD_<仕入先>_listing_candidates.csv` | 手入力で出す候補（`select_listing_candidates.py`、BUYMA 検索 URL 付き） |
+| `outputs/listing_sheets/<日時>/` | ⑥ の出品シート（`listing_sheets.html` / 1 商品 1 枚の `.md` / `.csv` / `sheets_manifest.json`）。gitignore 済み |
+| `outputs/bulk/*_buyma_bulk_draft.zip` | 一括出品 zip（権限のあるアカウントのみ） |
 | `outputs/bulk/*_buyma_bulk_manifest.json` | zip の商品管理番号 ↔ 仕入先の対応表（`--import-ids` で使う） |
 
 ---
@@ -144,6 +164,7 @@ buyma_automation/
 ├── app/utils/          純粋な変換関数 (Playwright 非依存)
 ├── data/               設定と対応表 (sources.json / brands.json / categories.json / tags.json)
 ├── outputs/reports/    生成された CSV / JSON
+├── outputs/listing_sheets/  出品シート (手入力用、作成時点の価格。git には入れない)
 ├── tests/              自動テスト (python3 -m unittest discover -s tests)
 └── docs/               設計・戦略メモ
 ```
@@ -154,8 +175,15 @@ buyma_automation/
 
 - エラーが出たら、ターミナルの出力をそのまま Claude に貼ってください。
   `python3 scripts/ai_diagnose.py --log <ログファイル>` でも診断できます。
-- 一括出品のエラー文言は BUYMA の「一括出品編集のエラー文言」（https://buyersinfo.buyma.com/?page_id=79316）。
+- 一括出品（権限のあるアカウントのみ）のエラー文言は BUYMA の「一括出品編集のエラー文言」（https://buyersinfo.buyma.com/?page_id=79316）。
   列名が合わない場合は、BUYMA からダウンロードした CSV を `--items-template` / `--colorsizes-template` で渡すと列名・並びを合わせます。
+
+## 公式 API（予定）
+
+BUYMA Personal Shopper API は 2026-05-14 に全出品者へ公開されました（申込制・無料・審査あり）。
+申込: 仕様サイト https://specification.personal-shopper-api.buyma.com/ の「利用申込書（出品者様用）」。
+承認後は BUYMA Partners でアプリを登録（Webhook URL が必須 = 公開 HTTPS の受け口が要る）→ OAuth でトークン取得
+→ 商品 API（`control: "draft"` で下書き登録）。このツールの自動化はその後に対応します。問い合わせ: buyer-support@buyma.com
 
 ## もっと詳しく
 

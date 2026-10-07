@@ -8,12 +8,32 @@
 ## プロジェクト概要
 
 BUYMA 出品支援ツール。海外 EC サイト (baseblu ほか、`data/sources.json` で追加可) の
-セール商品を取得し、原価計算・相場照合・AI 補強を経て BUYMA に**下書き**として登録する
-パイプライン。**公開は人が行う** (下書き = ツール / 公開 = 人間)。当面の目標は
-「まず 1 件売る」(`docs/strategy/FIRST_SALE_SPRINT.md`)。
+セール商品を取得し、原価計算・相場照合・AI 補強を経て **BUYMA 公式の一括出品 CSV (下書き)** を作る
+パイプライン。**アップロードと公開は人が行う**。当面の目標は「まず 1 件売る」
+(`docs/strategy/FIRST_SALE_SPRINT.md`)。
 
-**全工程の入口**: `scripts/run_autopilot.py` (① 取得 → ② 利益 → ③ 相場 → ④ 相場連動 → ⑤ AI → ⑥ 下書き)  
-**下書き作成の本体**: `scripts/buyma_auto_listing.py` (工程 ⑥、3,000 行超・BUYMA 画面の罠対策の塊)  
+**全工程の入口**: `scripts/run_autopilot.py` (⓪ 為替 → ① 取得 → ② 利益 → ③ 相場 → ④ 相場連動 → ⑤ AI → ⑥ 一括出品 zip)  
+**出品の本体**: `scripts/generate_bulk_upload.py` + `app/core/bulk_csv.py` (items.csv + colorsizes.csv、常に「下書き」)  
+
+### 🚫 BUYMA のブラウザ自動操作は禁止方針 (2026-10-07〜)
+BUYMA の規約は許可のない外部プログラム・自動出品ツールを禁止している
+(https://qa.buyma.com/information/news/30118.html、検知でアカウント停止あり)。
+- buyma.com を Playwright で操作するスクリプト (`buyma_auto_listing.py`, `fetch_buyma_market_prices.py`,
+  `track_listing_funnel.py`, `harvest_buyma_categories.py`, `scout_demand.py --probe`) は
+  `app/utils/automation_guard.require_browser_automation()` で既定停止。`BUYMA_ALLOW_BROWSER_AUTOMATION=1` の時だけ動く
+- 本公開・出品停止・価格更新の自動操作は `refuse_buyma_write()` で常に拒否。**新たに作らないこと**
+- 自動操作の検知回避 (AutomationControlled 無効化・UA 偽装など) は入れないこと
+- BUYMA への書き込みは公式の一括出品 CSV (本人がアップロード) か、承認後の公式 API だけ
+- 一括出品 CSV の「コントロール」は「下書き」以外を書かない (`bulk_csv.validate_rows` が拒否)
+
+### 💴 原価計算の前提 (2026-10-07 改定)
+- baseblu の en-us 価格は伊 VAT 22% 抜き (812 / 1.22 = 665.57、"Duties Excluded") → `vat_treatment="none"`。
+  VAT 込み価格の仕入先だけ `deducted_at_checkout` + `local_vat_rate` (控除率は rate/(1+rate)、22% なら 0.1803)
+- 為替: `app/core/fx.py` (env `EUR_TO_JPY` → ECB キャッシュ `data/fx_rates.json` → 固定値) × `FX_BUFFER_PCT` (既定 3%)
+- BUYMA 手数料: 7.7% + 固定 ¥55〜¥220 (価格帯別) + 振込 ¥385。カード手数料は (商品代 + 国際送料) × 2.2%
+- 在庫・価格確認は出品記録の `source_name` / `listed_sizes` で仕入先・サイズごと (Shopify は `/products/<handle>.js`。
+  `.json` には `available` が無い)
+
 **本線ブランチ**: `claude/add-test-flag-HibqE`。セッションごとの作業ブランチから PR で取り込む  
 **旧世代コード**: 2026-09-24 に第 1 世代 (Selenium) と第 2 世代 (SQLite/SQLAlchemy の
 `run_pipeline.py` / `app/scouts|listing|governors|guard`) を削除済み。git 履歴には残っている

@@ -188,8 +188,8 @@ def main():
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順): {final_csv}")
     print()
-    print("次のステップ (出品テスト):")
-    print("   python3 scripts/buyma_auto_listing.py --draft --limit 1 --hold")
+    print("次のステップ (一括出品 zip を作る・下書き):")
+    print("   python3 scripts/generate_bulk_upload.py --limit 3")
 
 
 if __name__ == "__main__":

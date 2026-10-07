@@ -1,8 +1,14 @@
 # BUYMA 出品支援ツール
 
 海外 EC サイト（BaseBlu ほか）のセール商品から「利益が出て BUYMA で売れそうなもの」を選び、
-BUYMA に**下書き**として登録するところまでを自動でやるツールです。
-**公開ボタンは人が押します**（下書き = ツール / 公開 = 人間）。
+BUYMA 公式の **一括出品 CSV（下書き）** を作るところまでを自動でやるツールです。
+**アップロードと公開ボタンは人が行います**（CSV 作成 = ツール / アップロード・公開 = 人間）。
+
+> ⚠️ 2026-10-07 方針変更: BUYMA の規約は許可のない外部プログラム・自動出品ツールを禁止しているため
+> （[BUYMA ガイド](https://qa.buyma.com/information/news/30118.html)）、BUYMA の画面をブラウザで
+> 自動操作するスクリプト（`buyma_auto_listing.py`・相場取得など）は**既定で停止**しました。
+> 出品は公式の一括出品編集（https://www.buyma.com/my/sell/bulk/）と、承認後は公式 API を使います。
+> 本公開・出品停止・価格更新の自動操作は廃止し、どの設定でも動きません。
 
 当面の目標は「機能を増やす」ことではなく **まず 1 件売る** ことです
 （考え方: `docs/strategy/FIRST_SALE_SPRINT.md`）。
@@ -17,26 +23,38 @@ BUYMA に**下書き**として登録するところまでを自動でやるツ�
 |---|---|---|---|
 | ① 集める | 仕入先のセール商品を一覧にする | 必要 | `baseblu_sales_to_csv.py` / `shopify_sales_to_csv.py` |
 | ② 計算する | 送料・関税・手数料を全部足した原価から売値を決め、利益 ¥5,000 未満を落とす | 不要 | `filter_baseblu_profitable.py` |
-| ③ 相場を見る | BUYMA で同じ商品がいくらで何件出ているか集める | 必要 | `fetch_buyma_market_prices.py` |
+| ③ 相場を見る | BUYMA で同じ商品がいくらで何件出ているか集める（**既定で停止**。`BUYMA_ALLOW_BROWSER_AUTOMATION=1` の時だけ） | 必要 | `fetch_buyma_market_prices.py` |
 | ④ 決め直す | 相場を見て売値を決め直す（多ければ安く、赤字なら見送り） | 不要 | `filter_baseblu_profitable.py --market` |
 | ⑤ AI | 日本語の商品名・説明・カテゴリを作り、出品してよいか判定 | API | `ai_enrich_candidates.py` |
-| ⑥ 下書き | BUYMA の出品画面に自動入力して「下書き保存」 | 必要・ログイン | `buyma_auto_listing.py` |
-| ⑦ 公開 | **あなたが**下書きを確認して公開ボタンを押す | — | — |
+| ⑥ 一括出品 CSV | 公式の一括出品用 zip（items.csv + colorsizes.csv、すべて「下書き」）を作る。BUYMA にはアクセスしない | 不要 | `generate_bulk_upload.py` |
+| ⑦ アップロード・公開 | **あなたが** zip を一括出品編集からアップロードし、下書きを確認して公開ボタンを押す | — | — |
 
 ⑤ は `.env` に `ANTHROPIC_API_KEY` が無ければ自動で飛ばされます（週 ¥500 の予算で自動停止）。
-⑥ は `--draft N` を付けたときだけ動きます。
+⑥ は `--draft N` を付けたときだけ動きます。毎回の最初に ECB の参照レートを取りに行きます（失敗しても前回値で続行）。
 
-売値の決め方（€200 のバッグの例、1 € = 186 円）:
-商品代 ¥30,988（現地税の還付後）+ 国際送料 ¥9,300 + 関税 ¥3,223 + 輸入消費税 ¥4,351
-+ 通関手数料 ¥2,200 + カード手数料 ¥818 + 国内送料 ¥1,000 + 振込手数料 ¥330 = 原価 ¥52,210
-→ 25% の利益と BUYMA 手数料 7.7% を乗せて **売値 ¥70,800**（利益 ¥13,138）。
-計算式は `app/core/pricing.py`、仕入先ごとの条件は `data/sources.json` にあります。
+売値の決め方（€200 のバッグの例、ECB 2026-10-06 の 1 € = 178.15 円 × 安全幅 3% = 183.49 円）:
+商品代 ¥36,699（baseblu の en-us 価格は既に伊 VAT 抜きなので控除なし）+ 国際送料 ¥9,175 + 関税 ¥3,670
++ 輸入消費税 ¥4,954 + 通関手数料 ¥2,200 + カード手数料 ¥1,009（商品代 + 国際送料の 2.2%）
++ 国内送料 ¥1,000 + 振込手数料 ¥385 = 原価 ¥59,092
+→ 25% の利益と BUYMA 手数料 7.7% + 固定手数料 ¥165 を乗せて **売値 ¥80,300**（利益 ¥14,860）。
+計算式は `app/core/pricing.py`、為替は `app/core/fx.py`、仕入先ごとの条件は `data/sources.json` にあります。
+
+為替・手数料の設定（環境変数、どれも省略可）:
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `EUR_TO_JPY` など | なし | 為替を固定する（設定すると ECB の値より優先。**古い値を入れっぱなしにしない**） |
+| `FX_BUFFER_PCT` | `0.03` | 為替の安全幅（3%）。カード会社のレートと値動きの分 |
+| `FX_MAX_AGE_DAYS` | `7` | ECB キャッシュがこれより古いと警告 |
+| `BUYMA_TRANSFER_FEE_JPY` | `385` | 売上の振込手数料（楽天銀行なら 220） |
+| `BUYMA_FIXED_FEE_ENABLED` | `1` | BUYMA の成約ごとの固定手数料（¥55〜¥220、2026-10-01 以降・BUYMA 告知 p=95495）を原価に入れる |
+| `BUYMA_ALLOW_BROWSER_AUTOMATION` | なし | `1` の時だけ旧ブラウザ自動操作（下書き・相場取得）が動く。規約上のリスクあり、非推奨 |
 
 ---
 
 ## Mac の準備（最初に 1 回）
 
-インターネットに出る工程（①③⑥）は **あなたの Mac でしか動きません**
+インターネットに出る工程（⓪①）は **あなたの Mac でしか動きません**
 （Claude Code のクラウドからは baseblu / BUYMA に接続できません）。
 
 ```bash
@@ -62,15 +80,24 @@ python3 scripts/run_autopilot.py --test
 # 本番: ① 集める 〜 ⑤ AI まで
 python3 scripts/run_autopilot.py
 
-# 上位 3 件を BUYMA に下書き保存（ブラウザが開きます。公開は管理画面で手動）
-python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 3
+# 上位 3 件の一括出品 zip（下書き）を作る → outputs/bulk/
+python3 scripts/run_autopilot.py --skip-scrape --draft 3
+#   → https://www.buyma.com/my/sell/bulk/ の「商品リストをアップロードする」で zip を登録（下書きになる）
+#   → BUYMA の画面で 1 件ずつ確認して公開
+#   → 出品リストをダウンロードして商品 ID を取り込む:
+python3 scripts/generate_bulk_upload.py --import-ids ~/Downloads/items.utf8.csv
 ```
 
-出品後の見張り役（どちらもまず `--dry-run` で内容を確認してから）:
+ブランド・カテゴリ・色系統・配送方法・地域の ID は、一括出品編集ページの「ID表を確認する」から
+ダウンロードした表を見て `data/buyma_id_tables/*.json` に書きます（書くまでは空欄の下書きになり、
+公開前に画面で選びます）。
+
+出品後の見張り役（どちらも BUYMA には触れず、対応が必要な商品を一覧にするだけ）:
 
 ```bash
-python3 scripts/check_inventory.py --dry-run --limit 5     # 仕入先で売り切れた商品を見つける
-python3 scripts/update_listed_prices.py --dry-run --limit 3 # 仕入値・相場の変化で売値を見直す
+python3 scripts/check_inventory.py --limit 5        # 仕入先で売り切れた商品・サイズを見つける
+python3 scripts/update_listed_prices.py --limit 3   # 仕入値・相場の変化で売値を見直す
+python3 scripts/update_listed_prices.py --confirm 123456789=98000  # BUYMA で売価を直したら記録
 ```
 
 一番簡単なやり方は、Mac で Claude Code を開いて日本語で頼むことです
@@ -87,7 +114,9 @@ python3 scripts/update_listed_prices.py --dry-run --limit 3 # 仕入値・相場
 | `YYYY-MM-DD_<仕入先>_sales_products_sorted.csv` | ① の全セール品 |
 | `YYYY-MM-DD_<仕入先>_profitable_products.csv` | ②④⑤ の出品候補（売値・利益・AI の列付き） |
 | `YYYY-MM-DD_market_prices.json` | ③ の相場メモ |
-| `YYYY-MM-DD_auto_listing_results.csv` | ⑥ の結果（下書き ID・仕入先 URL） |
+| `YYYY-MM-DD_auto_listing_results.csv` | 出品記録（商品 ID・仕入先 URL・出品サイズ）。同じ日の分は追記 |
+| `outputs/bulk/*_buyma_bulk_draft.zip` | ⑥ の一括出品 zip（下書き） |
+| `outputs/bulk/*_buyma_bulk_manifest.json` | zip の商品管理番号 ↔ 仕入先の対応表（`--import-ids` で使う） |
 
 ---
 
@@ -125,9 +154,8 @@ buyma_automation/
 
 - エラーが出たら、ターミナルの出力をそのまま Claude に貼ってください。
   `python3 scripts/ai_diagnose.py --log <ログファイル>` でも診断できます。
-- ログインできない → `config.json` のメールアドレス・パスワードを確認。
-  ログイン状態は `state/buyma_storage_state.json` に保存され、次回から使い回されます。
-- BUYMA の出品画面の癖（自動操作の落とし穴）は `CLAUDE.md` の §「BUYMA 出品フォームの仕様」にまとめてあります。
+- 一括出品のエラー文言は BUYMA の「一括出品編集のエラー文言」（https://buyersinfo.buyma.com/?page_id=79316）。
+  列名が合わない場合は、BUYMA からダウンロードした CSV を `--items-template` / `--colorsizes-template` で渡すと列名・並びを合わせます。
 
 ## もっと詳しく
 

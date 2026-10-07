@@ -1,5 +1,5 @@
 """
-run_autopilot.py — 仕入れ候補の取得 → 利益計算 → 相場 → AI 補強 → 下書き作成 を 1 コマンドで
+run_autopilot.py — 仕入れ候補の取得 → 利益計算 → 相場 → AI 補強 → 一括出品 CSV (下書き) を 1 コマンドで
 --------------------------------------------------------------------------
 run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と「下書き作成」を足したもの。
 決定論的な工程 (利益計算・相場フィルタ) には AI を使わず、AI は上位候補にだけ使う。
@@ -8,9 +8,9 @@ run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と
 
     cd ~/buyma_automation
     python3 scripts/run_autopilot.py                 # 取得 → 利益 → 相場 → AI 補強 (下書きなし)
-    python3 scripts/run_autopilot.py --draft 3       # さらに上位 3 件を BUYMA に下書き保存
+    python3 scripts/run_autopilot.py --draft 3       # さらに上位 3 件の一括出品 zip (下書き) を作る
     python3 scripts/run_autopilot.py --skip-scrape   # 今日取得済みのセール CSV を再利用
-    python3 scripts/run_autopilot.py --skip-market   # 相場取得を飛ばす (速いが精度が落ちる)
+    python3 scripts/run_autopilot.py --skip-market   # 相場取得を飛ばす (ブラウザ自動操作が無効なら自動で飛ばす)
     python3 scripts/run_autopilot.py --ai-limit 10   # AI に送る件数を絞る (費用を抑える)
     python3 scripts/run_autopilot.py --no-ai         # AI を使わない (従来の run_weekly と同等)
     python3 scripts/run_autopilot.py --weekly-review # 最後に Fable による週次レビューを生成
@@ -18,12 +18,14 @@ run_weekly.py の工程に「AI 補強 (出品文・カテゴリ・審査)」と
     python3 scripts/run_autopilot.py --dry-run       # 実行せずコマンドだけ表示
 
 実行される工程:
+    ⓪ 為替レートの更新 (ECB 参照レート)    (app.core.fx.refresh_rates)  失敗しても前回値/固定値で続行
     ① baseblu セール商品の取得            (baseblu_sales_to_csv.py)   ネット必要
     ② 利益フィルタ 1 回目                 (filter_baseblu_profitable.py)
-    ③ BUYMA 相場の取得                    (fetch_buyma_market_prices.py) ネット必要・時間がかかる
+    ③ BUYMA 相場の取得                    (fetch_buyma_market_prices.py) BUYMA_ALLOW_BROWSER_AUTOMATION=1 の時だけ
     ④ 利益フィルタ 2 回目 (相場連動)      (filter_baseblu_profitable.py --market …)
     ⑤ AI 補強: 出品文/カテゴリ/審査       (ai_enrich_candidates.py --source … --input …)  API キー必要 (無ければ自動スキップ)
-    ⑥ 下書き作成 (--draft N 指定時)      (buyma_auto_listing.py --source … --draft --limit N --yes --csv …)
+    ⑥ 一括出品 zip (--draft N 指定時)    (generate_bulk_upload.py --source … --limit N --csv …)
+       → 本人が https://www.buyma.com/my/sell/bulk/ からアップロード (下書き) → 画面で確認して公開
     ⑦ 週次レビュー (--weekly-review 時)   (Fable 5.1 に集計値だけ渡す)
     ⑧ AI 費用レポート                     (ai_cost_report.py)
 
@@ -119,7 +121,15 @@ def build_steps(args) -> list[dict]:
     """
     py = sys.executable or "python3"
     source = (getattr(args, "source", "") or "baseblu").strip().lower()
+    allow_browser = getattr(args, "allow_browser", None)
+    if allow_browser is None:
+        from app.utils.automation_guard import browser_automation_allowed
+        allow_browser = browser_automation_allowed()
     steps: list[dict] = []
+
+    if not args.test:
+        steps.append({"name": "⓪ 為替レートの更新 (ECB 参照レート)", "cmd": None,
+                      "resolver": "fx_refresh", "required": False})
 
     if args.test:
         steps.append({"name": "⓪ モック仕入れ CSV の生成 (--test)", "cmd": None,
@@ -136,7 +146,7 @@ def build_steps(args) -> list[dict]:
     steps.append({"name": "② 利益フィルタ (1回目・相場なし)", "required": True,
                   "cmd": [py, str(SCRIPTS / "filter_baseblu_profitable.py"), "--source", source]})
 
-    if not args.skip_market and not args.test:
+    if not args.skip_market and not args.test and allow_browser:
         # --source を渡さないと fetch 側が別の仕入先の表を選び得る (同日に複数仕入先を回した場合など)
         market_cmd = [py, str(SCRIPTS / "fetch_buyma_market_prices.py"), "--csv", "latest", "--source", source]
         if args.market_limit:
@@ -153,11 +163,11 @@ def build_steps(args) -> list[dict]:
                       "note": "ANTHROPIC_API_KEY 未設定なら自動で従来ロジックにフォールバックします"})
 
     if args.draft and not args.test:
-        steps.append({"name": f"⑥ BUYMA 下書き作成 (上位 {args.draft} 件)", "required": False,
-                      "cmd": [py, str(SCRIPTS / "buyma_auto_listing.py"), "--source", source, "--draft",
-                              "--limit", str(args.draft), "--yes"],
+        steps.append({"name": f"⑥ 一括出品 zip の作成 (下書き・上位 {args.draft} 件)", "required": False,
+                      "cmd": [py, str(SCRIPTS / "generate_bulk_upload.py"), "--source", source,
+                              "--limit", str(args.draft)],
                       "source": source, "input_flag": "--csv",
-                      "note": "ブラウザが開きます。公開は管理画面で人が行います (下書き=ツール / 公開=人間)"})
+                      "note": "BUYMA にはアクセスしません。zip は本人が一括出品編集からアップロードし、公開も本人が行います"})
 
     if args.weekly_review:
         steps.append({"name": "⑦ 週次レビュー (Fable 5.1・集計値のみ)", "cmd": None,
@@ -290,13 +300,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--market-limit", type=int, help="相場取得の件数上限")
     parser.add_argument("--ai-limit", type=int, default=30, help="AI に送る上位件数 (デフォルト 30)")
     parser.add_argument("--no-ai", action="store_true", help="AI 補強を使わない")
-    parser.add_argument("--draft", type=int, default=0, metavar="N", help="上位 N 件を BUYMA に下書き保存")
+    parser.add_argument("--draft", type=int, default=0, metavar="N",
+                        help="上位 N 件の一括出品 zip (下書き) を作る。BUYMA にはアクセスしない")
     parser.add_argument("--weekly-review", action="store_true", help="Fable による週次レビューを生成")
     parser.add_argument("--test", action="store_true", help="モックデータで通し確認 (ネット不要)")
     parser.add_argument("--dry-run", action="store_true", help="実行せずコマンドだけ表示")
     args = parser.parse_args(argv)
 
     steps = build_steps(args)
+    if not args.skip_market and not args.test and not any(s["name"].startswith("③") for s in steps):
+        print("ℹ️ BUYMA 相場の自動取得は停止中 (BUYMA_ALLOW_BROWSER_AUTOMATION 未設定) のため ③④ を飛ばします")
     print("=" * 60)
     print(f"🤖 AI オートパイロット ({datetime.now():%Y-%m-%d %H:%M}){' [TEST]' if args.test else ''}")
     print("=" * 60)
@@ -312,6 +325,16 @@ def main(argv: list[str] | None = None) -> int:
         if step.get("note"):
             print(f"   ℹ️ {step['note']}")
         resolver = step.get("resolver")
+        if resolver == "fx_refresh":
+            if args.dry_run:
+                print("   $ (ECB の参照レートを取得して data/fx_rates.json を更新)")
+                continue
+            from app.core import fx
+            res = fx.refresh_rates()
+            if not res.get("ok"):
+                print(f"   ⚠️ 取得失敗のため前回値/固定値で続行: {res.get('error', '')[:120]}")
+            print(f"   {fx.describe('EUR')}")
+            continue
         if resolver == "write_mock":
             if args.dry_run:
                 print("   $ (モック CSV を outputs/reports に生成)")
@@ -358,11 +381,11 @@ def main(argv: list[str] | None = None) -> int:
     if final_csv:
         print(f"📄 出品候補 CSV (期待値順・AI 列付き): {final_csv}")
     if not args.draft:
-        print("次のステップ (下書きテスト):")
-        print("   python3 scripts/run_autopilot.py --skip-scrape --skip-market --draft 1")
-        print("   または python3 scripts/buyma_auto_listing.py --draft --limit 1 --hold")
+        print("次のステップ (一括出品 zip を作る):")
+        print("   python3 scripts/generate_bulk_upload.py --limit 3")
     else:
-        print("次のステップ: BUYMA 管理画面 (下書き一覧) で内容を確認し、公開ボタンを押してください。")
+        print("次のステップ: outputs/bulk/ の zip を https://www.buyma.com/my/sell/bulk/ からアップロード (下書き) し、")
+        print("   BUYMA の画面で 1 件ずつ確認して公開してください。")
     return 0
 
 

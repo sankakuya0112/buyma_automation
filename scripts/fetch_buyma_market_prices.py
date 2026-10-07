@@ -553,6 +553,9 @@ def fetch_market_for(brand: str, keyword: str, page=None) -> dict:
             "url": ..., "sample_count": N, "median_jpy": ..., ...
         }
     """
+    # 関数を直接呼ばれても止める (CLI の入口だけでは不十分)
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 検索ページの相場取得 (fetch_buyma_market_prices)")
     url = build_search_url(brand, keyword)
 
     own_browser = False
@@ -677,6 +680,8 @@ def resolve_csv_path(csv_arg: str, source: str | None = None, reports_dir=None) 
 
 
 def main():
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="BUYMA 市場価格スクレイパー")
     parser.add_argument("--brand", help="単発: ブランド名")
     parser.add_argument("--keyword", help="単発: 商品キーワード")

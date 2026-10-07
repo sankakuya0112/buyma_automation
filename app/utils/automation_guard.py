@@ -33,11 +33,20 @@ def browser_automation_allowed() -> bool:
     return os.getenv(ENV_NAME, "").strip() == "1"
 
 
+_warned: set[str] = set()
+
+
 def require_browser_automation(feature: str) -> None:
-    """許可されていなければメッセージを出して終了 (exit code 2)。"""
+    """許可されていなければメッセージを出して終了 (exit code 2)。
+
+    CLI の入口だけでなく、BUYMA をブラウザで操作する関数 (ログイン・入力・相場取得) の先頭でも呼ぶ
+    (別スクリプトから関数を直接 import して呼ばれても止まるように)。許可時の警告は機能ごとに 1 回。
+    """
     if browser_automation_allowed():
-        print(f"⚠️ {ENV_NAME}=1 のため「{feature}」を実行します。BUYMA の規約上のリスクを理解した上で使ってください。",
-              file=sys.stderr)
+        if feature not in _warned:
+            _warned.add(feature)
+            print(f"⚠️ {ENV_NAME}=1 のため「{feature}」を実行します。BUYMA の規約上のリスクを理解した上で使ってください。",
+                  file=sys.stderr)
         return
     print(f"⛔ 「{feature}」は実行しません。\n   {POLICY_MESSAGE}\n"
           f"   (検証目的でどうしても使う場合のみ {ENV_NAME}=1)", file=sys.stderr)

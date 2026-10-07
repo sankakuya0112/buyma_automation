@@ -81,7 +81,8 @@ def prepare(products: list[dict], tables, include_review: bool = False) -> dict:
         verdict, reasons = evaluate_listing_readiness(p, price, cat_label, comment)
         if verdict == "出品OK" and p.get("ai_verdict") == "hold":
             verdict, reasons = "要確認", [f"AI審査 hold: {p.get('ai_reason') or ''}".strip()]
-        if verdict != "出品OK" and not include_review:
+        # NG (利益不足・画像なし・カテゴリ未確定など) は常に除外。--include-review は「要確認」だけを含める
+        if verdict == "NG" or (verdict != "出品OK" and not include_review):
             skipped.append((p["title"], f"{verdict}: {reasons[:2]}"))
             continue
         sizes_raw = [s.strip() for s in listing_sizes(p).split(",") if s.strip()]
@@ -107,7 +108,8 @@ def prepare(products: list[dict], tables, include_review: bool = False) -> dict:
             "recommended_price": p.get("recommended_price", ""), "profit_jpy": p.get("profit_jpy", ""),
             "sku": p.get("sku", ""), "product_type": p.get("product_type", ""),
             "product_url": p.get("product_url", ""), "source_name": p.get("source_name", ""),
-            "available_sizes": ",".join(sizes_raw), "category": cat_label, "verdict": verdict,
+            "available_sizes": ",".join(sizes_raw), "color": p.get("color", ""),
+            "category": cat_label, "verdict": verdict,
         })
     return {"items": items, "colorsizes": colorsizes, "manifest": manifest,
             "warnings": warnings, "skipped": skipped}
@@ -160,53 +162,79 @@ def generate(args) -> Path | None:
     return zip_path
 
 
-def import_ids(downloaded_items_csv: str, bulk_dir: Path, reports_dir: Path) -> int:
-    """BUYMA からダウンロードした items CSV (商品ID + 商品管理番号) を出品記録に取り込む。"""
-    header = read_template_header(downloaded_items_csv)
-    raw = Path(downloaded_items_csv).read_bytes()
-    text = None
+def _decode(path: str) -> str:
+    raw = Path(path).read_bytes()
     for enc in ("utf-8-sig", "cp932"):
         try:
-            text = raw.decode(enc)
-            break
+            return raw.decode(enc)
         except UnicodeDecodeError:
             continue
-    rows = list(csv.DictReader(text.splitlines()))
+    raise ValueError(f"{path}: 文字コードを判別できません (utf8 / sjis)")
+
+
+def _load_manifests(bulk_dir: Path, manifest: str | None) -> dict[str, list[dict]]:
+    """{商品管理番号: [manifest の行, ...]}。manifest 指定時はそのファイルだけ。"""
+    paths = [Path(manifest)] if manifest else sorted(bulk_dir.glob("*_buyma_bulk_manifest.json"))
+    out: dict[str, list[dict]] = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            for m in json.load(f).get("items", []):
+                out.setdefault(m["management_number"], []).append(m)
+    return out
+
+
+def import_ids(downloaded_items_csv: str, bulk_dir: Path, reports_dir: Path,
+               manifest: str | None = None) -> int:
+    """BUYMA からダウンロードした items CSV (商品ID + 商品管理番号) を出品記録に取り込む。
+
+    - 同じ商品管理番号が複数の manifest にあり中身 (サイズ・価格) が違う場合は、どの zip を
+      アップロードしたか分からないので取り込まない (--manifest で zip の対応表を指定する)
+    - 価格はダウンロード CSV の「単価」(BUYMA 上の実際の価格) を優先する
+    """
+    rows = list(csv.DictReader(_decode(downloaded_items_csv).splitlines()))
+    header = set(rows[0].keys()) if rows else set(read_template_header(downloaded_items_csv))
     if "商品ID" not in header or "商品管理番号" not in header:
         print("❌ 商品ID / 商品管理番号 の列がありません (BUYMA の一括出品編集からダウンロードした items CSV を指定)")
         return 0
-    ids = {r["商品管理番号"].strip(): normalize_item_id(r.get("商品ID")) for r in rows
-           if (r.get("商品管理番号") or "").strip()}
-    manifests = {}
-    for path in sorted(bulk_dir.glob("*_buyma_bulk_manifest.json")):
-        with open(path, encoding="utf-8") as f:
-            for m in json.load(f).get("items", []):
-                manifests[m["management_number"]] = m
+    manifests = _load_manifests(bulk_dir, manifest)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    out_rows = []
-    for mgmt, item_id in ids.items():
-        m = manifests.get(mgmt)
-        if not m or not item_id:
+    out_rows, ambiguous = [], []
+    for r in rows:
+        mgmt = (r.get("商品管理番号") or "").strip()
+        item_id = normalize_item_id(r.get("商品ID"))
+        cands = manifests.get(mgmt) or []
+        if not mgmt or not item_id or not cands:
             continue
-        product = {**m, "available_sizes": m.get("available_sizes", "")}
+        variants = {(c.get("available_sizes"), str(c.get("recommended_price"))) for c in cands}
+        if len(variants) > 1:
+            ambiguous.append(mgmt)
+            continue
+        m = cands[-1]
+        actual_price = (r.get("単価") or "").strip()
+        product = {**m, "recommended_price": actual_price or m.get("recommended_price", "")}
         out_rows.append(build_result_row(product, "draft", item_id, now))
+    if ambiguous:
+        print(f"⚠️ 複数の zip で内容が違う商品管理番号は取り込みませんでした (--manifest で指定): {', '.join(ambiguous)}")
     if not out_rows:
         print("ℹ️ 取り込める行がありません (manifest に無い商品管理番号、または商品ID が空)")
         return 0
     path = reports_dir / f"{datetime.now():%Y-%m-%d}_auto_listing_results.csv"
     append_result_rows(str(path), out_rows)
     print(f"✅ {len(out_rows)} 件の商品 ID を {path} に追記 (check_inventory / update_listed_prices の対象)")
+    print("   ※ BUYMA の画面でサイズを変えた場合は、出品記録の listed_sizes も直してください")
     return len(out_rows)
 
 
 def main(argv=None):
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     ap = argparse.ArgumentParser(description="BUYMA 一括出品 (下書き) 用 zip を作る。BUYMA にはアクセスしない")
     ap.add_argument("--csv", default="latest", help="利益商品 CSV (*_profitable_products.csv)。既定は最新")
     ap.add_argument("--source", help="仕入先名で最新 CSV を絞る")
     ap.add_argument("--limit", type=int, default=3, help="商品数の上限 (既定 3。最初は少数で確認)")
     ap.add_argument("--max-price", type=int)
     ap.add_argument("--min-profit", type=int)
-    ap.add_argument("--include-review", action="store_true", help="要確認判定の商品も含める")
+    ap.add_argument("--include-review", action="store_true", help="「要確認」判定の商品も含める (NG は常に除外)")
     ap.add_argument("--encoding", choices=("utf8", "sjis"), default="utf8")
     ap.add_argument("--items-template", help="BUYMA からダウンロードした items CSV (列名・並びを合わせる)")
     ap.add_argument("--colorsizes-template", help="BUYMA からダウンロードした colorsizes CSV")
@@ -214,9 +242,10 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=str(BULK_DIR))
     ap.add_argument("--import-ids", metavar="ITEMS_CSV",
                     help="BUYMA からダウンロードした items CSV の商品ID を出品記録に取り込む")
+    ap.add_argument("--manifest", help="--import-ids で使う対応表 (アップロードした zip と同時に出力された *_manifest.json)")
     args = ap.parse_args(argv)
     if args.import_ids:
-        import_ids(args.import_ids, Path(args.out_dir), REPORTS_DIR)
+        import_ids(args.import_ids, Path(args.out_dir), REPORTS_DIR, manifest=args.manifest)
         return
     if generate(args) is None:
         sys.exit(1)

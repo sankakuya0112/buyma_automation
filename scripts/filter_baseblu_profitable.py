@@ -147,6 +147,8 @@ def get_market_stats(market_data, vendor, title, sku="", source_name="") -> Mark
 
 
 def main():
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="仕入先 CSV 利益計算 + 市場連動価格フィルタ")
     parser.add_argument("--source", default="baseblu", help="仕入先名 (baseblu / italist など)")
     parser.add_argument("--market", help="市場価格 JSON (fetch_buyma_market_prices.py の出力)")

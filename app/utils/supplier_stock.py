@@ -81,15 +81,15 @@ def product_js_url(product_url: str) -> Optional[str]:
     return urlunsplit((parts.scheme or "https", parts.netloc, new_path, "", ""))
 
 
-def _size_of(variant: dict) -> str:
-    return str(variant.get("option1") or variant.get("title") or "").strip()
-
-
 def parse_shopify_product_js(data: dict) -> dict:
-    """``.js`` の dict → {title, product_type, variants: [{size, price, available}]}。
+    """``.js`` の dict → {title, product_type, has_color, variants: [{size, color, price, available}]}。
 
-    price は現地通貨の単位 (セント → /100)。
+    price は現地通貨の単位 (セント → /100)。サイズ・色の軸は options の名前から判定する
+    (app/utils/variant_select.option_positions。option1 がサイズとは限らない)。
     """
+    from app.utils.variant_select import option_positions, option_value
+
+    size_pos, color_pos = option_positions(data.get("options"))
     variants = []
     for v in data.get("variants") or []:
         try:
@@ -97,13 +97,15 @@ def parse_shopify_product_js(data: dict) -> dict:
         except (TypeError, ValueError):
             price = None
         variants.append({
-            "size": _size_of(v),
+            "size": option_value(v, size_pos),
+            "color": option_value(v, color_pos),
             "price": price,
             "available": bool(v.get("available")),
         })
     return {
         "title": data.get("title", ""),
         "product_type": data.get("type", "") or data.get("product_type", ""),
+        "has_color": bool(color_pos),
         "variants": variants,
     }
 
@@ -138,7 +140,18 @@ def split_sizes(value: str | Iterable[str] | None) -> list[str]:
     return [s.strip() for s in items if s and s.strip()]
 
 
-def evaluate_stock(snapshot: dict, listed_sizes: Iterable[str] | str | None = None) -> dict:
+def _variants_for_color(snapshot: dict, listed_color: Optional[str]) -> list[dict]:
+    """色の軸がある商品なら出品した色のバリアントだけ。色が一致しなければ全色 (旧記録など)。"""
+    variants = snapshot.get("variants") or []
+    color = (listed_color or "").strip().lower()
+    if not snapshot.get("has_color") or not color:
+        return variants
+    same = [v for v in variants if (v.get("color") or "").lower() == color]
+    return same or variants
+
+
+def evaluate_stock(snapshot: dict, listed_sizes: Iterable[str] | str | None = None,
+                   listed_color: Optional[str] = None) -> dict:
     """在庫判定。
 
     戻り値: {"status": "in_stock" | "partial" | "sold_out" | "error",
@@ -149,7 +162,7 @@ def evaluate_stock(snapshot: dict, listed_sizes: Iterable[str] | str | None = No
     """
     if snapshot.get("error"):
         return {"status": "error", "error": snapshot["error"], "available_sizes": [], "missing_listed_sizes": []}
-    variants = snapshot.get("variants") or []
+    variants = _variants_for_color(snapshot, listed_color)
     available = [v["size"] for v in variants if v.get("available")]
     listed = split_sizes(listed_sizes)
     if listed:
@@ -166,13 +179,14 @@ def evaluate_stock(snapshot: dict, listed_sizes: Iterable[str] | str | None = No
             "available_sizes": available, "missing_listed_sizes": []}
 
 
-def price_for_listing(snapshot: dict, listed_sizes: Iterable[str] | str | None = None) -> Optional[float]:
+def price_for_listing(snapshot: dict, listed_sizes: Iterable[str] | str | None = None,
+                      listed_color: Optional[str] = None) -> Optional[float]:
     """価格追従に使う現在の仕入値。
 
     出品したサイズのうち在庫があるものの **最高値** (サイズで値段が違うとき赤字を避ける)。
     出品サイズが不明なら在庫ありバリアントの最高値。在庫が無ければ None。
     """
-    variants = [v for v in (snapshot.get("variants") or []) if v.get("available") and v.get("price")]
+    variants = [v for v in _variants_for_color(snapshot, listed_color) if v.get("available") and v.get("price")]
     listed = {s.lower() for s in split_sizes(listed_sizes)}
     if listed:
         variants = [v for v in variants if v["size"].lower() in listed]

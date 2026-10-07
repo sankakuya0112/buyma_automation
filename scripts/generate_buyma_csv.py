@@ -233,6 +233,8 @@ def build_pricing_params(
 
 
 def main() -> None:
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(
         description="BUYMA 取込用 34 列 CSV を生成する",
     )

@@ -144,6 +144,16 @@ class ValidateAndWriteTest(unittest.TestCase):
         self.assertTrue(any("テンプレートに無い列" in w for w in warn))
 
 
+class TemplateRequiredColumnsTest(unittest.TestCase):
+    def test_template_dropping_required_colorsizes_column_fails(self):
+        warn = []
+        item = bc.build_item_row(PRODUCT, title="t", comment="c", category_path="x", tables=bc.IdTables(), warnings=warn)
+        cs = bc.build_colorsize_rows(PRODUCT, sizes=["37"], color_family_ja="", color_name="",
+                                     tables=bc.IdTables(), warnings=warn)
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            bc.write_bulk_zip([item], cs, Path(tmp) / "x.zip", colorsizes_template=["サイズ名称"])
+
+
 class ScriptTest(unittest.TestCase):
     def test_prepare_uses_listable_sizes_only(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -159,6 +169,36 @@ class ScriptTest(unittest.TestCase):
             res = gbu.prepare([p], bc.IdTables(), include_review=True)
         self.assertEqual(res["items"], [])
         self.assertTrue(res["skipped"])
+
+    def test_include_review_never_includes_ng(self):
+        ng = {**PRODUCT, "image_url": "", "sub_images": ""}     # メイン画像なし = NG
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = gbu.prepare([ng], bc.IdTables(), include_review=True)
+        self.assertEqual(res["items"], [])
+        self.assertIn("NG", res["skipped"][0][1])
+
+    def test_import_ids_rejects_ambiguous_and_uses_actual_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "bulk").mkdir()
+            (tmp / "reports").mkdir()
+            base = {"management_number": "m-1", "title": "A", "vendor": "V", "recommended_price": "1000",
+                    "product_url": PRODUCT["product_url"], "source_name": "baseblu", "available_sizes": "S"}
+            (tmp / "bulk" / "1_buyma_bulk_manifest.json").write_text(json.dumps({"items": [base]}), encoding="utf-8")
+            (tmp / "bulk" / "2_buyma_bulk_manifest.json").write_text(
+                json.dumps({"items": [{**base, "available_sizes": "S,M"}]}), encoding="utf-8")
+            dl = tmp / "items.csv"
+            dl.write_text("商品ID,商品管理番号,単価\n134000009,m-1,1200\n", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(gbu.import_ids(str(dl), tmp / "bulk", tmp / "reports"), 0)   # 曖昧
+                n = gbu.import_ids(str(dl), tmp / "bulk", tmp / "reports",
+                                   manifest=str(tmp / "bulk" / "2_buyma_bulk_manifest.json"))
+            files = list((tmp / "reports").glob("*_auto_listing_results.csv"))
+            with open(files[0], encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+        self.assertEqual(n, 1)
+        self.assertEqual(rows[0]["price"], "1200")          # BUYMA 上の実際の単価
+        self.assertEqual(rows[0]["listed_sizes"], "S,M")
 
     def test_import_ids_appends_results(self):
         with tempfile.TemporaryDirectory() as tmp:

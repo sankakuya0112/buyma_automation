@@ -106,6 +106,9 @@ def print_report(history: dict, snapshot: dict) -> None:
 
 
 def run(max_pages: int, debug_html: bool, headless: bool) -> None:
+    # 関数を直接呼ばれても止める (CLI の入口だけでは不十分)
+    from app.utils.automation_guard import require_browser_automation
+    require_browser_automation("BUYMA 出品リストの自動取得 (track_listing_funnel)")
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:

@@ -19,6 +19,8 @@ from app.core import fx  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--show", action="store_true", help="通信せずに現在の設定を表示")
     args = ap.parse_args(argv)

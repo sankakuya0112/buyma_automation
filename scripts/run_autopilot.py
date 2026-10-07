@@ -291,6 +291,8 @@ def run_weekly_review(source: str | None = None) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="仕入れ〜下書きまでの自動パイプライン")
     parser.add_argument("--source", default="baseblu",
                         help="仕入先 (既定 baseblu)。data/sources.json のキー名。"

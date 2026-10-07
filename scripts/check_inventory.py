@@ -134,7 +134,7 @@ def run(throttle_sec: float = 1.0, limit: Optional[int] = None) -> dict:
             continue
 
         snap = fetch_product_snapshot(url)
-        check = evaluate_stock(snap, r.get("listed_sizes") or "")
+        check = evaluate_stock(snap, r.get("listed_sizes") or "", r.get("listed_color") or "")
         now = datetime.now().isoformat(timespec="seconds")
         rec = status.get(item_id, {})
         rec.update({
@@ -180,6 +180,8 @@ def run(throttle_sec: float = 1.0, limit: Optional[int] = None) -> dict:
 
 
 def main(argv=None):
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="仕入先の在庫確認 (BUYMA 側の操作は本人が行う)")
     parser.add_argument("--dry-run", action="store_true", help="(互換用。常に確認のみ)")
     parser.add_argument("--execute", action="store_true",

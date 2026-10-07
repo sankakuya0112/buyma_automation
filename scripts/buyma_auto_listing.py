@@ -70,6 +70,8 @@ try:
 except Exception:
     _translate_description_advanced = None
 
+from app.utils.automation_guard import require_browser_automation
+
 # 純粋関数は app.utils.listing_helpers に切り出し済み (Phase 2c+)
 from app.utils.reports import latest_report
 from app.utils.listing_helpers import (
@@ -664,7 +666,9 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
                 "product_type": (row.get("product_type") or "").strip(),
                 "color": (row.get("color") or "").strip(),
                 "sizes": (row.get("sizes") or "").strip(),
-                "available_sizes": (row.get("available_sizes") or "").strip(),
+                # 列が無い旧 CSV は None (listing_sizes が全サイズに落とす)、空文字は「出せるサイズ無し」
+                "available_sizes": (row["available_sizes"].strip()
+                                    if row.get("available_sizes") is not None else None),
                 "priced_out_sizes": (row.get("priced_out_sizes") or "").strip(),
                 "season": (row.get("season") or "").strip(),
                 "description_en": (row.get("description_en") or "").strip(),
@@ -701,6 +705,7 @@ def load_products(max_price=None, min_profit=None, csv_path=None, source=None):
 # ========== Playwright操作関数 ==========
 
 def login(page, email, password):
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     # まず出品ページへ。storage_state が有効ならここでログイン済み判定できる。
     page.goto(BUYMA_LISTING_URL, wait_until="domcontentloaded", timeout=60000)
     human_delay(1.2, 2.0)
@@ -2670,6 +2675,7 @@ def save_draft(page, _retried=False):
     JS の .click() では反応しないため Playwright のネイティブクリックを使う。
     成功時は /my/sell/{item_id}/edit?tab=b に遷移する。
     """
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     import re
     url_before = page.url
 
@@ -2905,6 +2911,7 @@ def save_draft(page, _retried=False):
 # ========== 1商品の処理 ==========
 
 def process_product(page, product, draft_mode, brands_data, cat_data, tag_rules=None):
+    require_browser_automation("ブラウザ自動操作による BUYMA 下書き作成 (buyma_auto_listing)")
     title   = product["title"]
     vendor  = product["vendor"]
     price   = int(product["recommended_price"])

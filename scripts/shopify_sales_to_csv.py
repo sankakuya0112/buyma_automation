@@ -59,14 +59,13 @@ if _SCRIPTS_DIR not in sys.path:
 from baseblu_sales_to_csv import (  # noqa: E402
     _extract_color,
     _extract_season,
-    _extract_sizes,
     _extract_sku_from_description,
     _extract_sku_from_variant,
     strip_html,
 )
 
 from app.core.sources import ConfigSource, get_source_config, load_source_configs  # noqa: E402
-from app.utils.variant_select import select_listing_variants  # noqa: E402
+from app.utils.variant_select import all_sizes, select_listing_variants  # noqa: E402
 
 OUTPUT_DIR = _PROJECT_ROOT / "outputs" / "reports"
 
@@ -160,7 +159,7 @@ def parse_shopify_product(product: dict, source: ConfigSource) -> dict | None:
     # 在庫判定はバリアント横断 (variants[0] だけ見ると「最初のサイズだけ売切」を在庫なし扱い)。
     # 価格の基準は在庫ありの最安バリアント、出品サイズはその価格で買えるものだけ
     # (app/utils/variant_select.py)。
-    picked = select_listing_variants(variants)
+    picked = select_listing_variants(variants, product.get("options"))
     available = picked["available"]
     variant = picked["variant"]
 
@@ -196,8 +195,8 @@ def parse_shopify_product(product: dict, source: ConfigSource) -> dict | None:
         "vendor": product.get("vendor", ""),
         "product_type": product.get("product_type", ""),
         "sku": sku,
-        "color": _extract_color(product),
-        "sizes": _extract_sizes(variants, only_available=False),
+        "color": picked["listing_color"] or _extract_color(product),
+        "sizes": all_sizes(variants, product.get("options")),
         "available_sizes": picked["available_sizes"],
         "priced_out_sizes": picked["priced_out_sizes"],
         "season": _extract_season(description_en),

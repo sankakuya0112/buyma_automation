@@ -104,8 +104,11 @@ class ResultRowTest(unittest.TestCase):
 
     def test_listing_sizes(self):
         self.assertEqual(listing_sizes({"available_sizes": "38, 40", "sizes": "36, 38, 40, 42"}), "38, 40")
-        self.assertEqual(listing_sizes({"available_sizes": "", "sizes": "S, M"}), "S, M")
-        self.assertEqual(listing_sizes({"available_sizes": "", "priced_out_sizes": "L", "sizes": "S, L"}), "")
+        # 空文字 = 出せるサイズが無い (売切れ)。全サイズには落とさない
+        self.assertEqual(listing_sizes({"available_sizes": "", "sizes": "S, M"}), "")
+        # 列が無い旧形式 (None) だけ全サイズ。ただし高いサイズがある商品は落とさない
+        self.assertEqual(listing_sizes({"sizes": "S, M"}), "S, M")
+        self.assertEqual(listing_sizes({"available_sizes": None, "priced_out_sizes": "L", "sizes": "S, L"}), "")
         row = build_result_row({"available_sizes": "38"}, "draft", "1", "now")
         self.assertEqual(row["listed_sizes"], "38")
 
@@ -126,6 +129,49 @@ class ResultRowTest(unittest.TestCase):
                 rows = list(reader)
                 self.assertEqual(tuple(reader.fieldnames), RESULT_FIELDNAMES)
         self.assertEqual([r["item_id"] for r in rows], ["100", "200", "300"])
+
+
+class OperationBoundaryGuardTest(unittest.TestCase):
+    """CLI を通さず関数を直接呼んでも BUYMA のブラウザ操作が始まらないこと。"""
+
+    def _blocked(self, fn, *args):
+        with patch.dict(os.environ, {guard.ENV_NAME: ""}), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                fn(*args)
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_market_fetch_function(self):
+        import fetch_buyma_market_prices as m
+        self._blocked(m.fetch_market_for, "GUCCI", "bag", object())
+
+    def test_listing_functions(self):
+        import buyma_auto_listing as bal
+        self._blocked(bal.login, object(), "e", "p")
+        self._blocked(bal.save_draft, object())
+        self._blocked(bal.process_product, object(), {}, True, {}, {})
+
+    def test_funnel_run(self):
+        import track_listing_funnel as t
+        self._blocked(t.run, 1, False, True)
+
+
+class EnvLoaderTest(unittest.TestCase):
+    def test_env_file_fills_only_unset_keys(self):
+        from app.utils.env import load_project_env
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("# c\nFX_BUFFER_PCT=0.05\nexport BUYMA_TRANSFER_FEE_JPY='220'\nEUR_TO_JPY=1 # x\n",
+                            encoding="utf-8")
+            with patch.dict(os.environ, {"EUR_TO_JPY": "180"}, clear=False):
+                os.environ.pop("FX_BUFFER_PCT", None)
+                os.environ.pop("BUYMA_TRANSFER_FEE_JPY", None)
+                loaded = load_project_env(path)
+                self.assertEqual(os.environ["FX_BUFFER_PCT"], "0.05")
+                self.assertEqual(os.environ["BUYMA_TRANSFER_FEE_JPY"], "220")
+                self.assertEqual(os.environ["EUR_TO_JPY"], "180")   # シェルの値が優先
+                for k in loaded:
+                    os.environ.pop(k, None)
+        self.assertEqual(sorted(loaded), ["BUYMA_TRANSFER_FEE_JPY", "FX_BUFFER_PCT"])
 
 
 class OtherScriptGuardsTest(unittest.TestCase):

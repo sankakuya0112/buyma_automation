@@ -119,6 +119,35 @@ class ParseAndEvaluateTest(unittest.TestCase):
             self.assertIn("error", ss.fetch_product_snapshot("https://x.example/products/a"))
 
 
+class MultiOptionStockTest(unittest.TestCase):
+    JS2 = {"title": "Tee", "type": "CLOTHING",
+           "options": [{"name": "Color", "position": 1, "values": ["Black", "Red"]},
+                       {"name": "Size", "position": 2, "values": ["S", "M"]}],
+           "variants": [
+               {"option1": "Black", "option2": "S", "price": 10000, "available": False},
+               {"option1": "Red", "option2": "S", "price": 8000, "available": True},
+               {"option1": "Black", "option2": "M", "price": 12000, "available": True},
+           ]}
+
+    def test_listed_color_filters_variants(self):
+        snap = ss.parse_shopify_product_js(self.JS2)
+        self.assertTrue(snap["has_color"])
+        # 出品したのは Black/S。Red/S の在庫で「在庫あり」にしない
+        self.assertEqual(ss.evaluate_stock(snap, "S", "Black")["status"], "sold_out")
+        self.assertIsNone(ss.price_for_listing(snap, "S", "black"))
+        self.assertAlmostEqual(ss.price_for_listing(snap, "S,M", "Black"), 120.0)
+
+    def test_unknown_color_falls_back_to_all(self):
+        snap = ss.parse_shopify_product_js(self.JS2)
+        self.assertEqual(ss.evaluate_stock(snap, "S", "")["status"], "in_stock")
+
+    def test_string_options(self):
+        snap = ss.parse_shopify_product_js({"options": ["Size"], "variants": [
+            {"option1": "M", "price": 100, "available": True}]})
+        self.assertEqual(snap["variants"][0]["size"], "M")
+        self.assertFalse(snap["has_color"])
+
+
 class ScriptsDoNotWriteToBuymaTest(unittest.TestCase):
     def test_check_inventory_execute_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):

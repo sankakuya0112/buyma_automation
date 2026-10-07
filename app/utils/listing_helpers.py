@@ -309,8 +309,7 @@ def evaluate_listing_readiness(product: dict, price_jpy: int, cat_label, descrip
     if not cat_label:
         blockers.append("カテゴリ未確定")
 
-    available = (product.get("available_sizes") or product.get("sizes") or "").strip()
-    if not available:
+    if not listing_sizes(product):
         blockers.append("在庫サイズ不明")
 
     bad_desc_tokens = ["variants", "price_min", "compare_at_price", "WELCOME_", "pim:", "レシート画像"]
@@ -355,23 +354,24 @@ def _trim_buyma_title(text: str, max_width: int = 60) -> str:
 # + source_name + listed_sizes (仕入先・サイズごとの在庫/価格確認) を、
 # sales_report は processed_at / status / vendor / price / title を読む。
 # 2026-09-24 以前の CSV には sku / product_type / product_url / source_name が無い (旧形式)。
-# 2026-10-07 に listed_sizes を追加。
+# 2026-10-07 に listed_sizes / listed_color を追加。
 RESULT_FIELDNAMES: tuple[str, ...] = (
     "status", "item_id", "title", "vendor", "price",
-    "sku", "product_type", "product_url", "source_name", "listed_sizes", "processed_at",
+    "sku", "product_type", "product_url", "source_name", "listed_sizes", "listed_color", "processed_at",
 )
 
 
 def listing_sizes(product: dict) -> str:
     """出品するサイズ (カンマ区切り)。
 
-    在庫ありで基準価格のサイズ (available_sizes) が優先。空のときだけ全サイズ (sizes) に
-    落とすが、基準価格より高いサイズ (priced_out_sizes) がある商品では落とさない
-    (最安サイズの価格で高いサイズまで出品してしまうため)。
+    在庫ありで基準価格のサイズ (available_sizes) をそのまま使う。空文字 = 「出せるサイズが無い」
+    (売切れ等) なので全サイズには落とさない。available_sizes 列そのものが無い旧形式の CSV
+    (値が None) のときだけ全サイズ (sizes) を使うが、基準価格より高いサイズ (priced_out_sizes)
+    がある商品では使わない (最安サイズの価格で高いサイズまで出品してしまうため)。
     """
-    avail = (product.get("available_sizes") or "").strip()
-    if avail:
-        return avail
+    avail = product.get("available_sizes")
+    if avail is not None:
+        return str(avail).strip()
     if (product.get("priced_out_sizes") or "").strip():
         return ""
     return (product.get("sizes") or "").strip()
@@ -401,6 +401,7 @@ def build_result_row(product: dict, status: str, item_id: str | None, processed_
         "product_url": product.get("product_url", ""),
         "source_name": product.get("source_name", ""),
         "listed_sizes": listing_sizes(product),
+        "listed_color": (product.get("color") or "").split(",")[0].strip(),
         "processed_at": processed_at,
     }
 

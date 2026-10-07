@@ -90,7 +90,7 @@ def fetch_current_source_price(record: dict, source_name: str) -> dict:
     snap = fetch_product_snapshot(record.get("product_url") or "")
     if snap.get("error"):
         return {"error": snap["error"], "price": None, "source_name": source_name}
-    price = price_for_listing(snap, record.get("listed_sizes") or "")
+    price = price_for_listing(snap, record.get("listed_sizes") or "", record.get("listed_color") or "")
     return {
         "price": price,
         "product_type": snap.get("product_type", "") or record.get("product_type", ""),
@@ -316,6 +316,8 @@ def resolve_market_path(market_arg: str | None) -> str | None:
 
 
 def main(argv=None):
+    from app.utils.env import load_project_env
+    load_project_env()   # .env の為替・手数料・ガード設定を計算前に反映 (シェルの値が優先)
     parser = argparse.ArgumentParser(description="出品中商品の価格追従")
     parser.add_argument("--dry-run", action="store_true", help="(互換用。常に差分の表示のみ)")
     parser.add_argument("--execute", action="store_true", help="廃止: BUYMA の価格は自動更新しません")

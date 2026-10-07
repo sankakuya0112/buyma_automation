@@ -26,7 +26,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from app.utils.variant_select import select_listing_variants  # noqa: E402
+from app.utils.variant_select import all_sizes, select_listing_variants  # noqa: E402
 
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
@@ -421,7 +421,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
     # 在庫判定はバリアント横断。価格・SKU の基準は「在庫のある最安バリアント」で、
     # 出品するサイズはその価格で買えるサイズだけ (高いサイズは priced_out_sizes)。
     # 詳細は app/utils/variant_select.py。
-    picked = select_listing_variants(variants)
+    picked = select_listing_variants(variants, product.get("options"))
     available = picked["available"]
     variant = picked["variant"]
     # variant SKU からサイズ suffix を剥がして製品レベル SKU にする
@@ -463,8 +463,9 @@ def parse_product(product, fetch_details=True, source_meta=None):
         time.sleep(0.3)  # レート制限対策
 
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
-    color = _extract_color(product)
-    sizes = _extract_sizes(variants, only_available=False)
+    # 色の軸がある商品は、出品する (基準価格の) バリアントの色を使う
+    color = picked["listing_color"] or _extract_color(product)
+    sizes = all_sizes(variants, product.get("options"))
     available_sizes = picked["available_sizes"]
     priced_out_sizes = picked["priced_out_sizes"]
     season = _extract_season(description_en)

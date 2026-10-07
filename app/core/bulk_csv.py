@@ -62,6 +62,10 @@ COLORSIZES_COLUMNS: tuple[str, ...] = (
 ITEMS_ALWAYS = ("商品管理番号", "コントロール", "商品名", "単価", "買付可数量")
 COLORSIZES_ALWAYS = ("商品管理番号", "並び順", "サイズ名称", "色名称", "色系統", "在庫ステータス")
 
+# 出力の最終形に必ず残っていなければならない列 (テンプレートで落ちたらエラー)
+ITEMS_REQUIRED = ("商品管理番号", "コントロール")
+COLORSIZES_REQUIRED = ("商品管理番号", "並び順", "サイズ名称", "色名称", "色系統", "在庫ステータス")
+
 ID_TABLE_FILES = ("brands", "categories", "color_families", "shipping", "areas", "defaults")
 
 
@@ -322,9 +326,13 @@ def write_bulk_zip(items: list[dict], colorsizes: list[dict], out_path: str | Pa
         raise ValueError("一括出品 CSV の検証エラー:\n  " + "\n  ".join(errors))
     item_cols = select_columns(items, ITEMS_COLUMNS, ITEMS_ALWAYS, items_template, warnings)
     cs_cols = select_columns(colorsizes, COLORSIZES_COLUMNS, COLORSIZES_ALWAYS, colorsizes_template, warnings)
-    for required in ("商品管理番号", "コントロール"):
+    # テンプレートで列を落とした後の最終形で、紐付け・下書き指定に必要な列が残っているか確認する
+    for required in ITEMS_REQUIRED:
         if required not in item_cols:
             raise ValueError(f"items.csv に必須列 {required} がありません (テンプレートを確認)")
+    for required in COLORSIZES_REQUIRED:
+        if required not in cs_cols:
+            raise ValueError(f"colorsizes.csv に必須列 {required} がありません (テンプレートを確認)")
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:

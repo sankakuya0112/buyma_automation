@@ -194,6 +194,16 @@ class TestBuildSheet(unittest.TestCase):
         self.assertEqual(sections[0], "1. 商品画像")
         self.assertEqual(sections[-1], "16. 保存")
 
+    def test_sizeless_accessory_is_single_one_size(self):
+        # Default Title (サイズ表記なし) の小物: 候補選定と同じく「バリエーションなし」で出す
+        sheet, _ = self._sheet({**CARD, "available_sizes": "", "sizes": "", "priced_out_sizes": ""})
+        f = {x.label: x for x in sheet.fields}["サイズ"]
+        self.assertEqual(f.value, "バリエーションなし (サイズ表記なし)")
+        self.assertEqual(f.action, ls.ACTION_SELECT)
+        # サイズの軸があるのに在庫ありサイズが無い = 売切 → 出さない
+        sheet, _ = self._sheet({**CARD, "available_sizes": "", "sizes": "UNI"})
+        self.assertEqual({x.label: x for x in sheet.fields}["サイズ"].value, "(出品できるサイズなし)")
+
     def test_renderers(self):
         sheet, b = self._sheet()
         md = ls.to_markdown(sheet, b, "2026-10-08 07:00")

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Optional
 
-from app.core.candidate_select import brand_tier, model_number, search_urls
+from app.core.candidate_select import brand_tier, is_sizeless_single, model_number, search_urls
 from app.utils.listing_helpers import (
     _buyma_title_width,
     _strip_accents,
@@ -374,6 +374,8 @@ def build_sheet(product: dict, *, key: str, title: str, comment: str, category_p
     elif sizes:
         add(s, "サイズ", "バリエーションなし (" + ", ".join(r["size_name"] for r in sizes) + ")", ACTION_SELECT,
             "在庫: 買付可 1")
+    elif not variation and is_sizeless_single(product):
+        add(s, "サイズ", "バリエーションなし (サイズ表記なし)", ACTION_SELECT, "在庫: 買付可 1")
     else:
         add(s, "サイズ", "(出品できるサイズなし)", ACTION_CHECK, "在庫切れ or 高いサイズのみ → 出品しない")
     if (product.get("priced_out_sizes") or "").strip():

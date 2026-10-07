@@ -81,6 +81,40 @@ class TestSelect(unittest.TestCase):
         self.assertTrue(ev["ok"])
         self.assertEqual(ev["tier"], "B")
 
+    def _ev(self, **kw):
+        return cs.evaluate_candidate(row(**kw), max_cost=80000, min_profit=5000, data=TIERS)
+
+    def test_sizeless_bag_default_title_is_one_size(self):
+        # Shopify の Title / Default Title だけのバッグ: select_listing_variants は available_sizes を空にする
+        ev = self._ev(vendor="MAISON MARGIELA", title="5AC Bag", product_type="BAGS",
+                      sizes="", available_sizes="", priced_out_sizes="")
+        self.assertTrue(ev["ok"], ev["reasons"])
+        self.assertEqual(ev["common_sizes"], [cs.ONE_SIZE_MARKER])
+        # select_listing_candidates.py と同じ形 (元の在庫サイズ列あり) でも同じ
+        ev = self._ev(product_type="ACCESSORIES", title="Wallet", sizes="", available_sizes="",
+                      source_available_sizes="", stock_status="in_stock")
+        self.assertTrue(ev["ok"], ev["reasons"])
+
+    def test_apparel_and_footwear_without_sizes_still_rejected(self):
+        for pt in ("CLOTHING", "FOOTWEAR"):
+            ev = self._ev(product_type=pt, sizes="", available_sizes="", priced_out_sizes="")
+            self.assertFalse(ev["ok"], pt)
+            self.assertTrue(any("よく出るサイズの在庫なし" in r for r in ev["reasons"]), pt)
+            self.assertEqual(ev["common_sizes"], [])
+
+    def test_out_of_stock_bag_still_rejected(self):
+        cases = [
+            {"available": "False"},                       # 上流の在庫確認で在庫なし
+            {"stock_status": "sold_out"},                 # 在庫確認で売切
+            {"sizes": "UNI"},                             # サイズの軸があるのに在庫ありサイズなし = 売切
+            {"priced_out_sizes": "UNI"},                  # 基準より高いバリアントしか無い
+        ]
+        for extra in cases:
+            kw = {"product_type": "BAGS", "title": "5AC Bag", "sizes": "", "available_sizes": "", **extra}
+            ev = self._ev(**kw)
+            self.assertFalse(ev["ok"], extra)
+            self.assertTrue(any("よく出るサイズの在庫なし" in r for r in ev["reasons"]), extra)
+
     def test_tier_beats_profit_and_dedupe_and_brand_cap(self):
         rows = [
             row(vendor="ETRO", title="A", expected_profit_jpy="30000"),

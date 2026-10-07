@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import quote
 
+from app.utils.listing_helpers import classify_size_category
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BRAND_TIERS_PATH = PROJECT_ROOT / "data" / "brand_demand_tiers.json"
 
@@ -30,6 +32,9 @@ COMMON_IT_CLOTHING = (36, 52)          # IT 36〜52 (レディース 36〜46 / �
 COMMON_JEANS_WAIST = (24, 32)          # デニムのウエスト (インチ)
 COMMON_EU_SHOES = (35.5, 44.0)         # EU 35.5〜44 (レディース 22.5〜25.5cm / メンズ 25.5〜28cm 相当)
 ONE_SIZE_TOKENS = {"UNI", "UNICA", "TAGLIA UNICA", "ONE SIZE", "ONESIZE", "OS", "TU", "FREE", "U"}
+# サイズの軸が無い商品 (Shopify の Title / Default Title) を「ワンサイズ」として扱うときの印
+ONE_SIZE_MARKER = "ONE SIZE"
+_FALSY = {"false", "0", "no"}
 
 
 def _norm(text: str) -> str:
@@ -105,6 +110,31 @@ def common_sizes(available_sizes: str | Iterable[str] | None, product_type: str,
     return [s for s in split_sizes(available_sizes) if is_common_size(s, product_type, title)]
 
 
+def is_sizeless_single(row: dict) -> bool:
+    """サイズの軸が無い在庫ありのバッグ・小物 (= ワンサイズとして出品できる) か。
+
+    Shopify の Title / Default Title だけの商品は select_listing_variants() が available_sizes を
+    空にする。上流 (baseblu_sales_to_csv → filter_baseblu_profitable / --refresh の在庫確認) で
+    在庫ありを確認済みの行なので、バリエーションなし (classify_size_category == 'single') の
+    商品に限りワンサイズとみなす。次の場合は対象外 (= 在庫なし扱いのまま):
+      - 服・靴 (サイズ別に出すのでサイズ不明は出さない)
+      - サイズの軸がある (sizes がある) のに在庫ありサイズが無い = 売切
+      - 基準価格より高いサイズしか無い (priced_out_sizes)
+      - available / stock_status 列で在庫なしと分かっている
+    """
+    if classify_size_category(row.get("product_type", "")) != "single":
+        return False
+    if split_sizes(row.get("available_sizes")) or split_sizes(row.get("source_available_sizes")):
+        return False
+    if split_sizes(row.get("sizes")) or split_sizes(row.get("priced_out_sizes")):
+        return False
+    if str(row.get("available") or "").strip().lower() in _FALSY:
+        return False
+    if str(row.get("stock_status") or "").strip().lower().startswith("sold_out"):
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # BUYMA 検索 URL (本人が目視で競合価格を見るため。取得はしない)
 # ---------------------------------------------------------------------------
@@ -162,6 +192,8 @@ def evaluate_candidate(row: dict, *, max_cost: float, min_profit: float, data: O
         reasons.append(f"見込み利益 ¥{profit:,.0f} < ¥{min_profit:,.0f}")
     pt = row.get("product_type", "")
     sizes = common_sizes(row.get("available_sizes"), pt, row.get("title", ""))
+    if not sizes and is_sizeless_single(row):
+        sizes = [ONE_SIZE_MARKER]   # サイズ表記の無いバッグ・小物 (CSV の available_sizes は空のまま)
     if not sizes:
         reasons.append(f"よく出るサイズの在庫なし ({row.get('available_sizes') or '在庫サイズ不明'})")
     tier = brand_tier(row.get("vendor", ""), data)

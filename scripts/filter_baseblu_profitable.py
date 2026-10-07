@@ -286,7 +286,9 @@ def main():
             signals = DemandSignals(
                 market_sample_count=decision.market_sample_count,
                 source_total_sizes=count_sizes(row.get("sizes", "")),
-                source_available_sizes=count_sizes(row.get("available_sizes", "")),
+                # 売れ行きシグナルは「在庫ありの全サイズ」で数える (高いサイズも在庫は在庫)
+                source_available_sizes=count_sizes(row.get("available_sizes", ""))
+                + count_sizes(row.get("priced_out_sizes", "")),
                 discount_rate=disc,
                 market_wish_total=int(market_data.get(
                     f"{vendor}|{keyword_from_sku(row.get('sku', '')) or keyword_from_title(title)}",
@@ -307,6 +309,7 @@ def main():
                 "color": row.get("color", ""),
                 "sizes": row.get("sizes", ""),
                 "available_sizes": row.get("available_sizes", ""),
+                "priced_out_sizes": row.get("priced_out_sizes", ""),
                 "season": row.get("season", ""),
                 "sale_price_eur": source_price,  # 後方互換カラム名。実通貨は source_name/currency を参照。
                 "original_price_eur": row.get("original_price", ""),
@@ -371,7 +374,7 @@ def main():
 
     fieldnames = [
         "title", "vendor", "product_type", "sku",
-        "color", "sizes", "available_sizes", "season",
+        "color", "sizes", "available_sizes", "priced_out_sizes", "season",
         "sale_price_eur", "original_price_eur", "discount_rate",
         "exchange_rate", "source_price_jpy", "vat_refund_jpy",
         "shipping_jpy", "customs_jpy", "duty_rate",

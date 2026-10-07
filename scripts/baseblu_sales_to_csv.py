@@ -26,6 +26,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from app.utils.variant_select import select_listing_variants  # noqa: E402
+
 # ========== 設定 ==========
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "reports")
 BASE_URL = "https://www.baseblu.com/en-us/collections/sales/products.json"
@@ -416,23 +418,12 @@ def parse_product(product, fetch_details=True, source_meta=None):
     if not variants:
         return None
 
-    # 在庫判定はバリアント横断で行う。variants[0] だけ見ると
-    # 「サイズ36売切・38/40在庫あり」の商品が在庫なし扱いになり機会損失する。
-    available = any(v.get("available", False) for v in variants)
-
-    # 価格・SKU の参照バリアントは「在庫のある最安バリアント」を優先する
-    # (Shopify ではバリアントごとに価格が異なることがある)。
-    def _variant_price(v):
-        try:
-            return float(v.get("price", 0))
-        except (ValueError, TypeError):
-            return float("inf")
-
-    available_variants = [v for v in variants if v.get("available", False)]
-    if available_variants:
-        variant = min(available_variants, key=_variant_price)
-    else:
-        variant = variants[0]
+    # 在庫判定はバリアント横断。価格・SKU の基準は「在庫のある最安バリアント」で、
+    # 出品するサイズはその価格で買えるサイズだけ (高いサイズは priced_out_sizes)。
+    # 詳細は app/utils/variant_select.py。
+    picked = select_listing_variants(variants)
+    available = picked["available"]
+    variant = picked["variant"]
     # variant SKU からサイズ suffix を剥がして製品レベル SKU にする
     sku = _extract_sku_from_variant(variant.get("sku", ""), variant.get("option1", ""))
 
@@ -474,7 +465,8 @@ def parse_product(product, fetch_details=True, source_meta=None):
     # 色・サイズ・シーズン抽出（BUYMA 出品フォームに流し込むため）
     color = _extract_color(product)
     sizes = _extract_sizes(variants, only_available=False)
-    available_sizes = _extract_sizes(variants, only_available=True)
+    available_sizes = picked["available_sizes"]
+    priced_out_sizes = picked["priced_out_sizes"]
     season = _extract_season(description_en)
 
     # body_html (DESCRIPTION) に含まれないことがある DETAILS (Composition,
@@ -492,7 +484,8 @@ def parse_product(product, fetch_details=True, source_meta=None):
                 color = _extract_color_from_html(html)
             if not sizes:
                 sizes = _extract_sizes_from_html(html)
-                if sizes and not available_sizes:
+                # option1 が無い商品の救済。サイズ別価格の商品では使わない
+                if sizes and not available_sizes and not priced_out_sizes:
                     available_sizes = sizes
         time.sleep(0.3)  # レート制限対策
 
@@ -515,6 +508,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
         "color": color,
         "sizes": sizes,
         "available_sizes": available_sizes,
+        "priced_out_sizes": priced_out_sizes,
         "season": season,
         "sale_price": sale_price,
         "original_price": original_price,
@@ -533,7 +527,7 @@ def parse_product(product, fetch_details=True, source_meta=None):
 def save_to_csv(rows, output_path):
     fieldnames = [
         "title", "vendor", "product_type", "sku",
-        "color", "sizes", "available_sizes", "season",
+        "color", "sizes", "available_sizes", "priced_out_sizes", "season",
         "sale_price", "original_price", "discount_rate", "available",
         "description_en", "image_url", "sub_images", "product_url",
         # Phase 2c 追加: 仕入先抽象化のメタ列

@@ -76,7 +76,7 @@ class BaseSource(ABC):
 
         各 dict のスキーマは scripts/baseblu_sales_to_csv.py:parse_product の戻り値に揃える:
             title, vendor, product_type, sku, color, sizes, available_sizes,
-            season, sale_price (現地通貨), original_price, discount_rate,
+            priced_out_sizes (在庫はあるが基準価格より高いサイズ), season, sale_price (現地通貨), original_price, discount_rate,
             available, description_en, image_url, sub_images, product_url
         """
 
